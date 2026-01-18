@@ -18,16 +18,79 @@ const BACKEND_HEALTH_URL = `http://${BACKEND_HOST}:${BACKEND_PORT}/api/health`;
 
 let backendProc = null;
 let backendStdioStream = null;
+let resolvedDataDir = null;
 
 function nowIso() {
   return new Date().toISOString();
 }
 
-function getUserDataDir() {
+function resolveDataDir() {
+  if (resolvedDataDir) return resolvedDataDir;
+
+  const fromEnv = String(process.env.WECHAT_TOOL_DATA_DIR || "").trim();
+  const fallback = (() => {
+    try {
+      return app.getPath("userData");
+    } catch {
+      return null;
+    }
+  })();
+
+  const chosen = fromEnv || fallback;
+  if (!chosen) return null;
+
   try {
-    return app.getPath("userData");
+    fs.mkdirSync(chosen, { recursive: true });
+  } catch {}
+
+  resolvedDataDir = chosen;
+  process.env.WECHAT_TOOL_DATA_DIR = chosen;
+  return chosen;
+}
+
+function getUserDataDir() {
+  // Backwards-compat: we historically used Electron's userData directory for runtime storage.
+  // Keep this name but resolve to the effective data dir (can be overridden via env).
+  return resolveDataDir();
+}
+
+function getExeDir() {
+  try {
+    return path.dirname(process.execPath);
   } catch {
     return null;
+  }
+}
+
+function ensureOutputLink() {
+  // Users often expect an `output/` folder near the installed exe. We keep the real data
+  // in the per-user data dir, and (when possible) create a Windows junction next to the exe.
+  if (!app.isPackaged) return;
+
+  const exeDir = getExeDir();
+  const dataDir = resolveDataDir();
+  if (!exeDir || !dataDir) return;
+
+  const target = path.join(dataDir, "output");
+  const linkPath = path.join(exeDir, "output");
+
+  // If the target doesn't exist yet, create it so the link points somewhere real.
+  try {
+    fs.mkdirSync(target, { recursive: true });
+  } catch {}
+
+  // If something already exists at linkPath, do not overwrite it.
+  try {
+    if (fs.existsSync(linkPath)) return;
+  } catch {
+    return;
+  }
+
+  try {
+    fs.symlinkSync(target, linkPath, "junction");
+    logMain(`[main] created output link: ${linkPath} -> ${target}`);
+  } catch (err) {
+    logMain(`[main] failed to create output link: ${err?.message || err}`);
   }
 }
 
@@ -326,6 +389,11 @@ async function main() {
   Menu.setApplicationMenu(null);
   registerWindowIpc();
   registerDebugShortcuts();
+
+  // Resolve/create the data dir early so we can log reliably and (optionally) place a link
+  // next to the installed exe for easier access.
+  resolveDataDir();
+  ensureOutputLink();
 
   logMain(`[main] app.isPackaged=${app.isPackaged} argv=${JSON.stringify(process.argv)}`);
 
