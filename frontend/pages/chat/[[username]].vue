@@ -99,7 +99,18 @@
     </div>
 
     <!-- 中间列表区域 -->
-    <div class="w-80 border-r border-gray-200 flex flex-col min-h-0" style="background-color: #F7F7F7">
+    <div
+      class="session-list-panel border-r border-gray-200 flex flex-col min-h-0 shrink-0 relative"
+      :style="{ backgroundColor: '#F7F7F7', '--session-list-width': sessionListWidth + 'px' }"
+    >
+      <!-- 拖动调整会话列表宽度 -->
+      <div
+        class="session-list-resizer"
+        :class="{ 'session-list-resizer-active': sessionListResizing }"
+        title="拖动调整会话列表宽度"
+        @pointerdown="onSessionListResizerPointerDown"
+        @dblclick="resetSessionListWidth"
+      />
       <!-- 聊天列表 -->
       <div class="h-full flex flex-col min-h-0">
         <!-- 搜索栏 -->
@@ -143,8 +154,8 @@
         <!-- 联系人列表 -->
         <div class="flex-1 overflow-y-auto min-h-0">
           <div v-if="isLoadingContacts" class="px-3 py-4 h-full overflow-hidden">
-            <div v-for="i in 15" :key="i" class="flex items-center space-x-3 py-2">
-              <div class="w-10 h-10 rounded-md bg-gray-200 skeleton-pulse"></div>
+            <div v-for="i in 15" :key="i" class="flex items-center space-x-3 h-[calc(85px/var(--dpr))]">
+              <div class="w-[calc(45px/var(--dpr))] h-[calc(45px/var(--dpr))] rounded-md bg-gray-200 skeleton-pulse"></div>
               <div class="flex-1 space-y-2">
                 <div class="h-3.5 bg-gray-200 rounded skeleton-pulse" :style="{ width: (60 + (i % 4) * 15) + 'px' }"></div>
                 <div class="h-3 bg-gray-200 rounded skeleton-pulse" :style="{ width: (80 + (i % 3) * 20) + 'px' }"></div>
@@ -159,12 +170,12 @@
           </div>
           <template v-else>
             <div v-for="contact in filteredContacts" :key="contact.id"
-              class="px-3 py-2 cursor-pointer transition-colors duration-150 border-b border-gray-100"
+              class="px-3 cursor-pointer transition-colors duration-150 border-b border-gray-100 h-[calc(85px/var(--dpr))] flex items-center"
               :class="selectedContact?.id === contact.id ? 'bg-[#DEDEDE] hover:bg-[#d3d3d3]' : 'hover:bg-[#eaeaea]'"
               @click="selectContact(contact)">
-              <div class="flex items-center space-x-3">
+              <div class="flex items-center space-x-3 w-full">
                 <!-- 联系人头像 -->
-                <div class="w-10 h-10 rounded-md overflow-hidden bg-gray-300 flex-shrink-0" :class="{ 'privacy-blur': privacyMode }">
+                <div class="w-[calc(45px/var(--dpr))] h-[calc(45px/var(--dpr))] rounded-md overflow-hidden bg-gray-300 flex-shrink-0" :class="{ 'privacy-blur': privacyMode }">
                   <div v-if="contact.avatar" class="w-full h-full">
                     <img :src="contact.avatar" :alt="contact.name" class="w-full h-full object-cover">
                   </div>
@@ -340,7 +351,7 @@
             <div v-else class="flex items-center" :class="message.isSent ? 'justify-end' : 'justify-start'">
               <div class="flex items-start max-w-md" :class="message.isSent ? 'flex-row-reverse' : ''">
                 <!-- 消息发送者头像 -->
-                <div class="w-[36px] h-[36px] rounded-md overflow-hidden bg-gray-300 flex-shrink-0" :class="[message.isSent ? 'ml-3' : 'mr-3', { 'privacy-blur': privacyMode }]">
+                <div class="w-[calc(42px/var(--dpr))] h-[calc(42px/var(--dpr))] rounded-md overflow-hidden bg-gray-300 flex-shrink-0" :class="[message.isSent ? 'ml-3' : 'mr-3', { 'privacy-blur': privacyMode }]">
                   <div v-if="message.avatar" class="w-full h-full">
                     <img
                       :src="message.avatar"
@@ -1801,6 +1812,129 @@ watch(
     } catch {}
   }
 )
+
+// 会话列表（中间栏）宽度（按物理像素 px 配置）：默认 295px，支持拖动调整并持久化
+const SESSION_LIST_WIDTH_KEY = 'ui.chat.session_list_width_physical'
+const SESSION_LIST_WIDTH_KEY_LEGACY = 'ui.chat.session_list_width'
+const SESSION_LIST_WIDTH_DEFAULT = 295
+const SESSION_LIST_WIDTH_MIN = 220
+const SESSION_LIST_WIDTH_MAX = 520
+
+const sessionListWidth = ref(SESSION_LIST_WIDTH_DEFAULT)
+const sessionListResizing = ref(false)
+
+let sessionListResizeStartX = 0
+let sessionListResizeStartWidth = SESSION_LIST_WIDTH_DEFAULT
+let sessionListResizeStartDpr = 1
+let sessionListResizePrevCursor = ''
+let sessionListResizePrevUserSelect = ''
+
+const clampSessionListWidth = (n) => {
+  const v = Number.isFinite(n) ? n : SESSION_LIST_WIDTH_DEFAULT
+  return Math.min(SESSION_LIST_WIDTH_MAX, Math.max(SESSION_LIST_WIDTH_MIN, Math.round(v)))
+}
+
+const loadSessionListWidth = () => {
+  if (!process.client) return
+  try {
+    const raw = localStorage.getItem(SESSION_LIST_WIDTH_KEY)
+    const v = parseInt(String(raw || ''), 10)
+    if (!Number.isNaN(v)) {
+      sessionListWidth.value = clampSessionListWidth(v)
+      return
+    }
+
+    // Legacy: value was stored as CSS px. Convert to physical px using current dpr.
+    const legacy = localStorage.getItem(SESSION_LIST_WIDTH_KEY_LEGACY)
+    const legacyV = parseInt(String(legacy || ''), 10)
+    if (!Number.isNaN(legacyV)) {
+      const dpr = window.devicePixelRatio || 1
+      const converted = clampSessionListWidth(legacyV * dpr)
+      sessionListWidth.value = converted
+      try {
+        localStorage.setItem(SESSION_LIST_WIDTH_KEY, String(converted))
+        localStorage.removeItem(SESSION_LIST_WIDTH_KEY_LEGACY)
+      } catch {}
+    }
+  } catch {}
+}
+
+const saveSessionListWidth = () => {
+  if (!process.client) return
+  try {
+    localStorage.setItem(SESSION_LIST_WIDTH_KEY, String(clampSessionListWidth(sessionListWidth.value)))
+  } catch {}
+}
+
+const setSessionListResizingActive = (active) => {
+  if (!process.client) return
+  try {
+    const body = document.body
+    if (!body) return
+    if (active) {
+      sessionListResizePrevCursor = body.style.cursor || ''
+      sessionListResizePrevUserSelect = body.style.userSelect || ''
+      body.style.cursor = 'col-resize'
+      body.style.userSelect = 'none'
+    } else {
+      body.style.cursor = sessionListResizePrevCursor
+      body.style.userSelect = sessionListResizePrevUserSelect
+      sessionListResizePrevCursor = ''
+      sessionListResizePrevUserSelect = ''
+    }
+  } catch {}
+}
+
+const onSessionListResizerPointerMove = (ev) => {
+  if (!sessionListResizing.value) return
+  const clientX = Number(ev?.clientX || 0)
+  // `clientX` delta is in CSS px. We store width as physical px, so multiply by dpr.
+  sessionListWidth.value = clampSessionListWidth(
+    sessionListResizeStartWidth + (clientX - sessionListResizeStartX) * (sessionListResizeStartDpr || 1)
+  )
+}
+
+const stopSessionListResize = () => {
+  if (!process.client) return
+  if (!sessionListResizing.value) return
+  sessionListResizing.value = false
+  setSessionListResizingActive(false)
+  try {
+    window.removeEventListener('pointermove', onSessionListResizerPointerMove)
+  } catch {}
+  saveSessionListWidth()
+}
+
+const onSessionListResizerPointerUp = () => {
+  stopSessionListResize()
+}
+
+const onSessionListResizerPointerDown = (ev) => {
+  if (!process.client) return
+  try {
+    ev?.preventDefault?.()
+  } catch {}
+
+  sessionListResizing.value = true
+  sessionListResizeStartX = Number(ev?.clientX || 0)
+  sessionListResizeStartWidth = Number(sessionListWidth.value || SESSION_LIST_WIDTH_DEFAULT)
+  sessionListResizeStartDpr = window.devicePixelRatio || 1
+  setSessionListResizingActive(true)
+
+  try {
+    window.addEventListener('pointermove', onSessionListResizerPointerMove)
+    window.addEventListener('pointerup', onSessionListResizerPointerUp, { once: true })
+  } catch {}
+}
+
+const resetSessionListWidth = () => {
+  sessionListWidth.value = SESSION_LIST_WIDTH_DEFAULT
+  saveSessionListWidth()
+}
+
+onMounted(() => {
+  loadSessionListWidth()
+})
 
 // 桌面端设置（仅 Electron 环境可见）
 const isDesktopEnv = ref(false)
@@ -4677,6 +4811,7 @@ onUnmounted(() => {
   if (!process.client) return
   document.removeEventListener('click', onGlobalClick)
   document.removeEventListener('keydown', onGlobalKeyDown)
+  stopSessionListResize()
   if (messageSearchDebounceTimer) clearTimeout(messageSearchDebounceTimer)
   messageSearchDebounceTimer = null
   if (highlightMessageTimer) clearTimeout(highlightMessageTimer)
@@ -4976,8 +5111,22 @@ const toggleRealtime = async (opts = {}) => {
     return true
   }
 
+  // Turning off realtime: sync the latest WCDB rows into the decrypted sqlite DB first,
+  // otherwise the UI will fall back to an outdated decrypted snapshot.
   realtimeEnabled.value = false
   stopRealtimeStream()
+  try {
+    const api = useApi()
+    const u = String(selectedContact.value?.username || '').trim()
+    if (u) {
+      // Use a larger scan window on shutdown to reduce the chance of missing a backlog.
+      await api.syncChatRealtimeMessages({
+        account: selectedAccount.value,
+        username: u,
+        max_scan: 5000
+      })
+    }
+  } catch {}
   await refreshSessionsForSelectedAccount({ sourceOverride: '' })
   if (selectedContact.value?.username) {
     await refreshSelectedMessages()
@@ -5244,6 +5393,38 @@ const LinkCard = defineComponent({
 
 .overflow-y-auto::-webkit-scrollbar-thumb:hover {
   background: #a1a1a1;
+}
+
+/* 会话列表宽度：按物理像素(px)配置，按 dpr 换算为 CSS px */
+.session-list-panel {
+  width: calc(var(--session-list-width, 295px) / var(--dpr));
+}
+
+/* 会话列表拖动条（中间栏右侧） */
+.session-list-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px; /* 覆盖在 border 上，便于拖动 */
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 50;
+}
+
+.session-list-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+  transition: background-color 0.15s ease;
+}
+
+.session-list-resizer:hover::after,
+.session-list-resizer-active::after {
+  background: rgba(0, 0, 0, 0.12);
 }
 
 /* 消息气泡样式 */
