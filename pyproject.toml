@@ -21,6 +21,7 @@ dependencies = [
     "pypinyin>=0.53.0",
     "wx_key",
     "packaging",
+    "httpx",
 ]
 
 [project.optional-dependencies]

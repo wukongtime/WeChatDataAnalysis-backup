@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter
 
 from ..key_store import get_account_keys_from_store
-from ..key_service import get_db_key_workflow
+from ..key_service import get_db_key_workflow, fetch_and_save_remote_keys
 from ..media_helpers import _load_media_keys, _resolve_account_dir
 from ..path_fix import PathFixRoute
 
@@ -81,6 +81,45 @@ async def get_wechat_db_key():
             "data": {}
         }
     except Exception as e:
+        return {
+            "status": -1,
+            "errmsg": f"获取失败: {str(e)}",
+            "data": {}
+        }
+
+
+@router.get("/api/get_image_key", summary="获取并保存微信图片密钥")
+async def get_image_key(account: Optional[str] = None):
+    """
+    通过模拟 Next.js Server Action 协议，利用本地微信配置文件换取 AES/XOR 密钥。
+
+    1. 读取 [wx_dir]/all_users/config/global_config (Blob 1)
+    2. 计算 本地 global_config (JSON) 的 SHA3-224 (Blob 2)
+    3. 构造 Multipart 包发送至远程服务器
+    4. 解析返回流，自动存入本地数据库
+    """
+    try:
+        result = await fetch_and_save_remote_keys(account)
+
+        return {
+            "status": 0,
+            "errmsg": "ok",
+            "data": {
+                "xor_key": result["xor_key"],
+                "aes_key": result["aes_key"],
+                "nick_name": result.get("nick_name"),
+                "account": result["wxid"]
+            }
+        }
+    except FileNotFoundError as e:
+        return {
+            "status": -1,
+            "errmsg": f"文件缺失: {str(e)}",
+            "data": {}
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {
             "status": -1,
             "errmsg": f"获取失败: {str(e)}",
