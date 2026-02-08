@@ -51,3 +51,37 @@ async def get_saved_keys(account: Optional[str] = None):
         "keys": result,
     }
 
+
+@router.get("/api/get_db_key", summary="自动获取微信数据库密钥")
+async def get_wechat_db_key():
+    """
+    自动流程：
+    1. 结束微信进程
+    2. 启动微信
+    3. 根据版本注入 Hook
+    4. 抓取密钥并返回
+    """
+    try:
+        # 不需要async吧，我相信fastapi的线程池
+        db_key = get_db_key_workflow()
+
+        return {
+            "status": 0,
+            "errmsg": "ok",
+            "data": {
+                "db_key": db_key
+            }
+        }
+
+    except TimeoutError:
+        return {
+            "status": -1,
+            "errmsg": "获取超时，请确保微信没有开启自动登录 或者 加快手速",
+            "data": {}
+        }
+    except Exception as e:
+        return {
+            "status": -1,
+            "errmsg": f"获取失败: {str(e)}",
+            "data": {}
+        }
