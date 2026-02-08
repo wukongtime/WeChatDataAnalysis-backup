@@ -361,6 +361,19 @@
           </div>
         </div>
       </div>
+
+      <!-- 警告渲染 -->
+      <transition name="fade">
+        <div v-if="warning" class="bg-amber-50 border border-amber-200 rounded-lg p-4 mt-6 flex items-start">
+          <svg class="h-5 w-5 mr-2 flex-shrink-0 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+          </svg>
+          <div>
+            <p class="font-semibold text-amber-800">温馨提示</p>
+            <p class="text-sm mt-1 text-amber-700">{{ warning }}</p>
+          </div>
+        </div>
+      </transition>
     
       <!-- 错误提示 -->
       <transition name="fade">
@@ -403,10 +416,11 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useApi } from '~/composables/useApi'
 
-const { decryptDatabase, saveMediaKeys, getSavedKeys, getDbKey, getImageKey } = useApi()
+const { decryptDatabase, saveMediaKeys, getSavedKeys, getDbKey, getImageKey, getWxStatus } = useApi()
 
 const loading = ref(false)
 const error = ref('')
+const warning = ref('') // 警告，用于密钥提示
 const currentStep = ref(0)
 const mediaAccount = ref('')
 const isGettingDbKey = ref(false)
@@ -496,10 +510,29 @@ const handleGetDbKey = async () => {
   isGettingDbKey.value = true
 
   error.value = ''
-
+  warning.value = ''
   formErrors.key = ''
 
   try {
+    const { data: statusData, error: statusError } = await getWxStatus()
+
+    if (statusError.value) {
+      error.value = '无法获取微信状态: ' + statusError.value.message
+      isGettingDbKey.value = false
+      return
+    }
+
+    const wxStatus = statusData.value?.wx_status
+
+    if (wxStatus?.is_running) {
+      warning.value = '检测到微信正在运行，5秒后将终止进程并重启以获取密钥！！'
+      await new Promise(resolve => setTimeout(resolve, 5000))
+    } else {
+      // 没有逻辑
+    }
+    
+    warning.value = '正在启动微信以获取密钥，请确保微信未开启“自动登录”，并在启动后 1 分钟内完成登录操作。'
+
     const { data, error: fetchError } = await getDbKey()
 
     if (fetchError.value) {
@@ -509,14 +542,14 @@ const handleGetDbKey = async () => {
 
     const res = data.value
 
-    if (res && (res.status === 0)) {
+    if (res && res.status === 0) {
       if (res.data?.db_key) {
         formData.key = res.data.db_key
+        warning.value = ''
       }
 
-      // 有错误信息且不是ok时弹出提示
       if (res.errmsg && res.errmsg !== 'ok') {
-        error.value = res.errmsg
+        warning.value = res.errmsg
       }
     } else {
       error.value = '获取失败: ' + (res?.errmsg || '未知错误')
@@ -536,6 +569,7 @@ const handleGetImageKey = async () => {
   manualKeyErrors.aes_key = ''
 
   error.value = ''
+  warning.value = ''
 
   try {
     const { data, fetchError } = await getImageKey()
@@ -573,6 +607,7 @@ const applyManualKeys = () => {
   manualKeyErrors.xor_key = ''
   manualKeyErrors.aes_key = ''
   error.value = ''
+  warning.value = ''
 
   const aes = normalizeAesKey(manualKeys.aes_key)
   if (!aes.ok) {
@@ -666,6 +701,7 @@ const handleDecrypt = async () => {
   
   loading.value = true
   error.value = ''
+  warning.value = ''
   
   try {
     const result = await decryptDatabase({
@@ -712,6 +748,7 @@ const decryptAllImages = async () => {
   mediaDecrypting.value = true
   mediaDecryptResult.value = null
   error.value = ''
+  warning.value = ''
   
   // 重置进度
   decryptProgress.current = 0
@@ -787,6 +824,7 @@ const decryptAllImages = async () => {
 // 从密钥步骤进入图片解密步骤
 const goToMediaDecryptStep = async () => {
   error.value = ''
+  warning.value = ''
   // 校验并应用（未填写则允许直接进入，后端会使用已保存密钥或报错提示）
   const ok = applyManualKeys()
   if (!ok || manualKeyErrors.xor_key || manualKeyErrors.aes_key) return

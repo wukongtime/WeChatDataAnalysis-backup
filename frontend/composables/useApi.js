@@ -358,7 +358,13 @@ export const useApi = () => {
       method: 'GET',
     })
   }
-  
+
+  const getWxStatus = () => {
+    return useFetch('/api/wechat/status', {
+      method: 'GET',
+    })
+  }
+
   return {
     detectWechat,
     detectCurrentAccount,
@@ -392,5 +398,6 @@ export const useApi = () => {
     getWrappedAnnualCard,
     getDbKey,
     getImageKey,
+    getWxStatus,
   }
 }

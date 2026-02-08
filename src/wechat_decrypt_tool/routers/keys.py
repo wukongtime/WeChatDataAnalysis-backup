@@ -3,6 +3,7 @@ from typing import Optional
 from fastapi import APIRouter
 
 from ..key_store import get_account_keys_from_store
+from ..key_service import get_db_key_workflow
 from ..media_helpers import _load_media_keys, _resolve_account_dir
 from ..path_fix import PathFixRoute
 
