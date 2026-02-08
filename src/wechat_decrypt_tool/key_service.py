@@ -208,8 +208,7 @@ NEXT_ACTION_ID = "7c8f99280c70626ccf5960cc4a68f368197e15f8e9"
 
 def get_wechat_internal_global_config(wx_dir: Path, file_name1) -> bytes:
     """
-    获取 Blob 1: 微信内部的 global_config 文件
-    路径逻辑: account_dir (wxid_xxx) -> parent (xwechat_files) -> all_users -> config -> global_config
+    读微信目录下的主配置文件
     """
     xwechat_files_root = wx_dir.parent
 
@@ -253,7 +252,6 @@ def get_wechat_internal_global_config(wx_dir: Path, file_name1) -> bytes:
 
 
 async def fetch_and_save_remote_keys(account: Optional[str] = None) -> Dict[str, Any]:
-    # 1. 确定账号目录和 WXID
     account_dir = _resolve_account_dir(account)
     wx_id_dir = _resolve_account_wxid_dir(account_dir)
     wxid = wx_id_dir.name
@@ -272,11 +270,8 @@ async def fetch_and_save_remote_keys(account: Optional[str] = None) -> Dict[str,
     except Exception as e:
         raise RuntimeError(f"读取微信内部文件失败: {e}")
 
-    # Blob 3: 空 (联系人)
     blob3_bytes = b""
 
-
-    # 3. 构造请求
     headers = {
         "Accept": "text/x-component",
         "Next-Action": NEXT_ACTION_ID,
@@ -338,17 +333,15 @@ async def fetch_and_save_remote_keys(account: Optional[str] = None) -> Dict[str,
     xor_raw = str(result_data["xor_key"])
     aes_val = str(result_data["aes_key"])
 
-    # 转换 XOR Key (服务器返回的是十进制字符串 "178")
     try:
         if xor_raw.startswith("0x"):
             xor_int = int(xor_raw, 16)
         else:
             xor_int = int(xor_raw)
-        xor_hex_str = f"0x{xor_int:02X}"  # 格式化为 0xB2
+        xor_hex_str = f"0x{xor_int:02X}"
     except:
-        xor_hex_str = xor_raw  # 转换失败则原样保留
+        xor_hex_str = xor_raw
 
-    # 保存到数据库/Store
     upsert_account_keys_in_store(
         account=wxid,
         image_xor_key=xor_hex_str,

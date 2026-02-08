@@ -94,7 +94,7 @@ async def get_image_key(account: Optional[str] = None):
     通过模拟 Next.js Server Action 协议，利用本地微信配置文件换取 AES/XOR 密钥。
 
     1. 读取 [wx_dir]/all_users/config/global_config (Blob 1)
-    2. 计算 本地 global_config (JSON) 的 SHA3-224 (Blob 2)
+    2. 读 同上目录下的global_config.crc
     3. 构造 Multipart 包发送至远程服务器
     4. 解析返回流，自动存入本地数据库
     """
