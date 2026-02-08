@@ -344,6 +344,20 @@ export const useApi = () => {
     const url = `/wrapped/annual/cards/${safeId}` + (query.toString() ? `?${query.toString()}` : '')
     return await request(url)
   }
+
+  // 获取数据库解密密钥
+  const getDbKey = () => {
+    return useFetch('/api/get_db_key', {
+      method: 'GET',
+    })
+  }
+
+  // 获取图片解密密钥
+  const getImageKey = () => {
+    return useFetch('/api/get_image_key', {
+      method: 'GET',
+    })
+  }
   
   return {
     detectWechat,
@@ -375,6 +389,8 @@ export const useApi = () => {
     cancelChatExport,
     getWrappedAnnual,
     getWrappedAnnualMeta,
-    getWrappedAnnualCard
+    getWrappedAnnualCard,
+    getDbKey,
+    getImageKey,
   }
 }
