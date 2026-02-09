@@ -102,6 +102,17 @@ def _load_wcdb_lib() -> ctypes.CDLL:
         lib.wcdb_get_group_members.argtypes = [ctypes.c_int64, ctypes.c_char_p, ctypes.POINTER(ctypes.c_char_p)]
         lib.wcdb_get_group_members.restype = ctypes.c_int
 
+        # Optional (newer DLLs): wcdb_get_group_nicknames(handle, chatroom_id, out_json)
+        try:
+            lib.wcdb_get_group_nicknames.argtypes = [
+                ctypes.c_int64,
+                ctypes.c_char_p,
+                ctypes.POINTER(ctypes.c_char_p),
+            ]
+            lib.wcdb_get_group_nicknames.restype = ctypes.c_int
+        except Exception:
+            pass
+
         # Optional: execute arbitrary SQL on a selected database kind/path.
         # Signature: wcdb_exec_query(handle, kind, path, sql, out_json)
         try:
@@ -349,6 +360,41 @@ def get_avatar_urls(handle: int, usernames: list[str]) -> dict[str, str]:
         return {}
     payload = json.dumps(uniq, ensure_ascii=False).encode("utf-8")
     out_json = _call_out_json(lib.wcdb_get_avatar_urls, ctypes.c_int64(int(handle)), payload)
+    decoded = _safe_load_json(out_json)
+    if isinstance(decoded, dict):
+        return {str(k): str(v) for k, v in decoded.items()}
+    return {}
+
+
+def get_group_members(handle: int, chatroom_id: str) -> list[dict[str, Any]]:
+    _ensure_initialized()
+    lib = _load_wcdb_lib()
+    cid = str(chatroom_id or "").strip()
+    if not cid:
+        return []
+    out_json = _call_out_json(lib.wcdb_get_group_members, ctypes.c_int64(int(handle)), cid.encode("utf-8"))
+    decoded = _safe_load_json(out_json)
+    if isinstance(decoded, list):
+        out: list[dict[str, Any]] = []
+        for x in decoded:
+            if isinstance(x, dict):
+                out.append(x)
+        return out
+    return []
+
+
+def get_group_nicknames(handle: int, chatroom_id: str) -> dict[str, str]:
+    _ensure_initialized()
+    lib = _load_wcdb_lib()
+    fn = getattr(lib, "wcdb_get_group_nicknames", None)
+    if not fn:
+        return {}
+
+    cid = str(chatroom_id or "").strip()
+    if not cid:
+        return {}
+
+    out_json = _call_out_json(fn, ctypes.c_int64(int(handle)), cid.encode("utf-8"))
     decoded = _safe_load_json(out_json)
     if isinstance(decoded, dict):
         return {str(k): str(v) for k, v in decoded.items()}

@@ -39,11 +39,17 @@ from ..chat_helpers import (
     _make_snippet,
     _match_tokens,
     _load_contact_rows,
+    _load_group_nickname_map_from_contact_db,
     _load_usernames_by_display_names,
     _load_latest_message_previews,
+    _build_group_sender_display_name_map,
+    _normalize_session_preview_text,
+    _extract_group_preview_sender_username,
+    _replace_preview_sender_prefix,
     _lookup_resource_md5,
     _normalize_xml_url,
     _parse_app_message,
+    _parse_system_message_content,
     _parse_pat_message,
     _pick_display_name,
     _query_head_image_usernames,
@@ -69,6 +75,8 @@ from ..wcdb_realtime import (
     WCDB_REALTIME,
     get_avatar_urls as _wcdb_get_avatar_urls,
     get_display_names as _wcdb_get_display_names,
+    get_group_members as _wcdb_get_group_members,
+    get_group_nicknames as _wcdb_get_group_nicknames,
     get_messages as _wcdb_get_messages,
     get_sessions as _wcdb_get_sessions,
 )
@@ -95,6 +103,142 @@ def _avatar_url_unified(
         return ""
     # Unified avatar entrypoint: backend decides local db vs remote fallback + cache.
     return _build_avatar_url(str(account_dir.name or ""), u)
+
+
+def _load_group_nickname_map_from_wcdb(
+    *,
+    account_dir: Path,
+    chatroom_id: str,
+    sender_usernames: list[str],
+    rt_conn=None,
+) -> dict[str, str]:
+    chatroom = str(chatroom_id or "").strip()
+    if not chatroom.endswith("@chatroom"):
+        return {}
+
+    targets = list(dict.fromkeys([str(x or "").strip() for x in sender_usernames if str(x or "").strip()]))
+    if not targets:
+        return {}
+
+    try:
+        wcdb_conn = rt_conn or WCDB_REALTIME.ensure_connected(account_dir)
+    except Exception:
+        return {}
+
+    target_set = set(targets)
+    out: dict[str, str] = {}
+
+    try:
+        with wcdb_conn.lock:
+            nickname_map = _wcdb_get_group_nicknames(wcdb_conn.handle, chatroom)
+        for username, nickname in (nickname_map or {}).items():
+            su = str(username or "").strip()
+            nn = str(nickname or "").strip()
+            if su and nn and su in target_set:
+                out[su] = nn
+    except Exception:
+        pass
+
+    unresolved = [u for u in targets if u not in out]
+    if not unresolved:
+        return out
+
+    try:
+        with wcdb_conn.lock:
+            members = _wcdb_get_group_members(wcdb_conn.handle, chatroom)
+    except Exception:
+        return out
+
+    if not members:
+        return out
+
+    unresolved_set = set(unresolved)
+    for member in members:
+        try:
+            username = str(member.get("username") or "").strip()
+        except Exception:
+            username = ""
+        if (not username) or (username not in unresolved_set):
+            continue
+
+        nickname = ""
+        for key in ("nickname", "displayName", "remark", "originalName"):
+            try:
+                candidate = str(member.get(key) or "").strip()
+            except Exception:
+                candidate = ""
+            if candidate:
+                nickname = candidate
+                break
+        if nickname:
+            out[username] = nickname
+
+    return out
+
+
+def _load_group_nickname_map(
+    *,
+    account_dir: Path,
+    contact_db_path: Path,
+    chatroom_id: str,
+    sender_usernames: list[str],
+    rt_conn=None,
+) -> dict[str, str]:
+    """Resolve group member nickname (group card) via WCDB and contact.db ext_buffer (best-effort)."""
+
+    contact_map: dict[str, str] = {}
+    try:
+        contact_map = _load_group_nickname_map_from_contact_db(
+            contact_db_path,
+            chatroom_id,
+            sender_usernames,
+        )
+    except Exception:
+        contact_map = {}
+
+    wcdb_map: dict[str, str] = {}
+    try:
+        wcdb_map = _load_group_nickname_map_from_wcdb(
+            account_dir=account_dir,
+            chatroom_id=chatroom_id,
+            sender_usernames=sender_usernames,
+            rt_conn=rt_conn,
+        )
+    except Exception:
+        wcdb_map = {}
+
+    if not contact_map and not wcdb_map:
+        return {}
+
+    # Merge: WCDB wins (newer DLLs may provide higher-quality group nicknames).
+    merged: dict[str, str] = {}
+    merged.update(contact_map)
+    merged.update(wcdb_map)
+    return merged
+
+
+def _resolve_sender_display_name(
+    *,
+    sender_username: str,
+    sender_contact_rows: dict[str, sqlite3.Row],
+    wcdb_display_names: dict[str, str],
+    group_nicknames: Optional[dict[str, str]] = None,
+) -> str:
+    su = str(sender_username or "").strip()
+    if not su:
+        return ""
+
+    gn = str((group_nicknames or {}).get(su) or "").strip()
+    if gn:
+        return gn
+
+    row = sender_contact_rows.get(su)
+    display_name = _pick_display_name(row, su)
+    if display_name == su:
+        wd = str(wcdb_display_names.get(su) or "").strip()
+        if wd and wd != su:
+            display_name = wd
+    return display_name
 
 
 def _realtime_sync_lock(account: str, username: str) -> threading.Lock:
@@ -557,8 +701,11 @@ def _upsert_session_table_rows(conn: sqlite3.Connection, rows: list[dict[str, An
         "draft",
         "last_timestamp",
         "sort_timestamp",
+        "last_msg_locald_id",
         "last_msg_type",
         "last_msg_sub_type",
+        "last_msg_sender",
+        "last_sender_display_name",
     ]
     update_cols = [c for c in desired_cols if c in cols]
     if not update_cols:
@@ -583,7 +730,15 @@ def _upsert_session_table_rows(conn: sqlite3.Connection, rows: list[dict[str, An
             continue
         values: list[Any] = []
         for c in update_cols:
-            if c in {"unread_count", "is_hidden", "last_timestamp", "sort_timestamp", "last_msg_type", "last_msg_sub_type"}:
+            if c in {
+                "unread_count",
+                "is_hidden",
+                "last_timestamp",
+                "sort_timestamp",
+                "last_msg_locald_id",
+                "last_msg_type",
+                "last_msg_sub_type",
+            }:
                 values.append(_int((r or {}).get(c)))
             else:
                 values.append(_text((r or {}).get(c)))
@@ -1510,8 +1665,17 @@ def sync_chat_realtime_messages_all(
                     "sort_timestamp",
                     item.get("sortTimestamp", item.get("last_timestamp", item.get("lastTimestamp", 0))),
                 ),
+                "last_msg_locald_id": item.get(
+                    "last_msg_locald_id",
+                    item.get("lastMsgLocaldId", item.get("lastMsgLocalId", 0)),
+                ),
                 "last_msg_type": item.get("last_msg_type", item.get("lastMsgType", 0)),
                 "last_msg_sub_type": item.get("last_msg_sub_type", item.get("lastMsgSubType", 0)),
+                "last_msg_sender": item.get("last_msg_sender", item.get("lastMsgSender", "")),
+                "last_sender_display_name": item.get(
+                    "last_sender_display_name",
+                    item.get("lastSenderDisplayName", ""),
+                ),
             }
             # Prefer the row with the newer sort timestamp for the same username.
             prev = realtime_rows_by_user.get(uname)
@@ -2137,11 +2301,7 @@ def _append_full_messages_from_rows(
 
         if local_type == 10000:
             render_type = "system"
-            if "revokemsg" in raw_text:
-                content_text = "撤回了一条消息"
-            else:
-                content_text = re.sub(r"</?[_a-zA-Z0-9]+[^>]*>", "", raw_text)
-                content_text = re.sub(r"\s+", " ", content_text).strip() or "[系统消息]"
+            content_text = _parse_system_message_content(raw_text)
         elif local_type == 49:
             parsed = _parse_app_message(raw_text)
             render_type = str(parsed.get("renderType") or "text")
@@ -2598,6 +2758,13 @@ def _postprocess_full_messages(
         wcdb_display_names = {}
         wcdb_avatar_urls = {}
 
+    group_nicknames = _load_group_nickname_map(
+        account_dir=account_dir,
+        contact_db_path=contact_db_path,
+        chatroom_id=username,
+        sender_usernames=uniq_senders,
+    )
+
     for m in merged:
         # If appmsg doesn't provide sourcedisplayname, try mapping sourceusername to display name.
         if (not str(m.get("from") or "").strip()) and str(m.get("fromUsername") or "").strip():
@@ -2613,13 +2780,12 @@ def _postprocess_full_messages(
         su = str(m.get("senderUsername") or "")
         if not su:
             continue
-        row = sender_contact_rows.get(su)
-        display_name = _pick_display_name(row, su)
-        if display_name == su:
-            wd = str(wcdb_display_names.get(su) or "").strip()
-            if wd and wd != su:
-                display_name = wd
-        m["senderDisplayName"] = display_name
+        m["senderDisplayName"] = _resolve_sender_display_name(
+            sender_username=su,
+            sender_contact_rows=sender_contact_rows,
+            wcdb_display_names=wcdb_display_names,
+            group_nicknames=group_nicknames,
+        )
         avatar_url = base_url + _avatar_url_unified(
             account_dir=account_dir,
             username=su,
@@ -2836,6 +3002,17 @@ def list_chat_sessions(
                     "sort_timestamp": item.get("sort_timestamp", item.get("sortTimestamp", item.get("last_timestamp", 0))),
                     "last_msg_type": item.get("last_msg_type", item.get("lastMsgType", 0)),
                     "last_msg_sub_type": item.get("last_msg_sub_type", item.get("lastMsgSubType", 0)),
+                    # Keep these fields so group session previews can render "sender: content" without
+                    # crashing (realtime rows are dicts, not sqlite Rows).
+                    "last_msg_sender": item.get("last_msg_sender", item.get("lastMsgSender", "")),
+                    "last_sender_display_name": item.get(
+                        "last_sender_display_name",
+                        item.get("lastSenderDisplayName", ""),
+                    ),
+                    "last_msg_locald_id": item.get(
+                        "last_msg_locald_id",
+                        item.get("lastMsgLocaldId", item.get("lastMsgLocalId", 0)),
+                    ),
                 }
             )
 
@@ -2923,12 +3100,16 @@ def list_chat_sessions(
     try:
         need_display: list[str] = []
         need_avatar: list[str] = []
+        if source_norm == "realtime":
+            # In realtime mode, always ask WCDB for display names: decrypted contact.db can be stale.
+            need_display = [str(u or "").strip() for u in usernames if str(u or "").strip()]
         for u in usernames:
             if not u:
                 continue
-            row = contact_rows.get(u)
-            if _pick_display_name(row, u) == u:
-                need_display.append(u)
+            if source_norm != "realtime":
+                row = contact_rows.get(u)
+                if _pick_display_name(row, u) == u:
+                    need_display.append(u)
             if source_norm == "realtime":
                 # In realtime mode, prefer WCDB-resolved avatar URLs (contact.db can be stale).
                 if u not in local_avatar_usernames:
@@ -2983,14 +3164,40 @@ def list_chat_sessions(
                 if v:
                     last_previews[u] = v
 
+    group_sender_display_names: dict[str, str] = _build_group_sender_display_name_map(
+        contact_db_path,
+        last_previews,
+    )
+    unresolved = []
+    for conv_username, preview_text in last_previews.items():
+        if not str(conv_username or "").endswith("@chatroom"):
+            continue
+        sender_username = _extract_group_preview_sender_username(preview_text)
+        if sender_username and sender_username not in group_sender_display_names:
+            unresolved.append(sender_username)
+    unresolved = list(dict.fromkeys(unresolved))
+    if unresolved:
+        try:
+            wcdb_conn = rt_conn or WCDB_REALTIME.ensure_connected(account_dir)
+            with wcdb_conn.lock:
+                wcdb_names = _wcdb_get_display_names(wcdb_conn.handle, unresolved)
+            for sender_username in unresolved:
+                wcdb_name = str(wcdb_names.get(sender_username) or "").strip()
+                if wcdb_name and wcdb_name != sender_username:
+                    group_sender_display_names[sender_username] = wcdb_name
+        except Exception:
+            pass
+
     sessions: list[dict[str, Any]] = []
     for r in filtered:
         username = r["username"]
         c_row = contact_rows.get(username)
 
         display_name = _pick_display_name(c_row, username)
-        if display_name == username:
-            wd = str(wcdb_display_names.get(username) or "").strip()
+        wd = str(wcdb_display_names.get(username) or "").strip()
+        if source_norm == "realtime" and wd and wd != username:
+            display_name = wd
+        elif display_name == username:
             if wd and wd != username:
                 display_name = wd
 
@@ -3045,6 +3252,37 @@ def list_chat_sessions(
                 last_msg_sub_type = 0
             if last_msg_type == 81604378673 or (last_msg_type == 49 and last_msg_sub_type == 19):
                 last_message = "[聊天记录]"
+
+        last_message = _normalize_session_preview_text(
+            last_message,
+            is_group=bool(str(username or "").endswith("@chatroom")),
+            sender_display_names=group_sender_display_names,
+        )
+        if str(username or "").endswith("@chatroom") and str(last_message or "") and not str(last_message).startswith("[草稿]"):
+            # Prefer group card nickname when available. In realtime mode, WCDB session rows can provide
+            # `last_sender_display_name`, but we may still get a summary that doesn't include "sender:".
+            # Also guard against URL schemes like "https://..." being mis-parsed as "https: //...".
+            raw_sender_display = ""
+            try:
+                raw_sender_display = r["last_sender_display_name"]
+            except Exception:
+                try:
+                    raw_sender_display = r.get("last_sender_display_name", "")
+                except Exception:
+                    raw_sender_display = ""
+            sender_display = _decode_sqlite_text(raw_sender_display).strip()
+            if sender_display:
+                text = re.sub(r"\s+", " ", str(last_message or "").strip()).strip()
+                match = re.match(r"^([^:\n]{1,128}):\s*(.+)$", text)
+                if match:
+                    prefix = str(match.group(1) or "").strip()
+                    body = re.sub(r"\s+", " ", str(match.group(2) or "").strip()).strip()
+                    if prefix.lower() in {"http", "https"} and body.startswith("//"):
+                        last_message = f"{sender_display}: {text}"
+                    else:
+                        last_message = f"{sender_display}: {body}"
+                else:
+                    last_message = f"{sender_display}: {text}"
 
         last_time = _format_session_time(r["sort_timestamp"] or r["last_timestamp"])
 
@@ -3248,13 +3486,7 @@ def _collect_chat_messages(
 
                 if local_type == 10000:
                     render_type = "system"
-                    if "revokemsg" in raw_text:
-                        content_text = "撤回了一条消息"
-                    else:
-                        import re
-
-                        content_text = re.sub(r"</?[_a-zA-Z0-9]+[^>]*>", "", raw_text)
-                        content_text = re.sub(r"\s+", " ", content_text).strip() or "[系统消息]"
+                    content_text = _parse_system_message_content(raw_text)
                 elif local_type == 49:
                     parsed = _parse_app_message(raw_text)
                     render_type = str(parsed.get("renderType") or "text")
@@ -3957,13 +4189,7 @@ def list_chat_messages(
 
                 if local_type == 10000:
                     render_type = "system"
-                    if "revokemsg" in raw_text:
-                        content_text = "撤回了一条消息"
-                    else:
-                        import re
-
-                        content_text = re.sub(r"</?[_a-zA-Z0-9]+[^>]*>", "", raw_text)
-                        content_text = re.sub(r"\s+", " ", content_text).strip() or "[系统消息]"
+                    content_text = _parse_system_message_content(raw_text)
                 elif local_type == 49:
                     parsed = _parse_app_message(raw_text)
                     render_type = str(parsed.get("renderType") or "text")
@@ -4412,6 +4638,13 @@ def list_chat_messages(
         wcdb_display_names = {}
         wcdb_avatar_urls = {}
 
+    group_nicknames = _load_group_nickname_map(
+        account_dir=account_dir,
+        contact_db_path=contact_db_path,
+        chatroom_id=username,
+        sender_usernames=uniq_senders,
+    )
+
     for m in merged:
         # If appmsg doesn't provide sourcedisplayname, try mapping sourceusername to display name.
         if (not str(m.get("from") or "").strip()) and str(m.get("fromUsername") or "").strip():
@@ -4427,13 +4660,12 @@ def list_chat_messages(
         su = str(m.get("senderUsername") or "")
         if not su:
             continue
-        row = sender_contact_rows.get(su)
-        display_name = _pick_display_name(row, su)
-        if display_name == su:
-            wd = str(wcdb_display_names.get(su) or "").strip()
-            if wd and wd != su:
-                display_name = wd
-        m["senderDisplayName"] = display_name
+        m["senderDisplayName"] = _resolve_sender_display_name(
+            sender_username=su,
+            sender_contact_rows=sender_contact_rows,
+            wcdb_display_names=wcdb_display_names,
+            group_nicknames=group_nicknames,
+        )
         avatar_url = base_url + _avatar_url_unified(
             account_dir=account_dir,
             username=su,
@@ -4930,19 +5162,24 @@ async def _search_chat_messages_via_fts(
             username=username,
             local_avatar_usernames=local_avatar_usernames,
         )
+        group_nicknames = _load_group_nickname_map(
+            account_dir=account_dir,
+            contact_db_path=contact_db_path,
+            chatroom_id=username,
+            sender_usernames=[str(x.get("senderUsername") or "") for x in hits],
+        )
 
         for h in hits:
             su = str(h.get("senderUsername") or "").strip()
             h["conversationName"] = conv_name
             h["conversationAvatar"] = conv_avatar
             if su:
-                row = contact_rows.get(su)
-                display_name = _pick_display_name(row, su) if row is not None else (conv_name if su == username else su)
-                if display_name == su:
-                    wd = str(wcdb_display_names.get(su) or "").strip()
-                    if wd and wd != su:
-                        display_name = wd
-                h["senderDisplayName"] = display_name
+                h["senderDisplayName"] = _resolve_sender_display_name(
+                    sender_username=su,
+                    sender_contact_rows=contact_rows,
+                    wcdb_display_names=wcdb_display_names,
+                    group_nicknames=group_nicknames,
+                )
                 avatar_url = base_url + _avatar_url_unified(
                     account_dir=account_dir,
                     username=su,
@@ -4986,6 +5223,23 @@ async def _search_chat_messages_via_fts(
             wcdb_display_names = {}
             wcdb_avatar_urls = {}
 
+        group_senders_by_room: dict[str, list[str]] = {}
+        for h in hits:
+            cu = str(h.get("username") or "").strip()
+            su = str(h.get("senderUsername") or "").strip()
+            if (not cu.endswith("@chatroom")) or (not su):
+                continue
+            group_senders_by_room.setdefault(cu, []).append(su)
+
+        group_nickname_cache: dict[str, dict[str, str]] = {}
+        for cu, senders in group_senders_by_room.items():
+            group_nickname_cache[cu] = _load_group_nickname_map(
+                account_dir=account_dir,
+                contact_db_path=contact_db_path,
+                chatroom_id=cu,
+                sender_usernames=senders,
+            )
+
         for h in hits:
             cu = str(h.get("username") or "").strip()
             su = str(h.get("senderUsername") or "").strip()
@@ -5003,13 +5257,12 @@ async def _search_chat_messages_via_fts(
             )
             h["conversationAvatar"] = conv_avatar
             if su:
-                row = contact_rows.get(su)
-                display_name = _pick_display_name(row, su) if row is not None else (conv_name if su == cu else su)
-                if display_name == su:
-                    wd = str(wcdb_display_names.get(su) or "").strip()
-                    if wd and wd != su:
-                        display_name = wd
-                h["senderDisplayName"] = display_name
+                h["senderDisplayName"] = _resolve_sender_display_name(
+                    sender_username=su,
+                    sender_contact_rows=contact_rows,
+                    wcdb_display_names=wcdb_display_names,
+                    group_nicknames=group_nickname_cache.get(cu, {}),
+                )
                 avatar_url = base_url + _avatar_url_unified(
                     account_dir=account_dir,
                     username=su,
@@ -5272,13 +5525,23 @@ async def search_chat_messages(
         contact_rows = _load_contact_rows(contact_db_path, uniq_usernames)
         conv_row = contact_rows.get(username)
         conv_name = _pick_display_name(conv_row, username)
+        group_nicknames = _load_group_nickname_map(
+            account_dir=account_dir,
+            contact_db_path=contact_db_path,
+            chatroom_id=username,
+            sender_usernames=[str(x.get("senderUsername") or "") for x in page],
+        )
 
         for h in page:
             su = str(h.get("senderUsername") or "").strip()
             h["conversationName"] = conv_name
             if su:
-                row = contact_rows.get(su)
-                h["senderDisplayName"] = _pick_display_name(row, su) if row is not None else (conv_name if su == username else su)
+                h["senderDisplayName"] = _resolve_sender_display_name(
+                    sender_username=su,
+                    sender_contact_rows=contact_rows,
+                    wcdb_display_names={},
+                    group_nicknames=group_nicknames,
+                )
 
         return {
             "status": "success",
@@ -5360,6 +5623,23 @@ async def search_chat_messages(
     )
     contact_rows = _load_contact_rows(contact_db_path, uniq_contacts)
 
+    group_senders_by_room: dict[str, list[str]] = {}
+    for h in page:
+        cu = str(h.get("username") or "").strip()
+        su = str(h.get("senderUsername") or "").strip()
+        if (not cu.endswith("@chatroom")) or (not su):
+            continue
+        group_senders_by_room.setdefault(cu, []).append(su)
+
+    group_nickname_cache: dict[str, dict[str, str]] = {}
+    for cu, senders in group_senders_by_room.items():
+        group_nickname_cache[cu] = _load_group_nickname_map(
+            account_dir=account_dir,
+            contact_db_path=contact_db_path,
+            chatroom_id=cu,
+            sender_usernames=senders,
+        )
+
     for h in page:
         cu = str(h.get("username") or "").strip()
         su = str(h.get("senderUsername") or "").strip()
@@ -5367,8 +5647,12 @@ async def search_chat_messages(
         conv_name = _pick_display_name(crow, cu) if cu else ""
         h["conversationName"] = conv_name or cu
         if su:
-            row = contact_rows.get(su)
-            h["senderDisplayName"] = _pick_display_name(row, su) if row is not None else (conv_name if su == cu else su)
+            h["senderDisplayName"] = _resolve_sender_display_name(
+                sender_username=su,
+                sender_contact_rows=contact_rows,
+                wcdb_display_names={},
+                group_nicknames=group_nickname_cache.get(cu, {}),
+            )
 
     return {
         "status": "success",

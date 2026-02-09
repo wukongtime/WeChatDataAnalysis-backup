@@ -688,6 +688,83 @@ def _lookup_resource_md5_by_server_id(account_dir_str: str, server_id: int, want
             pass
 
 
+@lru_cache(maxsize=4096)
+def _lookup_image_md5_by_server_id_from_messages(account_dir_str: str, server_id: int, username: str) -> str:
+    account_dir_str = str(account_dir_str or "").strip()
+    username = str(username or "").strip()
+    if not account_dir_str or not username:
+        return ""
+
+    try:
+        sid = int(server_id or 0)
+    except Exception:
+        sid = 0
+    if not sid:
+        return ""
+
+    try:
+        chat_hash = hashlib.md5(username.encode()).hexdigest()
+    except Exception:
+        return ""
+    if not chat_hash:
+        return ""
+
+    table_name = f"Msg_{chat_hash}"
+    account_dir = Path(account_dir_str)
+
+    db_paths: list[Path] = []
+    try:
+        for p in account_dir.glob("message_*.db"):
+            try:
+                if p.is_file():
+                    db_paths.append(p)
+            except Exception:
+                continue
+    except Exception:
+        db_paths = []
+
+    if not db_paths:
+        return ""
+    db_paths.sort(key=lambda p: p.name)
+
+    for db_path in db_paths:
+        try:
+            conn = sqlite3.connect(str(db_path))
+        except Exception:
+            continue
+
+        try:
+            row = conn.execute(
+                f"SELECT local_type, packed_info_data FROM {table_name} "
+                "WHERE server_id = ? ORDER BY create_time DESC LIMIT 1",
+                (sid,),
+            ).fetchone()
+        except Exception:
+            row = None
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        if not row:
+            continue
+
+        try:
+            local_type = int(row[0] or 0)
+        except Exception:
+            local_type = 0
+        if local_type != 3:
+            continue
+
+        md5 = _extract_md5_from_packed_info(row[1])
+        md5_norm = str(md5 or "").strip().lower()
+        if _is_valid_md5(md5_norm):
+            return md5_norm
+
+    return ""
+
+
 def _is_safe_http_url(url: str) -> bool:
     u = str(url or "").strip()
     if not u:
@@ -1062,6 +1139,12 @@ async def get_chat_image(
         resource_md5 = _lookup_resource_md5_by_server_id(str(account_dir), int(server_id), want_local_type=3)
         if resource_md5:
             md5 = resource_md5
+        elif username:
+            md5_from_msg = _lookup_image_md5_by_server_id_from_messages(
+                str(account_dir), int(server_id), str(username)
+            )
+            if md5_from_msg:
+                md5 = md5_from_msg
 
     # md5 模式：优先从解密资源目录读取（更快）
     if md5:
