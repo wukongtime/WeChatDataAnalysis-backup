@@ -1,7 +1,7 @@
 <template>
   <div class="h-screen flex overflow-hidden" style="background-color: #EDEDED">
-    <!-- 左侧边栏 -->
-    <div class="border-r border-gray-200 flex flex-col" style="background-color: #e8e7e7; width: 60px; min-width: 60px; max-width: 60px">
+    <!-- Left sidebar rail is provided by `frontend/app.vue` -->
+    <div v-if="false" class="border-r border-gray-200 flex flex-col" style="background-color: #e8e7e7; width: 60px; min-width: 60px; max-width: 60px">
       <div class="flex-1 flex flex-col justify-start pt-0 gap-0">
         <!-- 头像（类似微信侧边栏） -->
         <div class="w-full h-[60px] flex items-center justify-center">
@@ -118,8 +118,7 @@
           @click="toggleRealtimeFromSidebar"
         >
           <div
-            class="w-[var(--sidebar-rail-btn)] h-[var(--sidebar-rail-btn)] rounded-md flex items-center justify-center transition-colors"
-            :class="realtimeEnabled ? 'bg-[#DFF5E7]' : 'bg-transparent group-hover:bg-[#E1E1E1]'"
+            class="w-[var(--sidebar-rail-btn)] h-[var(--sidebar-rail-btn)] rounded-md flex items-center justify-center transition-colors bg-transparent group-hover:bg-[#E1E1E1]"
           >
             <svg class="w-[var(--sidebar-rail-icon)] h-[var(--sidebar-rail-icon)]" :class="realtimeEnabled ? 'text-[#07b75b]' : 'text-[#5d5d5d]'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M13 2L4 14h7l-1 8 9-12h-7z" />
@@ -130,7 +129,7 @@
         <!-- 隐私模式按钮 -->
         <div
           class="w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
-          @click="privacyMode = !privacyMode"
+          @click="togglePrivacyMode"
           :title="privacyMode ? '关闭隐私模式' : '开启隐私模式'"
         >
           <div
@@ -144,11 +143,10 @@
           </div>
         </div>
 
-        <!-- 设置按钮（仅桌面端） -->
+        <!-- 设置按钮 -->
         <div
-          v-if="isDesktopEnv"
           class="w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
-          @click="openDesktopSettings"
+          @click="goSettings"
           title="设置"
         >
           <div class="w-[var(--sidebar-rail-btn)] h-[var(--sidebar-rail-btn)] rounded-md flex items-center justify-center transition-colors bg-transparent group-hover:bg-[#E1E1E1]">
@@ -281,8 +279,6 @@
 
     <!-- 右侧聊天区域 -->
     <div class="flex-1 flex flex-col min-h-0" style="background-color: #EDEDED">
-      <!-- 桌面端将自绘标题栏放到右侧区域，避免遮挡左侧栏（更接近原生微信布局） -->
-      <DesktopTitleBar />
       <div class="flex-1 flex min-h-0">
       <!-- 聊天主区域 -->
       <div class="flex-1 flex flex-col min-h-0 min-w-0">
@@ -1728,108 +1724,12 @@
     </div>
   </div>
 
-  <!-- 桌面端设置弹窗 -->
-  <div
-    v-if="desktopSettingsOpen"
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-    @click.self="closeDesktopSettings"
-  >
-    <div class="w-full max-w-md bg-white rounded-lg shadow-lg">
-      <div class="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
-        <div class="text-base font-medium text-gray-900">设置</div>
-        <button
-          type="button"
-          class="text-gray-500 hover:text-gray-700"
-          @click="closeDesktopSettings"
-          title="关闭"
-        >
-          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
-
-      <div class="px-5 py-4 space-y-4">
-        <div class="flex items-center justify-between gap-4">
-          <div class="min-w-0">
-            <div class="text-sm font-medium text-gray-900">开机自启动</div>
-            <div class="text-xs text-gray-500">系统登录后自动启动桌面端</div>
-          </div>
-          <input
-            type="checkbox"
-            class="h-4 w-4"
-            :checked="desktopAutoLaunch"
-            :disabled="desktopAutoLaunchLoading"
-            @change="onDesktopAutoLaunchToggle"
-          />
-        </div>
-        <div v-if="desktopAutoLaunchError" class="text-xs text-red-600 whitespace-pre-wrap">
-          {{ desktopAutoLaunchError }}
-        </div>
-
-        <div class="flex items-center justify-between gap-4">
-          <div class="min-w-0">
-            <div class="text-sm font-medium text-gray-900">关闭窗口行为</div>
-            <div class="text-xs text-gray-500">点击关闭按钮时：默认最小化到托盘</div>
-          </div>
-          <select
-            class="text-sm px-2 py-1 rounded-md border border-gray-200"
-            :disabled="desktopCloseBehaviorLoading"
-            :value="desktopCloseBehavior"
-            @change="onDesktopCloseBehaviorChange"
-          >
-            <option value="tray">最小化到托盘</option>
-            <option value="exit">直接退出</option>
-          </select>
-        </div>
-        <div v-if="desktopCloseBehaviorError" class="text-xs text-red-600 whitespace-pre-wrap">
-          {{ desktopCloseBehaviorError }}
-        </div>
-
-        <div class="flex items-center justify-between gap-4">
-          <div class="min-w-0">
-            <div class="text-sm font-medium text-gray-900">启动后自动开启实时获取</div>
-            <div class="text-xs text-gray-500">进入聊天页后自动打开“实时开关”（默认关闭）</div>
-          </div>
-          <input
-            type="checkbox"
-            class="h-4 w-4"
-            :checked="desktopAutoRealtime"
-            @change="onDesktopAutoRealtimeToggle"
-          />
-        </div>
-
-        <div class="flex items-center justify-between gap-4">
-          <div class="min-w-0">
-            <div class="text-sm font-medium text-gray-900">有数据时默认进入聊天页</div>
-            <div class="text-xs text-gray-500">有已解密账号时，打开应用默认跳转到 /chat（默认关闭）</div>
-          </div>
-          <input
-            type="checkbox"
-            class="h-4 w-4"
-            :checked="desktopDefaultToChatWhenData"
-            @change="onDesktopDefaultToChatToggle"
-          />
-        </div>
-      </div>
-
-      <div class="px-5 py-4 border-t border-gray-200 flex items-center justify-end gap-2">
-        <button
-          type="button"
-          class="text-sm px-3 py-2 rounded-md bg-white border border-gray-200 hover:bg-gray-50"
-          @click="closeDesktopSettings"
-        >
-          关闭
-        </button>
-      </div>
-    </div>
-  </div>
-
   </div>
 </template>
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, defineComponent, h, toRaw } from 'vue'
+import { storeToRefs } from 'pinia'
 
 definePageMeta({
   key: 'chat'
@@ -1837,6 +1737,10 @@ definePageMeta({
 
 import { useApi } from '~/composables/useApi'
 import { parseTextWithEmoji } from '~/utils/wechat-emojis'
+import { DESKTOP_SETTING_AUTO_REALTIME_KEY, readLocalBoolSetting } from '~/utils/desktop-settings'
+import { useChatAccountsStore } from '~/stores/chatAccounts'
+import { useChatRealtimeStore } from '~/stores/chatRealtime'
+import { usePrivacyStore } from '~/stores/privacy'
 import wechatPcLogoUrl from '~/assets/images/wechat/WeChat-Icon-Logo.wine.svg'
 import zipIconUrl from '~/assets/images/wechat/zip.png'
 import pdfIconUrl from '~/assets/images/wechat/pdf.png'
@@ -1873,9 +1777,6 @@ useHead({
 })
 
 const route = useRoute()
-const isSnsRoute = computed(() => route.path?.startsWith('/sns'))
-const isContactsRoute = computed(() => route.path?.startsWith('/contacts'))
-const isWrappedRoute = computed(() => route.path?.startsWith('/wrapped'))
 
 const routeUsername = computed(() => {
   const raw = route.params.username
@@ -1896,25 +1797,9 @@ const contactProfileData = ref(null)
 let contactProfileHoverHideTimer = null
 
 // 隐私模式
-const privacyMode = ref(false)
-const PRIVACY_MODE_KEY = 'ui.privacy_mode'
-
-onMounted(() => {
-  if (!process.client) return
-  try {
-    privacyMode.value = localStorage.getItem(PRIVACY_MODE_KEY) === '1'
-  } catch {}
-})
-
-watch(
-  () => privacyMode.value,
-  (v) => {
-    if (!process.client) return
-    try {
-      localStorage.setItem(PRIVACY_MODE_KEY, v ? '1' : '0')
-    } catch {}
-  }
-)
+const privacyStore = usePrivacyStore()
+privacyStore.init()
+const { privacyMode } = storeToRefs(privacyStore)
 
 // 会话列表（中间栏）宽度（按物理像素 px 配置）：默认 295px，支持拖动调整并持久化
 const SESSION_LIST_WIDTH_KEY = 'ui.chat.session_list_width_physical'
@@ -2041,141 +1926,12 @@ onMounted(() => {
 
 // 桌面端设置（仅 Electron 环境可见）
 const isDesktopEnv = ref(false)
-const desktopSettingsOpen = ref(false)
-
-const DESKTOP_SETTING_AUTO_REALTIME_KEY = 'desktop.settings.autoRealtime'
-const DESKTOP_SETTING_DEFAULT_TO_CHAT_KEY = 'desktop.settings.defaultToChatWhenData'
 
 const desktopAutoRealtime = ref(false)
-const desktopDefaultToChatWhenData = ref(false)
-
-const desktopAutoLaunch = ref(false)
-const desktopAutoLaunchLoading = ref(false)
-const desktopAutoLaunchError = ref('')
-
-const desktopCloseBehavior = ref('tray') // tray | exit
-const desktopCloseBehaviorLoading = ref(false)
-const desktopCloseBehaviorError = ref('')
-
-const readLocalBool = (key) => {
-  if (!process.client) return false
-  try {
-    return localStorage.getItem(key) === 'true'
-  } catch {
-    return false
-  }
-}
-
-const writeLocalBool = (key, value) => {
-  if (!process.client) return
-  try {
-    localStorage.setItem(key, value ? 'true' : 'false')
-  } catch {}
-}
 
 // 尽量早读本地设置，避免首次加载联系人时拿不到 autoRealtime 选项
 if (process.client) {
-  desktopAutoRealtime.value = readLocalBool(DESKTOP_SETTING_AUTO_REALTIME_KEY)
-  desktopDefaultToChatWhenData.value = readLocalBool(DESKTOP_SETTING_DEFAULT_TO_CHAT_KEY)
-}
-
-const refreshDesktopAutoLaunch = async () => {
-  if (!process.client || typeof window === 'undefined') return
-  if (!window.wechatDesktop?.getAutoLaunch) return
-  desktopAutoLaunchLoading.value = true
-  desktopAutoLaunchError.value = ''
-  try {
-    desktopAutoLaunch.value = !!(await window.wechatDesktop.getAutoLaunch())
-  } catch (e) {
-    desktopAutoLaunchError.value = e?.message || '读取开机自启动状态失败'
-  } finally {
-    desktopAutoLaunchLoading.value = false
-  }
-}
-
-const setDesktopAutoLaunch = async (enabled) => {
-  if (!process.client || typeof window === 'undefined') return
-  if (!window.wechatDesktop?.setAutoLaunch) return
-  desktopAutoLaunchLoading.value = true
-  desktopAutoLaunchError.value = ''
-  try {
-    desktopAutoLaunch.value = !!(await window.wechatDesktop.setAutoLaunch(!!enabled))
-  } catch (e) {
-    desktopAutoLaunchError.value = e?.message || '设置开机自启动失败'
-    await refreshDesktopAutoLaunch()
-  } finally {
-    desktopAutoLaunchLoading.value = false
-  }
-}
-
-const refreshDesktopCloseBehavior = async () => {
-  if (!process.client || typeof window === 'undefined') return
-  if (!window.wechatDesktop?.getCloseBehavior) return
-  desktopCloseBehaviorLoading.value = true
-  desktopCloseBehaviorError.value = ''
-  try {
-    const v = await window.wechatDesktop.getCloseBehavior()
-    desktopCloseBehavior.value = (String(v || '').toLowerCase() === 'exit') ? 'exit' : 'tray'
-  } catch (e) {
-    desktopCloseBehaviorError.value = e?.message || '读取关闭窗口行为失败'
-  } finally {
-    desktopCloseBehaviorLoading.value = false
-  }
-}
-
-const setDesktopCloseBehavior = async (behavior) => {
-  if (!process.client || typeof window === 'undefined') return
-  if (!window.wechatDesktop?.setCloseBehavior) return
-  const desired = (String(behavior || '').toLowerCase() === 'exit') ? 'exit' : 'tray'
-  desktopCloseBehaviorLoading.value = true
-  desktopCloseBehaviorError.value = ''
-  try {
-    const v = await window.wechatDesktop.setCloseBehavior(desired)
-    desktopCloseBehavior.value = (String(v || '').toLowerCase() === 'exit') ? 'exit' : 'tray'
-  } catch (e) {
-    desktopCloseBehaviorError.value = e?.message || '设置关闭窗口行为失败'
-    await refreshDesktopCloseBehavior()
-  } finally {
-    desktopCloseBehaviorLoading.value = false
-  }
-}
-
-const openDesktopSettings = async () => {
-  desktopSettingsOpen.value = true
-  await refreshDesktopAutoLaunch()
-  await refreshDesktopCloseBehavior()
-}
-
-const closeDesktopSettings = () => {
-  desktopSettingsOpen.value = false
-}
-
-const onDesktopAutoLaunchToggle = async (ev) => {
-  const checked = !!ev?.target?.checked
-  await setDesktopAutoLaunch(checked)
-}
-
-const onDesktopCloseBehaviorChange = async (ev) => {
-  const v = String(ev?.target?.value || '').trim()
-  await setDesktopCloseBehavior(v)
-}
-
-const onDesktopAutoRealtimeToggle = async (ev) => {
-  const checked = !!ev?.target?.checked
-  desktopAutoRealtime.value = checked
-  writeLocalBool(DESKTOP_SETTING_AUTO_REALTIME_KEY, checked)
-  if (checked) {
-    // 开启后尝试立即启用实时模式（不可用则静默忽略）
-    try {
-      await tryEnableRealtimeAuto()
-    } catch {}
-  }
-}
-
-const onDesktopDefaultToChatToggle = (ev) => {
-  const checked = !!ev?.target?.checked
-  desktopDefaultToChatWhenData.value = checked
-  writeLocalBool(DESKTOP_SETTING_DEFAULT_TO_CHAT_KEY, checked)
+  desktopAutoRealtime.value = readLocalBoolSetting(DESKTOP_SETTING_AUTO_REALTIME_KEY, false)
 }
 
 // 联系人数据
@@ -2185,45 +1941,22 @@ const searchQuery = ref('')
 
 const isLoadingContacts = ref(false)
 const contactsError = ref('')
-const selectedAccount = ref(null)
+const chatAccounts = useChatAccountsStore()
+const { selectedAccount, accounts: availableAccounts } = storeToRefs(chatAccounts)
 
-const availableAccounts = ref([])
+// Realtime is a global switch (SidebarRail) and only affects the selected account.
+const realtimeStore = useChatRealtimeStore()
+const {
+  enabled: realtimeEnabled,
+  toggleSeq: realtimeToggleSeq,
+  lastToggleAction: realtimeLastToggleAction,
+  changeSeq: realtimeChangeSeq,
+} = storeToRefs(realtimeStore)
 
-const sidebarMediaBase = process.client ? 'http://localhost:8000' : ''
-
-const selfAvatarUrl = computed(() => {
-  const acc = String(selectedAccount.value || '').trim()
-  if (!acc) return ''
-  return `${sidebarMediaBase}/api/chat/avatar?account=${encodeURIComponent(acc)}&username=${encodeURIComponent(acc)}`
-})
-
-const goSns = async () => {
-  await navigateTo('/sns')
-}
-
-const goContacts = async () => {
-  await navigateTo('/contacts')
-}
-
-const goWrapped = async () => {
-  await navigateTo('/wrapped')
-}
-
-// 实时更新（WCDB DLL + db_storage watcher）
-const realtimeEnabled = ref(false)
-const realtimeAvailable = ref(false)
-const realtimeChecking = ref(false)
-const realtimeStatusInfo = ref(null)
-const realtimeStatusError = ref('')
-let realtimeEventSource = null
 let realtimeRefreshFuture = null
 let realtimeRefreshQueued = false
 let realtimeSessionsRefreshFuture = null
 let realtimeSessionsRefreshQueued = false
-let realtimeFullSyncFuture = null
-let realtimeFullSyncQueued = false
-let realtimeFullSyncPriority = ''
-let realtimeChangeDebounceTimer = null
 
 const allMessages = ref({})
 
@@ -3192,11 +2925,6 @@ const onMessageAvatarMouseLeave = () => {
 
 const onContactCardMouseEnter = () => {
   clearContactProfileHoverHideTimer()
-}
-
-const toggleRealtimeFromSidebar = async () => {
-  if (realtimeChecking.value) return
-  await toggleRealtime()
 }
 
 watch(exportModalOpen, (open) => {
@@ -4343,23 +4071,18 @@ onMounted(() => {
 })
 
 const loadContacts = async () => {
-  const api = useApi()
   isLoadingContacts.value = true
   contactsError.value = ''
 
   try {
-    const accountsResp = await api.listChatAccounts()
-    const accounts = accountsResp?.accounts || []
-    availableAccounts.value = accounts
-    selectedAccount.value = selectedAccount.value || accountsResp?.default_account || accounts[0] || null
+    await chatAccounts.ensureLoaded()
 
     if (!selectedAccount.value) {
       contacts.value = []
       selectedContact.value = null
-      contactsError.value = accountsResp?.message || '未检测到已解密账号，请先解密数据库。'
+      contactsError.value = chatAccounts.error || '未检测到已解密账号，请先解密数据库。'
       return
     }
-
     await loadSessionsForSelectedAccount()
   } catch (e) {
     contacts.value = []
@@ -4512,49 +4235,6 @@ const queueRealtimeSessionsRefresh = () => {
       queueRealtimeSessionsRefresh()
     }
   })
-}
-
-const runRealtimeFullSync = async (priorityUsername) => {
-  if (!realtimeEnabled.value) return null
-  if (!process.client || typeof window === 'undefined') return null
-  if (!selectedAccount.value) return null
-
-  try {
-    const api = useApi()
-    return await api.syncChatRealtimeAll({
-      account: selectedAccount.value,
-      max_scan: 200,
-      priority_username: String(priorityUsername || '').trim(),
-      priority_max_scan: 600,
-      include_hidden: true,
-      include_official: true
-    })
-  } catch {
-    return null
-  }
-}
-
-const queueRealtimeFullSync = (priorityUsername) => {
-  const u = String(priorityUsername || '').trim()
-  if (u) realtimeFullSyncPriority = u
-
-  if (realtimeFullSyncFuture) {
-    realtimeFullSyncQueued = true
-    return realtimeFullSyncFuture
-  }
-
-  const priority = realtimeFullSyncPriority
-  realtimeFullSyncPriority = ''
-
-  realtimeFullSyncFuture = runRealtimeFullSync(priority).finally(() => {
-    realtimeFullSyncFuture = null
-    if (realtimeFullSyncQueued) {
-      realtimeFullSyncQueued = false
-      queueRealtimeFullSync(realtimeFullSyncPriority)
-    }
-  })
-
-  return realtimeFullSyncFuture
 }
 
 const onAccountChange = async () => {
@@ -5288,7 +4968,6 @@ onUnmounted(() => {
   highlightMessageTimer = null
   stopMessageSearchIndexPolling()
   stopExportPolling()
-  stopRealtimeStream()
 })
 
 const dedupeMessagesById = (list) => {
@@ -5405,46 +5084,6 @@ const refreshSelectedMessages = async () => {
   await loadMessages({ username: selectedContact.value.username, reset: true })
 }
 
-const fetchRealtimeStatus = async () => {
-  if (!process.client) return
-  if (!selectedAccount.value) {
-    realtimeAvailable.value = false
-    realtimeStatusInfo.value = null
-    realtimeStatusError.value = ''
-    return
-  }
-
-  const api = useApi()
-  realtimeChecking.value = true
-  try {
-    const resp = await api.getChatRealtimeStatus({ account: selectedAccount.value })
-    realtimeAvailable.value = !!resp?.available
-    realtimeStatusInfo.value = resp?.realtime || null
-    realtimeStatusError.value = ''
-  } catch (e) {
-    realtimeAvailable.value = false
-    realtimeStatusInfo.value = null
-    realtimeStatusError.value = e?.message || '实时状态获取失败'
-  } finally {
-    realtimeChecking.value = false
-  }
-}
-
-const stopRealtimeStream = () => {
-  if (realtimeEventSource) {
-    try {
-      realtimeEventSource.close()
-    } catch {}
-    realtimeEventSource = null
-  }
-  if (realtimeChangeDebounceTimer) {
-    try {
-      clearTimeout(realtimeChangeDebounceTimer)
-    } catch {}
-    realtimeChangeDebounceTimer = null
-  }
-}
-
 const refreshRealtimeIncremental = async () => {
   if (!realtimeEnabled.value) return
   if (!selectedAccount.value) return
@@ -5516,114 +5155,45 @@ const queueRealtimeRefresh = () => {
   })
 }
 
-const queueRealtimeChange = () => {
-  if (!process.client || typeof window === 'undefined') return
-  if (!realtimeEnabled.value) return
-  if (realtimeChangeDebounceTimer) return
-
-  // Debounce noisy db_storage change events to avoid hammering the backend.
-  realtimeChangeDebounceTimer = setTimeout(() => {
-    realtimeChangeDebounceTimer = null
-    queueRealtimeRefresh()
-    queueRealtimeSessionsRefresh()
-  }, 500)
-}
-
-const startRealtimeStream = () => {
-  stopRealtimeStream()
-  if (!process.client || typeof window === 'undefined') return
-  if (!realtimeEnabled.value) return
-  if (!selectedAccount.value) return
-  if (typeof EventSource === 'undefined') return
-
-  const base = 'http://localhost:8000'
-  const url = `${base}/api/chat/realtime/stream?account=${encodeURIComponent(String(selectedAccount.value))}`
-  try {
-    realtimeEventSource = new EventSource(url)
-  } catch (e) {
-    realtimeEventSource = null
-    return
-  }
-
-  realtimeEventSource.onmessage = (ev) => {
-    try {
-      const data = JSON.parse(String(ev.data || '{}'))
-      if (String(data?.type || '') === 'change') {
-        queueRealtimeChange()
-      }
-    } catch {}
-  }
-
-  realtimeEventSource.onerror = () => {
-    stopRealtimeStream()
-  }
-}
-
-const toggleRealtime = async (opts = {}) => {
-  const silent = !!opts?.silent
-  if (!process.client || typeof window === 'undefined') return
-  if (!selectedAccount.value) return
-
-  if (!realtimeEnabled.value) {
-    await fetchRealtimeStatus()
-    if (!realtimeAvailable.value) {
-      if (!silent) {
-        window.alert(realtimeStatusError.value || '实时模式不可用：缺少密钥或 db_storage 路径。')
-      }
-      return false
-    }
-    realtimeEnabled.value = true
-    startRealtimeStream()
-    queueRealtimeSessionsRefresh()
-    if (selectedContact.value?.username) {
-      await refreshSelectedMessages()
-    }
-    return true
-  }
-
-  // Turning off realtime: sync the latest WCDB rows into the decrypted sqlite DB first,
-  // otherwise the UI will fall back to an outdated decrypted snapshot.
-  realtimeEnabled.value = false
-  stopRealtimeStream()
-  try {
-    const api = useApi()
-    const u = String(selectedContact.value?.username || '').trim()
-    // Sync all sessions once before falling back to the decrypted snapshot.
-    // This keeps the sidebar session list consistent (e.g. new friends) after a refresh.
-    await api.syncChatRealtimeAll({
-      account: selectedAccount.value,
-      max_scan: 200,
-      priority_username: u,
-      priority_max_scan: 5000,
-      include_hidden: true,
-      include_official: true
-    })
-  } catch {}
-  await refreshSessionsForSelectedAccount({ sourceOverride: '' })
-  if (selectedContact.value?.username) {
-    await refreshSelectedMessages()
-  }
-  return true
-}
-
 const tryEnableRealtimeAuto = async () => {
   if (!process.client || typeof window === 'undefined') return
-  if (!isDesktopEnv.value) return
   if (!desktopAutoRealtime.value) return
   if (realtimeEnabled.value) return
   if (!selectedAccount.value) return
 
   try {
-    await toggleRealtime({ silent: true })
+    await realtimeStore.enable({ silent: true })
   } catch {}
 }
 
-watch(selectedAccount, async () => {
-  await fetchRealtimeStatus()
-  if (realtimeEnabled.value) {
-    startRealtimeStream()
+watch(realtimeChangeSeq, () => {
+  queueRealtimeRefresh()
+  queueRealtimeSessionsRefresh()
+})
+
+watch(realtimeToggleSeq, async () => {
+  const action = String(realtimeLastToggleAction.value || '')
+  if (action === 'enabled') {
+    await refreshSessionsForSelectedAccount({ sourceOverride: 'realtime' })
+    if (selectedContact.value?.username) {
+      await refreshSelectedMessages()
+    }
+    return
+  }
+  if (action === 'disabled') {
+    await refreshSessionsForSelectedAccount({ sourceOverride: '' })
+    if (selectedContact.value?.username) {
+      await refreshSelectedMessages()
+    }
   }
 })
+
+watch(
+  () => selectedContact.value?.username,
+  (u) => {
+    realtimeStore.setPriorityUsername(u || '')
+  }
+)
 
 watch(messageTypeFilter, async (next, prev) => {
   if (String(next || '') === String(prev || '')) return
