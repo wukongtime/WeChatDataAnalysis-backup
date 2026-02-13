@@ -47,31 +47,81 @@
                 </div>
 
                 <div
-                  v-if="post.contentDesc"
-                  class="mt-1 text-sm text-gray-900 leading-6 whitespace-pre-wrap break-words"
-                  :class="{ 'privacy-blur': privacyMode }"
+                    v-if="post.contentDesc"
+                    class="mt-1 text-sm text-gray-900 leading-6 whitespace-pre-wrap break-words"
+                    :class="{ 'privacy-blur': privacyMode }"
                 >
                   {{ post.contentDesc }}
                 </div>
 
-                <div v-if="post.media && post.media.length > 0" class="mt-2" :class="{ 'privacy-blur': privacyMode }">
+                <div v-if="post.type === 3" class="mt-2 max-w-[360px]" :class="{ 'privacy-blur': privacyMode }">
+                  <a :href="post.contentUrl" target="_blank" class="block bg-gray-100 p-2 rounded-sm border border-gray-200 no-underline hover:bg-gray-200 transition-colors">
+                    <div class="flex items-center gap-3">
+                      <img
+                          v-if="post.contentUrl && !hasArticleThumbError(post.id)"
+                          :src="getArticleThumbProxyUrl(post.contentUrl)"
+                          class="w-12 h-12 object-cover flex-shrink-0 bg-white"
+                          alt=""
+                          @error="onArticleThumbError(post.id)"
+                      />
+                      <div v-else class="w-12 h-12 flex items-center justify-center bg-gray-200 text-gray-400 flex-shrink-0 text-xs">
+                        文章
+                      </div>
+
+                      <div class="flex-1 flex flex-col justify-between overflow-hidden h-12">
+                        <div class="text-[13px] text-gray-900 leading-tight line-clamp-2">{{ post.title }}</div>
+                      </div>
+                    </div>
+                    <div class="text-[11px] text-[#576b95] mt-1 pt-1 border-t border-gray-200/50">
+                      公众号文章分享
+                    </div>
+                  </a>
+                </div>
+
+                <div v-else-if="post.type === 28 && post.finderFeed && Object.keys(post.finderFeed).length > 0" class="mt-2 max-w-[360px]" :class="{ 'privacy-blur': privacyMode }">
+                  <div class="block bg-gray-100 p-2 rounded-sm border border-gray-200 no-underline hover:bg-gray-200 transition-colors">
+                    <!-- 浏览器没有看微信视频号的环境，暂时不进行跳转！！-->
+                    <div class="flex items-start gap-3">
+                      <div class="relative w-14 h-16 flex-shrink-0 bg-black overflow-hidden rounded-sm">
+                        <img
+                            v-if="post.finderFeed.thumbUrl"
+                            :src="getProxyExternalUrl(post.finderFeed.thumbUrl)"
+                            class="w-full h-full object-cover opacity-80"
+                            alt="finder cover"
+                        />
+                        <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                          <svg class="w-5 h-5 text-white/90" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                        </div>
+                      </div>
+                      <div class="flex-1 flex flex-col overflow-hidden">
+                        <div class="text-xs text-gray-500 truncate">{{ post.finderFeed.nickname }}</div>
+                        <div class="text-[13px] text-gray-900 leading-tight line-clamp-2 mt-[2px]">{{ post.finderFeed.desc || post.title }}</div>
+                      </div>
+                    </div>
+                    <div class="text-[11px] text-[#576b95] mt-1 pt-1 border-t border-gray-200/50">
+                      视频号 · 动态
+                    </div>
+                  </div>
+                </div>
+
+                <div v-else-if="post.media && post.media.length > 0" class="mt-2" :class="{ 'privacy-blur': privacyMode }">
                   <div v-if="post.media.length === 1" class="max-w-[360px]">
                     <div
-                      v-if="!hasMediaError(post.id, 0) && getMediaThumbSrc(post, post.media[0], 0)"
-                      class="inline-block cursor-pointer relative"
-                      @click.stop="onMediaClick(post, post.media[0], 0)"
+                        v-if="!hasMediaError(post.id, 0) && getMediaThumbSrc(post, post.media[0], 0)"
+                        class="inline-block cursor-pointer relative"
+                        @click.stop="onMediaClick(post, post.media[0], 0)"
                     >
                       <img
-                        :src="getMediaThumbSrc(post, post.media[0], 0)"
-                        class="rounded-sm max-h-[360px] object-cover"
-                        alt=""
-                        loading="lazy"
-                        referrerpolicy="no-referrer"
-                        @error="onMediaError(post.id, 0)"
+                          :src="getMediaThumbSrc(post, post.media[0], 0)"
+                          class="rounded-sm max-h-[360px] object-cover"
+                          alt=""
+                          loading="lazy"
+                          referrerpolicy="no-referrer"
+                          @error="onMediaError(post.id, 0)"
                       />
                       <div
-                        v-if="Number(post.media[0]?.type || 0) === 6"
-                        class="absolute inset-0 flex items-center justify-center pointer-events-none"
+                          v-if="Number(post.media[0]?.type || 0) === 6"
+                          class="absolute inset-0 flex items-center justify-center pointer-events-none"
                       >
                         <div class="w-12 h-12 rounded-full bg-black/45 flex items-center justify-center">
                           <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
@@ -79,11 +129,11 @@
                       </div>
                     </div>
                     <div
-                      v-else
-                      class="w-[240px] h-[180px] rounded-sm bg-gray-100 border border-gray-200 flex items-center justify-center text-xs text-gray-400"
-                      title="图片加载失败"
-                      @click.stop="onMediaClick(post, post.media[0], 0)"
-                      style="cursor: pointer;"
+                        v-else
+                        class="w-[240px] h-[180px] rounded-sm bg-gray-100 border border-gray-200 flex items-center justify-center text-xs text-gray-400"
+                        title="图片加载失败"
+                        @click.stop="onMediaClick(post, post.media[0], 0)"
+                        style="cursor: pointer;"
                     >
                       图片加载失败
                     </div>
@@ -91,23 +141,22 @@
 
                   <div v-else class="grid grid-cols-3 gap-1 max-w-[360px]">
                     <div
-                      v-for="(m, idx) in post.media.slice(0, 9)"
-                      :key="idx"
-                      class="w-[116px] h-[116px] rounded-[2px] overflow-hidden bg-gray-100 border border-gray-200 flex items-center justify-center cursor-pointer relative"
-                      @click.stop="onMediaClick(post, m, idx)"
+                        v-for="(m, idx) in post.media.slice(0, 9)"
+                        :key="idx"
+                        class="w-[116px] h-[116px] rounded-[2px] overflow-hidden bg-gray-100 border border-gray-200 flex items-center justify-center cursor-pointer relative"
+                        @click.stop="onMediaClick(post, m, idx)"
                     >
                       <img
-                        v-if="!hasMediaError(post.id, idx) && getMediaThumbSrc(post, m, idx)"
-                        :src="getMediaThumbSrc(post, m, idx)"
-                        class="w-full h-full object-cover"
-                        alt=""
-                        loading="lazy"
-                        referrerpolicy="no-referrer"
-                        @error="onMediaError(post.id, idx)"
+                          v-if="!hasMediaError(post.id, idx) && getMediaThumbSrc(post, m, idx)"
+                          :src="getMediaThumbSrc(post, m, idx)"
+                          class="w-full h-full object-cover"
+                          alt=""
+                          loading="lazy"
+                          referrerpolicy="no-referrer"
+                          @error="onMediaError(post.id, idx)"
                       />
                       <span v-else class="text-[10px] text-gray-400">图片失败</span>
 
-                      <!-- 视频缩略图的播放提示 -->
                       <div v-if="Number(m?.type || 0) === 6" class="absolute inset-0 flex items-center justify-center pointer-events-none">
                         <div class="w-10 h-10 rounded-full bg-black/45 flex items-center justify-center">
                           <svg class="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
@@ -420,6 +469,21 @@ const mediaErrorKey = (postId, idx) => `${String(postId || '')}:${String(idx || 
 const hasMediaError = (postId, idx) => !!mediaErrors.value[mediaErrorKey(postId, idx)]
 const onMediaError = (postId, idx) => {
   mediaErrors.value[mediaErrorKey(postId, idx)] = true
+}
+
+const articleThumbErrors = ref({})
+
+const hasArticleThumbError = (postId) => !!articleThumbErrors.value[postId]
+
+const onArticleThumbError = (postId) => {
+  articleThumbErrors.value[postId] = true
+}
+
+// （原有的函数保持不变）
+const getArticleThumbProxyUrl = (contentUrl) => {
+  const u = String(contentUrl || '').trim()
+  if (!u) return ''
+  return `${mediaBase}/api/sns/article_thumb?url=${encodeURIComponent(u)}`
 }
 
 // Right-click context menu (copy text / JSON) to help debug SNS parsing issues.
@@ -954,4 +1018,13 @@ onUnmounted(() => {
   document.removeEventListener('click', onGlobalClick)
   document.removeEventListener('keydown', onGlobalKeyDown)
 })
+
+const getProxyExternalUrl = (url) => {
+  // 目前难以计算enc，代理获取封面图（thumbnail）
+  const u = String(url || '').trim()
+  if (!u) return ''
+  return `${mediaBase}/api/chat/media/proxy_image?url=${encodeURIComponent(u)}`
+}
+
+
 </script>
