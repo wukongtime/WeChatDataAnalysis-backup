@@ -570,11 +570,11 @@ const getSnsMediaUrl = (post, m, idx, rawUrl) => {
         const mid = String(m?.id || '').trim()
         if (mid) parts.set('media_id', mid)
 
-        // const mtype = String(m?.type || '').trim()
-        // if (mtype) parts.set('media_type', mtype)
-
         const postType = String(post?.type || '1').trim()
         if (postType) parts.set('post_type', postType)
+
+        const mediaType = String(m?.type || '2').trim()
+        if (mediaType) parts.set('media_type', mediaType)
 
 
         if (md5) parts.set('md5', md5)
