@@ -5,8 +5,14 @@
       <div class="flex-1 overflow-auto min-h-0 bg-white" @scroll="onScroll">
 	        <div class="max-w-2xl mx-auto px-4 py-4">
             <div class="relative w-full mb-12 -mt-4 bg-white">
-              <div class="h-64 w-full bg-[#333333] object-cover"></div>
-
+              <div class="h-64 w-full bg-[#333333] relative overflow-hidden">
+                <img
+                    v-if="coverData && coverData.media && coverData.media.length > 0"
+                    :src="getSnsMediaUrl(coverData, coverData.media[0], 0, coverData.media[0].url)"
+                    class="w-full h-full object-cover"
+                    alt="朋友圈封面"
+                />
+              </div>
               <div class="absolute right-4 -bottom-6 flex items-end gap-4">
                 <div class="text-white font-bold text-xl mb-7 drop-shadow-md">
                   {{ selfInfo.nickname || '获取中...' }}
@@ -26,9 +32,14 @@
                 </div>
               </div>
             </div>
-	          <div v-if="error" class="text-sm text-red-500 whitespace-pre-wrap py-2">{{ error }}</div>
-	          <div v-else-if="isLoading && posts.length === 0" class="text-sm text-gray-500 py-2">加载中…</div>
-	          <div v-else-if="posts.length === 0" class="text-sm text-gray-500 py-2">暂无朋友圈数据</div>
+            <div v-if="error" class="text-sm text-red-500 whitespace-pre-wrap py-4 text-center">{{ error }}</div>
+
+            <div v-else-if="isLoading && posts.length === 0" class="flex flex-col items-center justify-center py-16">
+              <div class="w-8 h-8 border-[3px] border-gray-200 border-t-[#576b95] rounded-full animate-spin"></div>
+              <div class="mt-4 text-sm text-gray-400">正在前往朋友圈...</div>
+            </div>
+
+            <div v-else-if="posts.length === 0" class="text-sm text-gray-400 py-16 text-center">暂无朋友圈数据</div>
 
 
 	          <div v-for="post in posts" :key="post.id" class="bg-white rounded-sm px-4 py-4 mb-3">
@@ -326,6 +337,8 @@ const posts = ref([])
 const hasMore = ref(true)
 const isLoading = ref(false)
 const error = ref('')
+
+const coverData = ref(null)
 
 const pageSize = 20
 
@@ -782,10 +795,12 @@ const loadPosts = async ({ reset }) => {
       offset
     })
     const items = resp?.timeline || []
+
     if (reset) {
-      posts.value = items
+      posts.value = items.filter(p => p.type !== 7)
+      coverData.value = resp?.cover || null
     } else {
-      posts.value = [...posts.value, ...items]
+      posts.value = [...posts.value, ...items.filter(p => p.type !== 7)]
     }
     hasMore.value = !!resp?.hasMore
   } catch (e) {
