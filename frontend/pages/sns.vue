@@ -570,14 +570,13 @@ const getSnsMediaUrl = (post, m, idx, rawUrl) => {
         const mid = String(m?.id || '').trim()
         if (mid) parts.set('media_id', mid)
 
-        const mtype = String(m?.type || '').trim()
-        if (mtype) parts.set('media_type', mtype)
+        // const mtype = String(m?.type || '').trim()
+        // if (mtype) parts.set('media_type', mtype)
 
-        // if (pick) parts.set('pick', pick)
-        // if (!pick && snsAvoidOtherPicked.value) {
-        //   parts.set('avoid_picked', '1')
-        //   parts.set('pv', String(snsMediaOverrideRev.value || '0'))
-        // }
+        const postType = String(post?.type || '1').trim()
+        if (postType) parts.set('post_type', postType)
+
+
         if (md5) parts.set('md5', md5)
         // Bump this when changing backend matching logic to avoid stale cached wrong images.
         parts.set('v', '7')
