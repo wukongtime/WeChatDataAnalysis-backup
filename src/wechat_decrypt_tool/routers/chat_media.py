@@ -1019,6 +1019,171 @@ async def proxy_image(url: str):
     return resp
 
 
+def _origin_favicon_url(page_url: str) -> str:
+    """Best-effort favicon URL for a given page URL (origin + /favicon.ico)."""
+    u = str(page_url or "").strip()
+    if not u:
+        return ""
+    try:
+        p = urlparse(u)
+    except Exception:
+        return ""
+    if not p.scheme or not p.netloc:
+        return ""
+    return f"{p.scheme}://{p.netloc}/favicon.ico"
+
+
+def _resolve_final_url_for_favicon(page_url: str) -> str:
+    """Resolve final URL for redirects (used for favicon host inference)."""
+    u = str(page_url or "").strip()
+    if not u:
+        return ""
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    # Prefer HEAD (no body). Some hosts reject HEAD; fall back to GET+stream.
+    try:
+        r = requests.head(u, headers=headers, timeout=10, allow_redirects=True)
+        try:
+            final = str(getattr(r, "url", "") or "").strip()
+            return final or u
+        finally:
+            try:
+                r.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    try:
+        r = requests.get(u, headers=headers, timeout=10, allow_redirects=True, stream=True)
+        try:
+            final = str(getattr(r, "url", "") or "").strip()
+            return final or u
+        finally:
+            try:
+                r.close()
+            except Exception:
+                pass
+    except Exception:
+        return u
+
+
+@router.get("/api/chat/media/favicon", summary="获取网站 favicon（用于链接卡片来源头像）")
+async def get_favicon(url: str):
+    page_url = html.unescape(str(url or "")).strip()
+    if not page_url:
+        raise HTTPException(status_code=400, detail="Missing url.")
+    if not _is_safe_http_url(page_url):
+        raise HTTPException(status_code=400, detail="Invalid url (only public http/https allowed).")
+
+    # Resolve redirects first (e.g. b23.tv -> www.bilibili.com), so cached favicons are hit early.
+    final_url = _resolve_final_url_for_favicon(page_url)
+    candidates: list[str] = []
+    for u in (final_url, page_url):
+        fav = _origin_favicon_url(u)
+        if fav and fav not in candidates:
+            candidates.append(fav)
+
+    proxy_account = "_favicon"
+    max_bytes = 512 * 1024  # favicons should be small; protect against huge downloads.
+
+    for cand in candidates:
+        if not _is_safe_http_url(cand):
+            continue
+        source_url = normalize_avatar_source_url(cand)
+
+        cache_entry = get_avatar_cache_url_entry(proxy_account, source_url) if is_avatar_cache_enabled() else None
+        cache_file = avatar_cache_entry_file_exists(proxy_account, cache_entry)
+        if cache_entry and cache_file and avatar_cache_entry_is_fresh(cache_entry):
+            logger.info(f"[avatar_cache_hit] kind=favicon account={proxy_account} url={source_url}")
+            touch_avatar_cache_entry(proxy_account, cache_key_for_avatar_url(source_url))
+            headers = build_avatar_cache_response_headers(cache_entry)
+            return FileResponse(
+                str(cache_file),
+                media_type=str(cache_entry.get("media_type") or "application/octet-stream"),
+                headers=headers,
+            )
+
+        # Download favicon bytes (best-effort)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        }
+        r = None
+        try:
+            r = requests.get(source_url, headers=headers, timeout=20, stream=True, allow_redirects=True)
+            if int(getattr(r, "status_code", 0) or 0) != 200:
+                continue
+
+            ct = str((getattr(r, "headers", {}) or {}).get("Content-Type") or "").strip()
+            try:
+                cl = int((getattr(r, "headers", {}) or {}).get("content-length") or 0)
+            except Exception:
+                cl = 0
+            if cl and cl > max_bytes:
+                raise HTTPException(status_code=413, detail="Remote favicon too large.")
+
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in r.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(status_code=413, detail="Remote favicon too large.")
+            data = b"".join(chunks)
+        except HTTPException:
+            raise
+        except Exception:
+            continue
+        finally:
+            if r is not None:
+                try:
+                    r.close()
+                except Exception:
+                    pass
+
+        if not data:
+            continue
+
+        payload, media_type, _ext = _detect_media_type_and_ext(data)
+        if media_type == "application/octet-stream" and ct:
+            try:
+                mt = ct.split(";")[0].strip()
+                if mt.startswith("image/"):
+                    media_type = mt
+            except Exception:
+                pass
+
+        if not str(media_type or "").startswith("image/"):
+            continue
+
+        if is_avatar_cache_enabled():
+            entry, out_path = write_avatar_cache_payload(
+                proxy_account,
+                source_kind="url",
+                source_url=source_url,
+                payload=payload,
+                media_type=media_type,
+                ttl_seconds=AVATAR_CACHE_TTL_SECONDS,
+            )
+            if entry and out_path:
+                logger.info(f"[avatar_cache_download] kind=favicon account={proxy_account} url={source_url}")
+                headers = build_avatar_cache_response_headers(entry)
+                return FileResponse(str(out_path), media_type=media_type, headers=headers)
+
+        resp = Response(content=payload, media_type=media_type)
+        resp.headers["Cache-Control"] = f"public, max-age={AVATAR_CACHE_TTL_SECONDS}"
+        return resp
+
+    raise HTTPException(status_code=404, detail="favicon not found.")
+
+
 @router.post("/api/chat/media/emoji/download", summary="下载表情消息资源到本地 resource")
 async def download_chat_emoji(req: EmojiDownloadRequest):
     md5 = str(req.md5 or "").strip().lower()

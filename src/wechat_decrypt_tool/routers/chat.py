@@ -5,6 +5,7 @@ import asyncio
 import json
 import time
 import threading
+from datetime import datetime, timedelta
 from os import scandir
 from pathlib import Path
 from typing import Any, Optional
@@ -450,6 +451,33 @@ def _resolve_decrypted_message_table(account_dir: Path, username: str) -> Option
             conn.close()
 
     return None
+
+
+def _local_month_range_epoch_seconds(*, year: int, month: int) -> tuple[int, int]:
+    """Return [start, end) range as epoch seconds for local time month boundaries.
+
+    Notes:
+    - Uses local midnight boundaries (not +86400 * days) to stay DST-safe.
+    - Returned timestamps are integers (seconds).
+    """
+
+    start = datetime(int(year), int(month), 1)
+    if int(month) == 12:
+        end = datetime(int(year) + 1, 1, 1)
+    else:
+        end = datetime(int(year), int(month) + 1, 1)
+    return int(start.timestamp()), int(end.timestamp())
+
+
+def _local_day_range_epoch_seconds(*, date_str: str) -> tuple[int, int, str]:
+    """Return [start, end) range as epoch seconds for local date boundaries.
+
+    Returns the normalized `YYYY-MM-DD` date string as the 3rd element.
+    """
+
+    d0 = datetime.strptime(str(date_str or "").strip(), "%Y-%m-%d")
+    d1 = d0 + timedelta(days=1)
+    return int(d0.timestamp()), int(d1.timestamp()), d0.strftime("%Y-%m-%d")
 
 
 def _pick_message_db_for_new_table(account_dir: Path, username: str) -> Optional[Path]:
@@ -3126,6 +3154,27 @@ def _postprocess_full_messages(
                             base_url
                             + f"/api/chat/media/video?account={quote(account_dir.name)}&file_id={quote(video_file_id)}&username={quote(username)}"
                         )
+            elif rt == "link":
+                # Some appmsg link cards (notably Bilibili shares) carry a non-HTTP `<thumburl>` payload
+                # (often an ASN.1-ish hex blob). The actual preview image is typically saved as:
+                #   msg/attach/{md5(conv_username)}/.../Img/{local_id}_{create_time}_t.dat
+                # Expose it via the existing image endpoint using file_id.
+                thumb_url = str(m.get("thumbUrl") or "").strip()
+                if thumb_url and (not thumb_url.lower().startswith(("http://", "https://"))):
+                    try:
+                        lid = int(m.get("localId") or 0)
+                    except Exception:
+                        lid = 0
+                    try:
+                        ct = int(m.get("createTime") or 0)
+                    except Exception:
+                        ct = 0
+                    if lid > 0 and ct > 0:
+                        file_id = f"{lid}_{ct}"
+                        m["thumbUrl"] = (
+                            base_url
+                            + f"/api/chat/media/image?account={quote(account_dir.name)}&file_id={quote(file_id)}&username={quote(username)}"
+                        )
             elif rt == "voice":
                 if str(m.get("serverId") or ""):
                     sid = int(m.get("serverId") or 0)
@@ -4088,6 +4137,182 @@ def _collect_chat_messages(
             pass
 
     return merged, has_more_any, sender_usernames, quote_usernames, pat_usernames
+
+
+@router.get("/api/chat/messages/daily_counts", summary="获取某月每日消息数（热力图）")
+def get_chat_message_daily_counts(
+    username: str,
+    year: int,
+    month: int,
+    account: Optional[str] = None,
+):
+    username = str(username or "").strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Missing username.")
+    try:
+        y = int(year)
+        m = int(month)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid year or month.")
+    if m < 1 or m > 12:
+        raise HTTPException(status_code=400, detail="Invalid month.")
+
+    try:
+        start_ts, end_ts = _local_month_range_epoch_seconds(year=y, month=m)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid year or month.")
+
+    account_dir = _resolve_account_dir(account)
+    db_paths = _iter_message_db_paths(account_dir)
+
+    counts: dict[str, int] = {}
+
+    for db_path in db_paths:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            try:
+                table_name = _resolve_msg_table_name(conn, username)
+                if not table_name:
+                    continue
+                quoted_table = _quote_ident(table_name)
+                rows = conn.execute(
+                    "SELECT strftime('%Y-%m-%d', CAST(create_time AS INTEGER), 'unixepoch', 'localtime') AS day, "
+                    "COUNT(*) AS c "
+                    f"FROM {quoted_table} "
+                    "WHERE CAST(create_time AS INTEGER) >= ? AND CAST(create_time AS INTEGER) < ? "
+                    "GROUP BY day",
+                    (int(start_ts), int(end_ts)),
+                ).fetchall()
+                for day, c in rows:
+                    k = str(day or "").strip()
+                    if not k:
+                        continue
+                    try:
+                        vv = int(c or 0)
+                    except Exception:
+                        vv = 0
+                    if vv <= 0:
+                        continue
+                    counts[k] = int(counts.get(k, 0)) + vv
+            except Exception:
+                continue
+        finally:
+            conn.close()
+
+    total = int(sum(int(v) for v in counts.values())) if counts else 0
+    max_count = int(max(counts.values())) if counts else 0
+
+    return {
+        "status": "success",
+        "account": account_dir.name,
+        "username": username,
+        "year": int(y),
+        "month": int(m),
+        "counts": counts,
+        "total": total,
+        "max": max_count,
+    }
+
+
+@router.get("/api/chat/messages/anchor", summary="获取定位锚点（某日第一条/会话顶部）")
+def get_chat_message_anchor(
+    username: str,
+    kind: str,
+    account: Optional[str] = None,
+    date: Optional[str] = None,
+):
+    username = str(username or "").strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Missing username.")
+
+    kind_norm = str(kind or "").strip().lower()
+    if kind_norm not in {"day", "first"}:
+        raise HTTPException(status_code=400, detail="Invalid kind.")
+
+    date_norm: Optional[str] = None
+    start_ts: Optional[int] = None
+    end_ts: Optional[int] = None
+    if kind_norm == "day":
+        if not date:
+            raise HTTPException(status_code=400, detail="Missing date.")
+        try:
+            start_ts, end_ts, date_norm = _local_day_range_epoch_seconds(date_str=str(date))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid date.")
+
+    account_dir = _resolve_account_dir(account)
+    db_paths = _iter_message_db_paths(account_dir)
+
+    best_key: Optional[tuple[int, int, int]] = None
+    best_anchor_id = ""
+    best_create_time = 0
+
+    for db_path in db_paths:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            try:
+                table_name = _resolve_msg_table_name(conn, username)
+                if not table_name:
+                    continue
+                quoted_table = _quote_ident(table_name)
+
+                if kind_norm == "first":
+                    row = conn.execute(
+                        "SELECT local_id, CAST(create_time AS INTEGER) AS create_time, "
+                        "COALESCE(CAST(sort_seq AS INTEGER), 0) AS sort_seq "
+                        f"FROM {quoted_table} "
+                        "ORDER BY CAST(create_time AS INTEGER) ASC, COALESCE(CAST(sort_seq AS INTEGER), 0) ASC, local_id ASC "
+                        "LIMIT 1"
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT local_id, CAST(create_time AS INTEGER) AS create_time, "
+                        "COALESCE(CAST(sort_seq AS INTEGER), 0) AS sort_seq "
+                        f"FROM {quoted_table} "
+                        "WHERE CAST(create_time AS INTEGER) >= ? AND CAST(create_time AS INTEGER) < ? "
+                        "ORDER BY CAST(create_time AS INTEGER) ASC, COALESCE(CAST(sort_seq AS INTEGER), 0) ASC, local_id ASC "
+                        "LIMIT 1",
+                        (int(start_ts or 0), int(end_ts or 0)),
+                    ).fetchone()
+
+                if not row:
+                    continue
+                try:
+                    local_id = int(row[0] or 0)
+                    create_time = int(row[1] or 0)
+                    sort_seq = int(row[2] or 0)
+                except Exception:
+                    continue
+                if local_id <= 0:
+                    continue
+
+                key = (int(create_time), int(sort_seq), int(local_id))
+                if (best_key is None) or (key < best_key):
+                    best_key = key
+                    best_create_time = int(create_time)
+                    best_anchor_id = f"{db_path.stem}:{table_name}:{local_id}"
+            except Exception:
+                continue
+        finally:
+            conn.close()
+
+    if not best_anchor_id:
+        return {
+            "status": "empty",
+            "anchorId": "",
+        }
+
+    resp: dict[str, Any] = {
+        "status": "success",
+        "account": account_dir.name,
+        "username": username,
+        "kind": kind_norm,
+        "anchorId": best_anchor_id,
+        "createTime": int(best_create_time),
+    }
+    if date_norm is not None:
+        resp["date"] = date_norm
+    return resp
 
 
 @router.get("/api/chat/messages", summary="获取会话消息列表")
@@ -5055,6 +5280,23 @@ def list_chat_messages(
                             base_url
                             + f"/api/chat/media/video?account={quote(account_dir.name)}&file_id={quote(video_file_id)}&username={quote(username)}"
                         )
+            elif rt == "link":
+                thumb_url = str(m.get("thumbUrl") or "").strip()
+                if thumb_url and (not thumb_url.lower().startswith(("http://", "https://"))):
+                    try:
+                        lid = int(m.get("localId") or 0)
+                    except Exception:
+                        lid = 0
+                    try:
+                        ct = int(m.get("createTime") or 0)
+                    except Exception:
+                        ct = 0
+                    if lid > 0 and ct > 0:
+                        file_id = f"{lid}_{ct}"
+                        m["thumbUrl"] = (
+                            base_url
+                            + f"/api/chat/media/image?account={quote(account_dir.name)}&file_id={quote(file_id)}&username={quote(username)}"
+                        )
             elif rt == "voice":
                 if str(m.get("serverId") or ""):
                     sid = int(m.get("serverId") or 0)
@@ -5955,6 +6197,7 @@ async def get_chat_messages_around(
         raise HTTPException(status_code=400, detail="Missing username.")
     if not anchor_id:
         raise HTTPException(status_code=400, detail="Missing anchor_id.")
+
     if before < 0:
         before = 0
     if after < 0:
@@ -5967,7 +6210,7 @@ async def get_chat_messages_around(
     parts = str(anchor_id).split(":", 2)
     if len(parts) != 3:
         raise HTTPException(status_code=400, detail="Invalid anchor_id.")
-    anchor_db_stem, anchor_table_name, anchor_local_id_str = parts
+    anchor_db_stem, anchor_table_name_in, anchor_local_id_str = parts
     try:
         anchor_local_id = int(anchor_local_id_str)
     except Exception:
@@ -5980,14 +6223,15 @@ async def get_chat_messages_around(
     message_resource_db_path = account_dir / "message_resource.db"
     base_url = str(request.base_url).rstrip("/")
 
-    target_db: Optional[Path] = None
+    anchor_db_path: Optional[Path] = None
     for p in db_paths:
         if p.stem == anchor_db_stem:
-            target_db = p
+            anchor_db_path = p
             break
-    if target_db is None:
+    if anchor_db_path is None:
         raise HTTPException(status_code=404, detail="Anchor database not found.")
 
+    # Open resource DB once (optional), and reuse for all message DBs.
     resource_conn: Optional[sqlite3.Connection] = None
     resource_chat_id: Optional[int] = None
     try:
@@ -6004,200 +6248,378 @@ async def get_chat_messages_around(
         resource_conn = None
         resource_chat_id = None
 
-    conn = sqlite3.connect(str(target_db))
-    conn.row_factory = sqlite3.Row
+    # Resolve anchor message tuple from its DB.
+    anchor_ct = 0
+    anchor_ss = 0
+    anchor_table_name = str(anchor_table_name_in or "").strip()
+    anchor_row: Optional[sqlite3.Row] = None
+    anchor_packed_select = "NULL AS packed_info_data, "
     try:
-        table_name = str(anchor_table_name).strip()
-        if not table_name:
-            raise HTTPException(status_code=404, detail="Anchor table not found.")
-
-        # Normalize table name casing if needed
+        conn_a = sqlite3.connect(str(anchor_db_path))
+        conn_a.row_factory = sqlite3.Row
         try:
-            trows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            lower_to_actual = {str(x[0]).lower(): str(x[0]) for x in trows if x and x[0]}
-            table_name = lower_to_actual.get(table_name.lower(), table_name)
-        except Exception:
-            pass
+            if not anchor_table_name:
+                try:
+                    anchor_table_name = _resolve_msg_table_name(conn_a, username) or ""
+                except Exception:
+                    anchor_table_name = ""
+            if not anchor_table_name:
+                raise HTTPException(status_code=404, detail="Anchor table not found.")
 
-        my_wxid = account_dir.name
-        my_rowid = None
-        try:
-            r2 = conn.execute(
-                "SELECT rowid FROM Name2Id WHERE user_name = ? LIMIT 1",
-                (my_wxid,),
-            ).fetchone()
-            if r2 is not None:
-                my_rowid = int(r2[0])
-        except Exception:
-            my_rowid = None
-
-        quoted_table = _quote_ident(table_name)
-        has_packed_info_data = False
-        try:
-            cols = conn.execute(f"PRAGMA table_info({quoted_table})").fetchall()
-            has_packed_info_data = any(str(c[1] or "").strip().lower() == "packed_info_data" for c in cols)
-        except Exception:
-            has_packed_info_data = False
-        packed_select = (
-            "m.packed_info_data AS packed_info_data, " if has_packed_info_data else "NULL AS packed_info_data, "
-        )
-        sql_anchor_with_join = (
-            "SELECT "
-            "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
-            "m.message_content, m.compress_content, "
-            + packed_select
-            + "n.user_name AS sender_username "
-            f"FROM {quoted_table} m "
-            "LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid "
-            "WHERE m.local_id = ? "
-            "LIMIT 1"
-        )
-        sql_anchor_no_join = (
-            "SELECT "
-            "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
-            "m.message_content, m.compress_content, "
-            + packed_select
-            + "'' AS sender_username "
-            f"FROM {quoted_table} m "
-            "WHERE m.local_id = ? "
-            "LIMIT 1"
-        )
-
-        conn.text_factory = bytes
-
-        try:
-            anchor_row = conn.execute(sql_anchor_with_join, (anchor_local_id,)).fetchone()
-        except Exception:
-            anchor_row = conn.execute(sql_anchor_no_join, (anchor_local_id,)).fetchone()
-
-        if anchor_row is None:
-            raise HTTPException(status_code=404, detail="Anchor message not found.")
-
-        anchor_ct = int(anchor_row["create_time"] or 0)
-        anchor_ss = int(anchor_row["sort_seq"] or 0) if anchor_row["sort_seq"] is not None else 0
-
-        where_before = (
-            "WHERE ("
-            "m.create_time < ? "
-            "OR (m.create_time = ? AND COALESCE(m.sort_seq, 0) < ?) "
-            "OR (m.create_time = ? AND COALESCE(m.sort_seq, 0) = ? AND m.local_id <= ?)"
-            ")"
-        )
-        where_after = (
-            "WHERE ("
-            "m.create_time > ? "
-            "OR (m.create_time = ? AND COALESCE(m.sort_seq, 0) > ?) "
-            "OR (m.create_time = ? AND COALESCE(m.sort_seq, 0) = ? AND m.local_id >= ?)"
-            ")"
-        )
-
-        sql_before_with_join = (
-            "SELECT "
-            "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
-            "m.message_content, m.compress_content, "
-            + packed_select
-            + "n.user_name AS sender_username "
-            f"FROM {quoted_table} m "
-            "LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid "
-            f"{where_before} "
-            "ORDER BY m.create_time DESC, COALESCE(m.sort_seq, 0) DESC, m.local_id DESC "
-            "LIMIT ?"
-        )
-        sql_before_no_join = (
-            "SELECT "
-            "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
-            "m.message_content, m.compress_content, "
-            + packed_select
-            + "'' AS sender_username "
-            f"FROM {quoted_table} m "
-            f"{where_before} "
-            "ORDER BY m.create_time DESC, COALESCE(m.sort_seq, 0) DESC, m.local_id DESC "
-            "LIMIT ?"
-        )
-
-        sql_after_with_join = (
-            "SELECT "
-            "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
-            "m.message_content, m.compress_content, "
-            + packed_select
-            + "n.user_name AS sender_username "
-            f"FROM {quoted_table} m "
-            "LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid "
-            f"{where_after} "
-            "ORDER BY m.create_time ASC, COALESCE(m.sort_seq, 0) ASC, m.local_id ASC "
-            "LIMIT ?"
-        )
-        sql_after_no_join = (
-            "SELECT "
-            "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
-            "m.message_content, m.compress_content, "
-            + packed_select
-            + "'' AS sender_username "
-            f"FROM {quoted_table} m "
-            f"{where_after} "
-            "ORDER BY m.create_time ASC, COALESCE(m.sort_seq, 0) ASC, m.local_id ASC "
-            "LIMIT ?"
-        )
-
-        params_before = (anchor_ct, anchor_ct, anchor_ss, anchor_ct, anchor_ss, anchor_local_id, int(before) + 1)
-        params_after = (anchor_ct, anchor_ct, anchor_ss, anchor_ct, anchor_ss, anchor_local_id, int(after) + 1)
-
-        try:
-            before_rows = conn.execute(sql_before_with_join, params_before).fetchall()
-        except Exception:
-            before_rows = conn.execute(sql_before_no_join, params_before).fetchall()
-
-        try:
-            after_rows = conn.execute(sql_after_with_join, params_after).fetchall()
-        except Exception:
-            after_rows = conn.execute(sql_after_no_join, params_after).fetchall()
-
-        seen_ids: set[str] = set()
-        combined: list[sqlite3.Row] = []
-        for rr in list(before_rows) + list(after_rows):
-            lid = int(rr["local_id"] or 0)
-            mid = f"{target_db.stem}:{table_name}:{lid}"
-            if mid in seen_ids:
-                continue
-            seen_ids.add(mid)
-            combined.append(rr)
-
-        merged: list[dict[str, Any]] = []
-        sender_usernames: list[str] = []
-        quote_usernames: list[str] = []
-        pat_usernames: set[str] = set()
-        is_group = bool(username.endswith("@chatroom"))
-
-        _append_full_messages_from_rows(
-            merged=merged,
-            sender_usernames=sender_usernames,
-            quote_usernames=quote_usernames,
-            pat_usernames=pat_usernames,
-            rows=combined,
-            db_path=target_db,
-            table_name=table_name,
-            username=username,
-            account_dir=account_dir,
-            is_group=is_group,
-            my_rowid=my_rowid,
-            resource_conn=resource_conn,
-            resource_chat_id=resource_chat_id,
-        )
-
-        return_messages = merged
-    finally:
-        conn.close()
-        if resource_conn is not None:
+            # Normalize table name casing if needed
             try:
-                resource_conn.close()
+                trows = conn_a.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                lower_to_actual = {str(x[0]).lower(): str(x[0]) for x in trows if x and x[0]}
+                anchor_table_name = lower_to_actual.get(anchor_table_name.lower(), anchor_table_name)
             except Exception:
                 pass
 
+            quoted_table_a = _quote_ident(anchor_table_name)
+            has_packed_info_data = False
+            try:
+                cols = conn_a.execute(f"PRAGMA table_info({quoted_table_a})").fetchall()
+                has_packed_info_data = any(str(c[1] or "").strip().lower() == "packed_info_data" for c in cols)
+            except Exception:
+                has_packed_info_data = False
+            anchor_packed_select = (
+                "m.packed_info_data AS packed_info_data, " if has_packed_info_data else "NULL AS packed_info_data, "
+            )
+
+            sql_anchor_with_join = (
+                "SELECT "
+                "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
+                "m.message_content, m.compress_content, "
+                + anchor_packed_select
+                + "n.user_name AS sender_username "
+                f"FROM {quoted_table_a} m "
+                "LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid "
+                "WHERE m.local_id = ? "
+                "LIMIT 1"
+            )
+            sql_anchor_no_join = (
+                "SELECT "
+                "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
+                "m.message_content, m.compress_content, "
+                + anchor_packed_select
+                + "'' AS sender_username "
+                f"FROM {quoted_table_a} m "
+                "WHERE m.local_id = ? "
+                "LIMIT 1"
+            )
+
+            conn_a.text_factory = bytes
+            try:
+                anchor_row = conn_a.execute(sql_anchor_with_join, (anchor_local_id,)).fetchone()
+            except Exception:
+                anchor_row = conn_a.execute(sql_anchor_no_join, (anchor_local_id,)).fetchone()
+
+            if anchor_row is None:
+                raise HTTPException(status_code=404, detail="Anchor message not found.")
+
+            anchor_ct = int(anchor_row["create_time"] or 0)
+            anchor_ss = int(anchor_row["sort_seq"] or 0) if anchor_row["sort_seq"] is not None else 0
+        finally:
+            conn_a.close()
+    finally:
+        pass
+
+    anchor_id_canon = f"{anchor_db_stem}:{anchor_table_name}:{anchor_local_id}"
+
+    merged: list[dict[str, Any]] = []
+    sender_usernames_all: list[str] = []
+    quote_usernames_all: list[str] = []
+    pat_usernames_all: set[str] = set()
+    is_group = bool(username.endswith("@chatroom"))
+
+    for db_path in db_paths:
+        conn: Optional[sqlite3.Connection] = None
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+
+            table_name = ""
+            if db_path.stem == anchor_db_stem:
+                table_name = anchor_table_name
+            else:
+                try:
+                    table_name = _resolve_msg_table_name(conn, username) or ""
+                except Exception:
+                    table_name = ""
+            if not table_name:
+                continue
+
+            my_wxid = account_dir.name
+            my_rowid = None
+            try:
+                r2 = conn.execute(
+                    "SELECT rowid FROM Name2Id WHERE user_name = ? LIMIT 1",
+                    (my_wxid,),
+                ).fetchone()
+                if r2 is not None:
+                    my_rowid = int(r2[0])
+            except Exception:
+                my_rowid = None
+
+            quoted_table = _quote_ident(table_name)
+            has_packed_info_data = False
+            try:
+                cols = conn.execute(f"PRAGMA table_info({quoted_table})").fetchall()
+                has_packed_info_data = any(str(c[1] or "").strip().lower() == "packed_info_data" for c in cols)
+            except Exception:
+                has_packed_info_data = False
+            packed_select = (
+                "m.packed_info_data AS packed_info_data, " if has_packed_info_data else "NULL AS packed_info_data, "
+            )
+
+            # Stable cross-db ordering: (create_time, sort_seq, db_stem, local_id)
+            stem = db_path.stem
+            if stem < anchor_db_stem:
+                tie_before = "1"
+                tie_before_params: tuple[Any, ...] = ()
+                tie_after = "0"
+                tie_after_params: tuple[Any, ...] = ()
+            elif stem > anchor_db_stem:
+                tie_before = "0"
+                tie_before_params = ()
+                tie_after = "1"
+                tie_after_params = ()
+            else:
+                tie_before = "m.local_id < ?"
+                tie_before_params = (int(anchor_local_id),)
+                tie_after = "m.local_id > ?"
+                tie_after_params = (int(anchor_local_id),)
+
+            where_before = (
+                "WHERE ("
+                "m.create_time < ? "
+                "OR (m.create_time = ? AND COALESCE(m.sort_seq, 0) < ?) "
+                f"OR (m.create_time = ? AND COALESCE(m.sort_seq, 0) = ? AND {tie_before})"
+                ")"
+            )
+            where_after = (
+                "WHERE ("
+                "m.create_time > ? "
+                "OR (m.create_time = ? AND COALESCE(m.sort_seq, 0) > ?) "
+                f"OR (m.create_time = ? AND COALESCE(m.sort_seq, 0) = ? AND {tie_after})"
+                ")"
+            )
+
+            sql_before_with_join = (
+                "SELECT "
+                "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
+                "m.message_content, m.compress_content, "
+                + packed_select
+                + "n.user_name AS sender_username "
+                f"FROM {quoted_table} m "
+                "LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid "
+                f"{where_before} "
+                "ORDER BY m.create_time DESC, COALESCE(m.sort_seq, 0) DESC, m.local_id DESC "
+                "LIMIT ?"
+            )
+            sql_before_no_join = (
+                "SELECT "
+                "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
+                "m.message_content, m.compress_content, "
+                + packed_select
+                + "'' AS sender_username "
+                f"FROM {quoted_table} m "
+                f"{where_before} "
+                "ORDER BY m.create_time DESC, COALESCE(m.sort_seq, 0) DESC, m.local_id DESC "
+                "LIMIT ?"
+            )
+
+            sql_after_with_join = (
+                "SELECT "
+                "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
+                "m.message_content, m.compress_content, "
+                + packed_select
+                + "n.user_name AS sender_username "
+                f"FROM {quoted_table} m "
+                "LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid "
+                f"{where_after} "
+                "ORDER BY m.create_time ASC, COALESCE(m.sort_seq, 0) ASC, m.local_id ASC "
+                "LIMIT ?"
+            )
+            sql_after_no_join = (
+                "SELECT "
+                "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
+                "m.message_content, m.compress_content, "
+                + packed_select
+                + "'' AS sender_username "
+                f"FROM {quoted_table} m "
+                f"{where_after} "
+                "ORDER BY m.create_time ASC, COALESCE(m.sort_seq, 0) ASC, m.local_id ASC "
+                "LIMIT ?"
+            )
+
+            # Always fetch anchor row from anchor DB, but don't include anchor itself in before/after queries.
+            anchor_rows: list[sqlite3.Row] = []
+            if db_path.stem == anchor_db_stem:
+                if anchor_row is None:
+                    raise HTTPException(status_code=404, detail="Anchor message not found.")
+                anchor_rows = [anchor_row]
+
+            conn.text_factory = bytes
+
+            before_rows: list[sqlite3.Row] = []
+            if int(before) > 0:
+                params_before = (
+                    int(anchor_ct),
+                    int(anchor_ct),
+                    int(anchor_ss),
+                    int(anchor_ct),
+                    int(anchor_ss),
+                    *tie_before_params,
+                    int(before) + 1,
+                )
+                try:
+                    before_rows = conn.execute(sql_before_with_join, params_before).fetchall()
+                except Exception:
+                    before_rows = conn.execute(sql_before_no_join, params_before).fetchall()
+
+            after_rows: list[sqlite3.Row] = []
+            if int(after) > 0:
+                params_after = (
+                    int(anchor_ct),
+                    int(anchor_ct),
+                    int(anchor_ss),
+                    int(anchor_ct),
+                    int(anchor_ss),
+                    *tie_after_params,
+                    int(after) + 1,
+                )
+                try:
+                    after_rows = conn.execute(sql_after_with_join, params_after).fetchall()
+                except Exception:
+                    after_rows = conn.execute(sql_after_no_join, params_after).fetchall()
+
+            # Dedup rows by message id within this DB.
+            seen_ids: set[str] = set()
+            combined: list[sqlite3.Row] = []
+            for rr in list(before_rows) + list(anchor_rows) + list(after_rows):
+                lid = int(rr["local_id"] or 0)
+                mid = f"{db_path.stem}:{table_name}:{lid}"
+                if mid in seen_ids:
+                    continue
+                seen_ids.add(mid)
+                combined.append(rr)
+
+            if not combined:
+                continue
+
+            _append_full_messages_from_rows(
+                merged=merged,
+                sender_usernames=sender_usernames_all,
+                quote_usernames=quote_usernames_all,
+                pat_usernames=pat_usernames_all,
+                rows=combined,
+                db_path=db_path,
+                table_name=table_name,
+                username=username,
+                account_dir=account_dir,
+                is_group=is_group,
+                my_rowid=my_rowid,
+                resource_conn=resource_conn,
+                resource_chat_id=resource_chat_id,
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            # Skip broken DBs / missing tables gracefully.
+            continue
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    if resource_conn is not None:
+        try:
+            resource_conn.close()
+        except Exception:
+            pass
+
+    # Global dedupe + sort.
+    if merged:
+        seen_ids2: set[str] = set()
+        deduped: list[dict[str, Any]] = []
+        for m in merged:
+            mid = str(m.get("id") or "").strip()
+            if mid and mid in seen_ids2:
+                continue
+            if mid:
+                seen_ids2.add(mid)
+            deduped.append(m)
+        merged = deduped
+
+    def sort_key_global(m: dict[str, Any]) -> tuple[int, int, str, int]:
+        cts = int(m.get("createTime") or 0)
+        sseq = int(m.get("sortSeq") or 0)
+        lid = int(m.get("localId") or 0)
+        mid = str(m.get("id") or "")
+        stem2 = ""
+        try:
+            stem2 = mid.split(":", 1)[0] if ":" in mid else ""
+        except Exception:
+            stem2 = ""
+        return (cts, sseq, stem2, lid)
+
+    merged.sort(key=sort_key_global, reverse=False)
+
+    anchor_index_all = -1
+    for i, m in enumerate(merged):
+        if str(m.get("id") or "") == str(anchor_id_canon):
+            anchor_index_all = i
+            break
+    if anchor_index_all < 0:
+        # Fallback: ignore table casing differences when matching anchor.
+        for i, m in enumerate(merged):
+            mid = str(m.get("id") or "")
+            p2 = mid.split(":", 2)
+            if len(p2) != 3:
+                continue
+            if p2[0] != anchor_db_stem:
+                continue
+            try:
+                if int(p2[2] or 0) == int(anchor_local_id):
+                    anchor_index_all = i
+                    break
+            except Exception:
+                continue
+
+    if anchor_index_all < 0:
+        # Should not happen because we always include the anchor row, but keep defensive.
+        anchor_index_all = 0
+
+    start = max(0, int(anchor_index_all) - int(before))
+    end = min(len(merged), int(anchor_index_all) + int(after) + 1)
+    return_messages = merged[start:end]
+    anchor_index = int(anchor_index_all) - start if 0 <= anchor_index_all < len(merged) else -1
+
+    # Postprocess only the returned window to keep it fast.
+    sender_usernames_win = [str(m.get("senderUsername") or "").strip() for m in return_messages if str(m.get("senderUsername") or "").strip()]
+    quote_usernames_win = [str(m.get("quoteUsername") or "").strip() for m in return_messages if str(m.get("quoteUsername") or "").strip()]
+    pat_usernames_win: set[str] = set()
+    try:
+        for m in return_messages:
+            if int(m.get("type") or 0) != 266287972401:
+                continue
+            raw = str(m.get("_rawText") or "")
+            if not raw:
+                continue
+            template = _extract_xml_tag_text(raw, "template")
+            if not template:
+                continue
+            pat_usernames_win.update({mm.group(1) for mm in re.finditer(r"\$\{([^}]+)\}", template) if mm.group(1)})
+    except Exception:
+        pat_usernames_win = set()
+
     _postprocess_full_messages(
         merged=return_messages,
-        sender_usernames=sender_usernames,
-        quote_usernames=quote_usernames,
-        pat_usernames=pat_usernames,
+        sender_usernames=sender_usernames_win,
+        quote_usernames=quote_usernames_win,
+        pat_usernames=pat_usernames_win,
         account_dir=account_dir,
         username=username,
         base_url=base_url,
@@ -6205,24 +6627,235 @@ async def get_chat_messages_around(
         head_image_db_path=head_image_db_path,
     )
 
-    def sort_key(m: dict[str, Any]) -> tuple[int, int, int]:
-        sseq = int(m.get("sortSeq") or 0)
-        cts = int(m.get("createTime") or 0)
-        lid = int(m.get("localId") or 0)
-        return (cts, sseq, lid)
-
-    return_messages.sort(key=sort_key, reverse=False)
-    anchor_index = -1
-    for i, m in enumerate(return_messages):
-        if str(m.get("id") or "") == str(anchor_id):
-            anchor_index = i
-            break
-
     return {
         "status": "success",
         "account": account_dir.name,
         "username": username,
-        "anchorId": anchor_id,
+        "anchorId": anchor_id_canon,
         "anchorIndex": anchor_index,
         "messages": return_messages,
     }
+
+
+@router.get("/api/chat/chat_history/resolve", summary="解析嵌套合并转发聊天记录（通过 server_id）")
+async def resolve_nested_chat_history(
+    request: Request,
+    server_id: int,
+    account: Optional[str] = None,
+):
+    """Resolve a nested merged-forward chat history item (datatype=17) to its full recordItem XML.
+
+    Some nested records inside a merged-forward recordItem only carry pointers like `fromnewmsgid` (server_id),
+    while the full recordItem exists in the original app message (local_type=49, appmsg type=19) stored elsewhere.
+    WeChat can open it by looking up the original message; we do the same here.
+    """
+    if not server_id:
+        raise HTTPException(status_code=400, detail="Missing server_id.")
+
+    account_dir = _resolve_account_dir(account)
+    db_paths = _iter_message_db_paths(account_dir)
+    base_url = str(request.base_url).rstrip("/")
+    found_appmsg = False
+
+    for db_path in db_paths:
+        conn: Optional[sqlite3.Connection] = None
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            conn.text_factory = bytes
+
+            try:
+                table_rows = conn.execute(
+                    # Some DBs use `Msg_...` (capital M). Use LOWER() to keep matching even if
+                    # `PRAGMA case_sensitive_like=ON` is set.
+                    "SELECT name FROM sqlite_master WHERE type='table' AND lower(name) LIKE 'msg_%'"
+                ).fetchall()
+            except Exception:
+                table_rows = []
+
+            # With `conn.text_factory = bytes`, sqlite_master.name comes back as bytes.
+            # Decode it to the real table name, otherwise we'd end up querying a non-existent
+            # table like "b'Msg_...'" and never find the message.
+            table_names = [_decode_sqlite_text(r[0]).strip() for r in table_rows if r and r[0]]
+            for table_name in table_names:
+                quoted = _quote_ident(table_name)
+                try:
+                    row = conn.execute(
+                        f"""
+                        SELECT local_id, server_id, local_type, create_time, message_content, compress_content
+                        FROM {quoted}
+                        -- WeChat v4 can pack appmsg subtype into the high 32 bits of local_type:
+                        --   local_type = base_type + (app_subtype << 32)
+                        -- so a chatHistory appmsg can be 49 + (19<<32), not exactly 49.
+                        WHERE server_id = ? AND (local_type & 4294967295) = 49
+                        LIMIT 1
+                        """,
+                        (int(server_id),),
+                    ).fetchone()
+                except Exception:
+                    row = None
+
+                if row is None:
+                    continue
+
+                found_appmsg = True
+                raw_text = _decode_message_content(row["compress_content"], row["message_content"]).strip()
+                if not raw_text:
+                    continue
+
+                # If the stored payload is a zstd frame but we couldn't decode it into XML, it's
+                # almost always because the optional `zstandard` dependency isn't installed.
+                try:
+                    blob = row["message_content"]
+                    if isinstance(blob, memoryview):
+                        blob = blob.tobytes()
+                    if isinstance(blob, (bytes, bytearray)) and bytes(blob).startswith(b"\x28\xb5\x2f\xfd"):
+                        lower = raw_text.lower()
+                        if "<appmsg" not in lower and "<msg" not in lower:
+                            raise HTTPException(
+                                status_code=500,
+                                detail="Failed to decode zstd-compressed message_content. Please install `zstandard` and restart the backend.",
+                            )
+                except HTTPException:
+                    raise
+                except Exception:
+                    pass
+
+                parsed = _parse_app_message(raw_text)
+                if not isinstance(parsed, dict):
+                    continue
+
+                if str(parsed.get("renderType") or "") != "chatHistory":
+                    # Found an app message, but not a merged-forward chat history.
+                    continue
+
+                record_item = str(parsed.get("recordItem") or "").strip()
+                if not record_item:
+                    continue
+
+                return {
+                    "status": "success",
+                    "serverId": int(server_id),
+                    "title": str(parsed.get("title") or "").strip(),
+                    "content": str(parsed.get("content") or "").strip(),
+                    "recordItem": record_item,
+                    "baseUrl": base_url,
+                }
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    if found_appmsg:
+        raise HTTPException(status_code=404, detail="Target message is not a chat history.")
+    raise HTTPException(status_code=404, detail="Message not found for server_id.")
+
+
+@router.get("/api/chat/appmsg/resolve", summary="解析卡片/小程序等 App 消息（通过 server_id）")
+async def resolve_app_message(
+    request: Request,
+    server_id: int,
+    account: Optional[str] = None,
+):
+    """Resolve an app message (base local_type=49) by server_id.
+
+    This is mainly used by merged-forward recordItem dataitems that only contain pointers like
+    `fromnewmsgid` (server_id). WeChat can open the original card by looking up the appmsg in
+    message DBs; we do the same and return the parsed appmsg fields.
+    """
+    if not server_id:
+        raise HTTPException(status_code=400, detail="Missing server_id.")
+
+    account_dir = _resolve_account_dir(account)
+    db_paths = _iter_message_db_paths(account_dir)
+    base_url = str(request.base_url).rstrip("/")
+
+    found_appmsg = False
+    for db_path in db_paths:
+        conn: Optional[sqlite3.Connection] = None
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            conn.text_factory = bytes
+
+            try:
+                table_rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND lower(name) LIKE 'msg_%'"
+                ).fetchall()
+            except Exception:
+                table_rows = []
+
+            table_names = [_decode_sqlite_text(r[0]).strip() for r in table_rows if r and r[0]]
+            for table_name in table_names:
+                quoted = _quote_ident(table_name)
+                try:
+                    row = conn.execute(
+                        f"""
+                        SELECT local_id, server_id, local_type, create_time, message_content, compress_content
+                        FROM {quoted}
+                        WHERE server_id = ? AND (local_type & 4294967295) = 49
+                        LIMIT 1
+                        """,
+                        (int(server_id),),
+                    ).fetchone()
+                except Exception:
+                    row = None
+
+                if row is None:
+                    continue
+
+                found_appmsg = True
+                raw_text = _decode_message_content(row["compress_content"], row["message_content"]).strip()
+                if not raw_text:
+                    continue
+
+                # Same zstd guard as chat_history/resolve.
+                try:
+                    blob = row["message_content"]
+                    if isinstance(blob, memoryview):
+                        blob = blob.tobytes()
+                    if isinstance(blob, (bytes, bytearray)) and bytes(blob).startswith(b"\x28\xb5\x2f\xfd"):
+                        lower = raw_text.lower()
+                        if "<appmsg" not in lower and "<msg" not in lower:
+                            raise HTTPException(
+                                status_code=500,
+                                detail="Failed to decode zstd-compressed message_content. Please install `zstandard` and restart the backend.",
+                            )
+                except HTTPException:
+                    raise
+                except Exception:
+                    pass
+
+                parsed = _parse_app_message(raw_text)
+                if not isinstance(parsed, dict):
+                    continue
+
+                # Return a stable, explicit shape for the frontend.
+                return {
+                    "status": "success",
+                    "serverId": int(server_id),
+                    "renderType": str(parsed.get("renderType") or "text"),
+                    "title": str(parsed.get("title") or "").strip(),
+                    "content": str(parsed.get("content") or "").strip(),
+                    "url": str(parsed.get("url") or "").strip(),
+                    "thumbUrl": str(parsed.get("thumbUrl") or "").strip(),
+                    "coverUrl": str(parsed.get("coverUrl") or "").strip(),
+                    "from": str(parsed.get("from") or "").strip(),
+                    "fromUsername": str(parsed.get("fromUsername") or "").strip(),
+                    "linkType": str(parsed.get("linkType") or "").strip(),
+                    "linkStyle": str(parsed.get("linkStyle") or "").strip(),
+                    "size": str(parsed.get("size") or "").strip(),
+                    "baseUrl": base_url,
+                }
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    if found_appmsg:
+        raise HTTPException(status_code=404, detail="App message decode failed.")
+    raise HTTPException(status_code=404, detail="Message not found for server_id.")
