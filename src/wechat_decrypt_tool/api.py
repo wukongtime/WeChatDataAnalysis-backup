@@ -9,6 +9,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import FileResponse
 from starlette.staticfiles import StaticFiles
 
+from . import __version__ as APP_VERSION
 from .logging_config import setup_logging, get_logger
 from .path_fix import PathFixRoute
 from .chat_realtime_autosync import CHAT_REALTIME_AUTOSYNC
@@ -33,7 +34,7 @@ logger = get_logger(__name__)
 app = FastAPI(
     title="微信数据库解密工具",
     description="现代化的微信数据库解密工具，支持微信信息检测和数据库解密功能",
-    version="0.1.0",
+    version=APP_VERSION,
 )
 
 # 设置自定义路由类
