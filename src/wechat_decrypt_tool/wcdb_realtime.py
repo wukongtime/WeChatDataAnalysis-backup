@@ -1,6 +1,8 @@
 import ctypes
+import binascii
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -20,7 +22,51 @@ class WCDBRealtimeError(RuntimeError):
 
 
 _NATIVE_DIR = Path(__file__).resolve().parent / "native"
-_WCDB_API_DLL = _NATIVE_DIR / "wcdb_api.dll"
+_DEFAULT_WCDB_API_DLL = _NATIVE_DIR / "wcdb_api.dll"
+_WCDB_API_DLL_SELECTED: Optional[Path] = None
+
+
+def _candidate_wcdb_api_dll_paths() -> list[Path]:
+    """Return possible locations for wcdb_api.dll (prefer WeFlow's newer build when present)."""
+    cands: list[Path] = []
+
+    env = str(os.environ.get("WECHAT_TOOL_WCDB_API_DLL_PATH", "") or "").strip()
+    if env:
+        cands.append(Path(env))
+
+    # Repo checkout convenience: reuse bundled WeFlow / echotrace DLLs when available.
+    try:
+        repo_root = Path(__file__).resolve().parents[2]
+    except Exception:
+        repo_root = Path.cwd()
+
+    for p in [
+        repo_root / "WeFlow" / "resources" / "wcdb_api.dll",
+        repo_root / "echotrace" / "assets" / "dll" / "wcdb_api.dll",
+        _DEFAULT_WCDB_API_DLL,
+    ]:
+        if p not in cands:
+            cands.append(p)
+
+    return cands
+
+
+def _resolve_wcdb_api_dll_path() -> Path:
+    global _WCDB_API_DLL_SELECTED
+    if _WCDB_API_DLL_SELECTED is not None:
+        return _WCDB_API_DLL_SELECTED
+
+    for p in _candidate_wcdb_api_dll_paths():
+        try:
+            if p.exists() and p.is_file():
+                _WCDB_API_DLL_SELECTED = p
+                return p
+        except Exception:
+            continue
+
+    # Fall back to the default path even if it doesn't exist; caller will raise a clear error.
+    _WCDB_API_DLL_SELECTED = _DEFAULT_WCDB_API_DLL
+    return _WCDB_API_DLL_SELECTED
 
 _lib_lock = threading.Lock()
 _lib: Optional[ctypes.CDLL] = None
@@ -40,16 +86,18 @@ def _load_wcdb_lib() -> ctypes.CDLL:
         if not _is_windows():
             raise WCDBRealtimeError("WCDB realtime mode is only supported on Windows.")
 
-        if not _WCDB_API_DLL.exists():
-            raise WCDBRealtimeError(f"Missing wcdb_api.dll at: {_WCDB_API_DLL}")
+        wcdb_api_dll = _resolve_wcdb_api_dll_path()
+        if not wcdb_api_dll.exists():
+            raise WCDBRealtimeError(f"Missing wcdb_api.dll at: {wcdb_api_dll}")
 
         # Ensure dependent DLLs (e.g. WCDB.dll) can be found.
         try:
-            os.add_dll_directory(str(_NATIVE_DIR))
+            os.add_dll_directory(str(wcdb_api_dll.parent))
         except Exception:
             pass
 
-        lib = ctypes.CDLL(str(_WCDB_API_DLL))
+        lib = ctypes.CDLL(str(wcdb_api_dll))
+        logger.info("[wcdb] using wcdb_api.dll: %s", wcdb_api_dll)
 
         # Signatures
         lib.wcdb_init.argtypes = []
@@ -142,6 +190,19 @@ def _load_wcdb_lib() -> ctypes.CDLL:
             lib.wcdb_get_sns_timeline.restype = ctypes.c_int
         except Exception:
             # Older wcdb_api.dll may not expose this export.
+            pass
+
+        # Optional (newer DLLs): wcdb_decrypt_sns_image(encrypted_data, len, key, out_hex)
+        # WeFlow uses this to decrypt Moments CDN images.
+        try:
+            lib.wcdb_decrypt_sns_image.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_int32,
+                ctypes.c_char_p,
+                ctypes.POINTER(ctypes.c_void_p),
+            ]
+            lib.wcdb_decrypt_sns_image.restype = ctypes.c_int32
+        except Exception:
             pass
 
         lib.wcdb_get_logs.argtypes = [ctypes.POINTER(ctypes.c_char_p)]
@@ -488,6 +549,63 @@ def get_sns_timeline(
     return []
 
 
+def decrypt_sns_image(encrypted_data: bytes, key: str) -> bytes:
+    """Decrypt Moments CDN image bytes using WCDB DLL (WeFlow compatible).
+
+    Notes:
+    - Requires a newer wcdb_api.dll export: wcdb_decrypt_sns_image.
+    - On failure, returns the original encrypted_data (best-effort behavior like WeFlow).
+    """
+    _ensure_initialized()
+    lib = _load_wcdb_lib()
+    fn = getattr(lib, "wcdb_decrypt_sns_image", None)
+    if not fn:
+        raise WCDBRealtimeError("Current wcdb_api.dll does not support sns image decryption.")
+
+    raw = bytes(encrypted_data or b"")
+    if not raw:
+        return b""
+
+    k = str(key or "").strip()
+    if not k:
+        return raw
+
+    out_ptr = ctypes.c_void_p()
+    buf = ctypes.create_string_buffer(raw, len(raw))
+    rc = 0
+    try:
+        rc = int(
+            fn(
+                ctypes.cast(buf, ctypes.c_void_p),
+                ctypes.c_int32(len(raw)),
+                k.encode("utf-8"),
+                ctypes.byref(out_ptr),
+            )
+        )
+
+        if rc != 0 or not out_ptr.value:
+            return raw
+
+        hex_bytes = ctypes.cast(out_ptr, ctypes.c_char_p).value or b""
+        if not hex_bytes:
+            return raw
+
+        # Defensive: keep only hex chars (some builds may include whitespace).
+        hex_clean = re.sub(rb"[^0-9a-fA-F]", b"", hex_bytes)
+        if not hex_clean:
+            return raw
+        try:
+            return binascii.unhexlify(hex_clean)
+        except Exception:
+            return raw
+    finally:
+        try:
+            if out_ptr.value:
+                lib.wcdb_free_string(ctypes.cast(out_ptr, ctypes.c_char_p))
+        except Exception:
+            pass
+
+
 def shutdown() -> None:
     global _initialized
     lib = _load_wcdb_lib()
@@ -573,11 +691,16 @@ class WCDBRealtimeManager:
         except Exception as e:
             err = str(e)
 
-        dll_ok = _WCDB_API_DLL.exists()
+        dll_path = _resolve_wcdb_api_dll_path()
+        try:
+            dll_ok = bool(dll_path.exists())
+        except Exception:
+            dll_ok = False
         connected = self.is_connected(account)
         return {
             "account": account,
             "dll_present": bool(dll_ok),
+            "wcdb_api_dll": str(dll_path),
             "key_present": bool(key_ok),
             "db_storage_dir": str(db_storage_dir) if db_storage_dir else "",
             "session_db_path": str(session_db_path) if session_db_path else "",
