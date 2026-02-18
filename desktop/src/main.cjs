@@ -265,9 +265,108 @@ function setWindowProgressBar(value) {
   } catch {}
 }
 
+function looksLikeHtml(input) {
+  if (!input) return false;
+  const s = String(input);
+  if (!s.includes("<") || !s.includes(">")) return false;
+  // Be conservative: only treat the note as HTML if it contains common tags we expect from GitHub-rendered bodies.
+  return /<(p|div|br|ul|ol|li|a|strong|em|tt|code|pre|h[1-6])\b/i.test(s);
+}
+
+function htmlToPlainText(html) {
+  if (!html) return "";
+
+  let text = String(html);
+
+  // Drop script/style blocks entirely.
+  text = text.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
+  text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
+
+  // Keep links readable after stripping tags.
+  text = text.replace(
+    /<a\s+[^>]*href=(["'])([^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi,
+    (_m, _q, href, inner) => {
+      const innerText = String(inner).replace(/<[^>]*>/g, "").trim();
+      const url = String(href || "").trim();
+      if (!url) return innerText;
+      if (!innerText) return url;
+      return `${innerText} (${url})`;
+    }
+  );
+
+  // Preserve line breaks / list structure before stripping remaining tags.
+  text = text.replace(/<\s*br\s*\/?>/gi, "\n");
+  text = text.replace(/<\/\s*(p|div|h1|h2|h3|h4|h5|h6)\s*>/gi, "\n");
+  text = text.replace(/<\s*li[^>]*>/gi, "- ");
+  text = text.replace(/<\/\s*li\s*>/gi, "\n");
+  text = text.replace(/<\/\s*(ul|ol)\s*>/gi, "\n");
+
+  // Strip remaining tags.
+  text = text.replace(/<[^>]*>/g, "");
+
+  // Decode the handful of entities we commonly see from GitHub-rendered HTML.
+  const named = {
+    nbsp: " ",
+    amp: "&",
+    lt: "<",
+    gt: ">",
+    quot: '"',
+    apos: "'",
+    "#39": "'",
+  };
+  text = text.replace(/&([a-z0-9#]+);/gi, (m, name) => {
+    const key = String(name || "").toLowerCase();
+    if (named[key] != null) return named[key];
+
+    // Numeric entities (decimal / hex).
+    const decMatch = key.match(/^#(\d+)$/);
+    if (decMatch) {
+      const n = Number(decMatch[1]);
+      if (Number.isFinite(n) && n >= 0 && n <= 0x10ffff) {
+        try {
+          return String.fromCodePoint(n);
+        } catch {
+          return m;
+        }
+      }
+      return m;
+    }
+
+    const hexMatch = key.match(/^#x([0-9a-f]+)$/i);
+    if (hexMatch) {
+      const n = Number.parseInt(hexMatch[1], 16);
+      if (Number.isFinite(n) && n >= 0 && n <= 0x10ffff) {
+        try {
+          return String.fromCodePoint(n);
+        } catch {
+          return m;
+        }
+      }
+      return m;
+    }
+
+    return m;
+  });
+
+  // Normalize whitespace/newlines.
+  text = text.replace(/\r\n/g, "\n");
+  text = text.replace(/\n{3,}/g, "\n\n");
+  return text.trim();
+}
+
 function normalizeReleaseNotes(releaseNotes) {
   if (!releaseNotes) return "";
-  if (typeof releaseNotes === "string") return releaseNotes;
+
+  const normalizeText = (value) => {
+    if (value == null) return "";
+    const raw = typeof value === "string" ? value : String(value);
+    const trimmed = raw.trim();
+    if (!trimmed) return "";
+    if (looksLikeHtml(trimmed)) return htmlToPlainText(trimmed);
+    return trimmed;
+  };
+
+  if (typeof releaseNotes === "string") return normalizeText(releaseNotes);
   if (Array.isArray(releaseNotes)) {
     const parts = [];
     for (const item of releaseNotes) {
@@ -275,15 +374,17 @@ function normalizeReleaseNotes(releaseNotes) {
       const note = item?.note;
       const noteText =
         typeof note === "string" ? note : note != null ? JSON.stringify(note, null, 2) : "";
-      const block = [version ? `v${version}` : "", noteText].filter(Boolean).join("\n");
+      const block = [version ? `v${version}` : "", normalizeText(noteText)]
+        .filter(Boolean)
+        .join("\n");
       if (block) parts.push(block);
     }
     return parts.join("\n\n");
   }
   try {
-    return JSON.stringify(releaseNotes, null, 2);
+    return normalizeText(JSON.stringify(releaseNotes, null, 2));
   } catch {
-    return String(releaseNotes);
+    return normalizeText(releaseNotes);
   }
 }
 
