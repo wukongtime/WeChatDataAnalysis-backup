@@ -8,7 +8,8 @@ const {
   dialog,
   shell,
 } = require("electron");
-const { spawn } = require("child_process");
+const { autoUpdater } = require("electron-updater");
+const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
@@ -24,6 +25,22 @@ let mainWindow = null;
 let tray = null;
 let isQuitting = false;
 let desktopSettings = null;
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  // If we allow a second instance to boot it will try to spawn another backend on the same port.
+  // Quit early to avoid leaving orphan backend processes around.
+  try {
+    app.quit();
+  } catch {}
+} else {
+  app.on("second-instance", () => {
+    try {
+      if (app.isReady()) showMainWindow();
+      else app.whenReady().then(() => showMainWindow());
+    } catch {}
+  });
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -127,6 +144,8 @@ function loadDesktopSettings() {
     // 'tray' (default): closing the window hides it to the system tray.
     // 'exit': closing the window quits the app.
     closeBehavior: "tray",
+    // When set, suppress the auto-update prompt for this exact version.
+    ignoredUpdateVersion: "",
   };
 
   const p = getDesktopSettingsPath();
@@ -175,6 +194,229 @@ function setCloseBehavior(next) {
   desktopSettings.closeBehavior = v === "exit" ? "exit" : "tray";
   persistDesktopSettings();
   return desktopSettings.closeBehavior;
+}
+
+function getIgnoredUpdateVersion() {
+  const v = String(loadDesktopSettings()?.ignoredUpdateVersion || "").trim();
+  return v || "";
+}
+
+function setIgnoredUpdateVersion(version) {
+  loadDesktopSettings();
+  desktopSettings.ignoredUpdateVersion = String(version || "").trim();
+  persistDesktopSettings();
+  return desktopSettings.ignoredUpdateVersion;
+}
+
+function parseEnvBool(value) {
+  if (value == null) return null;
+  const v = String(value).trim().toLowerCase();
+  if (!v) return null;
+  if (v === "1" || v === "true" || v === "yes" || v === "y" || v === "on") return true;
+  if (v === "0" || v === "false" || v === "no" || v === "n" || v === "off") return false;
+  return null;
+}
+
+let autoUpdateEnabledCache = null;
+function isAutoUpdateEnabled() {
+  if (autoUpdateEnabledCache != null) return !!autoUpdateEnabledCache;
+
+  const forced = parseEnvBool(process.env.AUTO_UPDATE_ENABLED);
+  let enabled = forced != null ? forced : !!app.isPackaged;
+
+  // In packaged builds electron-updater reads update config from app-update.yml.
+  // If missing, treat auto-update as disabled to avoid noisy errors.
+  if (enabled && app.isPackaged) {
+    try {
+      const updateConfigPath = path.join(process.resourcesPath, "app-update.yml");
+      if (!fs.existsSync(updateConfigPath)) {
+        enabled = false;
+        logMain(`[main] auto-update disabled: missing ${updateConfigPath}`);
+      }
+    } catch (err) {
+      enabled = false;
+      logMain(`[main] auto-update disabled: failed to check app-update.yml: ${err?.message || err}`);
+    }
+  }
+
+  autoUpdateEnabledCache = enabled;
+  return enabled;
+}
+
+let autoUpdaterInitialized = false;
+let updateDownloadInProgress = false;
+let installOnDownload = false;
+let updateDownloaded = false;
+let lastUpdateInfo = null;
+
+function sendToRenderer(channel, payload) {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send(channel, payload);
+  } catch (err) {
+    logMain(`[main] failed to send ${channel}: ${err?.message || err}`);
+  }
+}
+
+function setWindowProgressBar(value) {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.setProgressBar(value);
+  } catch {}
+}
+
+function normalizeReleaseNotes(releaseNotes) {
+  if (!releaseNotes) return "";
+  if (typeof releaseNotes === "string") return releaseNotes;
+  if (Array.isArray(releaseNotes)) {
+    const parts = [];
+    for (const item of releaseNotes) {
+      const version = item?.version ? String(item.version) : "";
+      const note = item?.note;
+      const noteText =
+        typeof note === "string" ? note : note != null ? JSON.stringify(note, null, 2) : "";
+      const block = [version ? `v${version}` : "", noteText].filter(Boolean).join("\n");
+      if (block) parts.push(block);
+    }
+    return parts.join("\n\n");
+  }
+  try {
+    return JSON.stringify(releaseNotes, null, 2);
+  } catch {
+    return String(releaseNotes);
+  }
+}
+
+function initAutoUpdater() {
+  if (autoUpdaterInitialized) return;
+  autoUpdaterInitialized = true;
+
+  // Configure auto-updater (align with WeFlow).
+  autoUpdater.autoDownload = false;
+  // Don't install automatically on quit; let the user choose when to restart/install.
+  autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.disableDifferentialDownload = true;
+
+  autoUpdater.on("download-progress", (progress) => {
+    sendToRenderer("app:downloadProgress", progress);
+    const percent = Number(progress?.percent || 0);
+    if (Number.isFinite(percent) && percent > 0) {
+      setWindowProgressBar(Math.max(0, Math.min(1, percent / 100)));
+    }
+  });
+
+  autoUpdater.on("update-downloaded", () => {
+    updateDownloadInProgress = false;
+    updateDownloaded = true;
+    installOnDownload = false;
+    setWindowProgressBar(-1);
+
+    const payload = {
+      version: lastUpdateInfo?.version ? String(lastUpdateInfo.version) : "",
+      releaseNotes: normalizeReleaseNotes(lastUpdateInfo?.releaseNotes),
+    };
+    sendToRenderer("app:updateDownloaded", payload);
+
+    try {
+      // If the window is hidden to tray, show a lightweight hint instead of forcing UI focus.
+      tray?.displayBalloon?.({
+        title: "更新已下载完成",
+        content: "可在弹窗中选择“立即重启安装”，或稍后再安装。",
+      });
+    } catch {}
+  });
+
+  autoUpdater.on("error", (err) => {
+    updateDownloadInProgress = false;
+    installOnDownload = false;
+    updateDownloaded = false;
+    setWindowProgressBar(-1);
+    const message = err?.message || String(err);
+    logMain(`[main] autoUpdater error: ${message}`);
+    sendToRenderer("app:updateError", { message });
+  });
+}
+
+async function checkForUpdatesInternal() {
+  const enabled = isAutoUpdateEnabled();
+  if (!enabled) return { hasUpdate: false, enabled: false };
+
+  initAutoUpdater();
+
+  try {
+    const result = await autoUpdater.checkForUpdates();
+    const updateInfo = result?.updateInfo;
+    lastUpdateInfo = updateInfo || null;
+    const latestVersion = updateInfo?.version ? String(updateInfo.version) : "";
+    const currentVersion = (() => {
+      try {
+        return app.getVersion();
+      } catch {
+        return "";
+      }
+    })();
+
+    if (latestVersion && currentVersion && latestVersion !== currentVersion) {
+      return {
+        hasUpdate: true,
+        enabled: true,
+        version: latestVersion,
+        releaseNotes: normalizeReleaseNotes(updateInfo?.releaseNotes),
+      };
+    }
+
+    return { hasUpdate: false, enabled: true };
+  } catch (err) {
+    const message = err?.message || String(err);
+    logMain(`[main] checkForUpdates failed: ${message}`);
+    return { hasUpdate: false, enabled: true, error: message };
+  }
+}
+
+async function downloadAndInstallInternal() {
+  if (!isAutoUpdateEnabled()) {
+    throw new Error("自动更新已禁用");
+  }
+  initAutoUpdater();
+
+  if (updateDownloadInProgress) {
+    throw new Error("正在下载更新中，请稍候…");
+  }
+
+  updateDownloadInProgress = true;
+  installOnDownload = true;
+  updateDownloaded = false;
+  setWindowProgressBar(0);
+
+  try {
+    // Ensure update info is up-to-date (downloadUpdate relies on the last check).
+    await autoUpdater.checkForUpdates();
+    await autoUpdater.downloadUpdate();
+    return { success: true };
+  } catch (err) {
+    updateDownloadInProgress = false;
+    installOnDownload = false;
+    setWindowProgressBar(-1);
+    throw err;
+  }
+}
+
+function checkForUpdatesOnStartup() {
+  if (!isAutoUpdateEnabled()) return;
+  if (!app.isPackaged) return; // keep dev noise-free by default
+
+  setTimeout(async () => {
+    const result = await checkForUpdatesInternal();
+    if (!result?.hasUpdate) return;
+
+    const ignored = getIgnoredUpdateVersion();
+    if (ignored && ignored === result.version) return;
+
+    sendToRenderer("app:updateAvailable", {
+      version: result.version,
+      releaseNotes: result.releaseNotes || "",
+    });
+  }, 3000);
 }
 
 function getTrayIconPath() {
@@ -237,6 +479,91 @@ function createTray() {
         {
           label: "显示",
           click: () => showMainWindow(),
+        },
+        {
+          label: "检查更新...",
+          click: async () => {
+            try {
+              if (!isAutoUpdateEnabled()) {
+                await dialog.showMessageBox({
+                  type: "info",
+                  title: "检查更新",
+                  message: "自动更新已禁用（仅打包版本可用）。",
+                  buttons: ["确定"],
+                  noLink: true,
+                });
+                return;
+              }
+
+              const result = await checkForUpdatesInternal();
+              if (result?.error) {
+                await dialog.showMessageBox({
+                  type: "error",
+                  title: "检查更新失败",
+                  message: result.error,
+                  buttons: ["确定"],
+                  noLink: true,
+                });
+                return;
+              }
+
+              if (result?.hasUpdate && result?.version) {
+                const { response } = await dialog.showMessageBox({
+                  type: "info",
+                  title: "发现新版本",
+                  message: `发现新版本 ${result.version}，是否立即更新？`,
+                  detail: result.releaseNotes ? `更新内容：\n${result.releaseNotes}` : undefined,
+                  buttons: ["立即更新", "稍后", "忽略此版本"],
+                  defaultId: 0,
+                  cancelId: 1,
+                  noLink: true,
+                });
+
+                if (response === 0) {
+                  try {
+                    await downloadAndInstallInternal();
+                  } catch (err) {
+                    const message = err?.message || String(err);
+                    logMain(`[main] downloadAndInstall failed (tray): ${message}`);
+                    await dialog.showMessageBox({
+                      type: "error",
+                      title: "更新失败",
+                      message,
+                      buttons: ["确定"],
+                      noLink: true,
+                    });
+                  }
+                } else if (response === 2) {
+                  try {
+                    setIgnoredUpdateVersion(result.version);
+                  } catch {}
+                }
+
+                return;
+              }
+
+              await dialog.showMessageBox({
+                type: "info",
+                title: "检查更新",
+                message: "当前已是最新版本。",
+                buttons: ["确定"],
+                noLink: true,
+              });
+            } catch (err) {
+              const message = err?.message || String(err);
+              logMain(`[main] tray check updates failed: ${message}`);
+              await dialog.showMessageBox({
+                type: "error",
+                title: "检查更新失败",
+                message,
+                buttons: ["确定"],
+                noLink: true,
+              });
+            }
+          },
+        },
+        {
+          type: "separator",
         },
         {
           label: "退出",
@@ -380,17 +707,28 @@ function startBackend() {
 function stopBackend() {
   if (!backendProc) return;
 
-  try {
-    if (process.platform === "win32" && backendProc.pid) {
-      // Ensure child tree is killed on Windows.
-      spawn("taskkill", ["/pid", String(backendProc.pid), "/T", "/F"], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
-      return;
-    }
-  } catch {}
+  const pid = backendProc.pid;
+  logMain(`[main] stopBackend pid=${pid || "?"}`);
 
+  // Best-effort: ensure process tree is gone on Windows. Use spawnSync so the kill
+  // isn't aborted by the app quitting immediately after "before-quit".
+  if (process.platform === "win32" && pid) {
+    const systemRoot = process.env.SystemRoot || process.env.WINDIR || "C:\\Windows";
+    const taskkillExe = path.join(systemRoot, "System32", "taskkill.exe");
+    const args = ["/pid", String(pid), "/T", "/F"];
+
+    try {
+      const exe = fs.existsSync(taskkillExe) ? taskkillExe : "taskkill";
+      const r = spawnSync(exe, args, { stdio: "ignore", windowsHide: true, timeout: 5000 });
+      if (r?.error) logMain(`[main] taskkill failed: ${r.error?.message || r.error}`);
+      else if (typeof r?.status === "number" && r.status !== 0)
+        logMain(`[main] taskkill exit code=${r.status}`);
+    } catch (err) {
+      logMain(`[main] taskkill exception: ${err?.message || err}`);
+    }
+  }
+
+  // Fallback: kill the direct process (taskkill might be missing from PATH in some envs).
   try {
     backendProc.kill();
   } catch {}
@@ -612,6 +950,47 @@ function registerWindowIpc() {
     }
   });
 
+  ipcMain.handle("app:getVersion", () => {
+    try {
+      return app.getVersion();
+    } catch (err) {
+      logMain(`[main] getVersion failed: ${err?.message || err}`);
+      return "";
+    }
+  });
+
+  ipcMain.handle("app:checkForUpdates", async () => {
+    return await checkForUpdatesInternal();
+  });
+
+  ipcMain.handle("app:downloadAndInstall", async () => {
+    return await downloadAndInstallInternal();
+  });
+
+  ipcMain.handle("app:installUpdate", async () => {
+    if (!isAutoUpdateEnabled()) {
+      throw new Error("自动更新已禁用");
+    }
+    initAutoUpdater();
+    if (!updateDownloaded) {
+      throw new Error("更新尚未下载完成");
+    }
+
+    try {
+      autoUpdater.quitAndInstall(false, true);
+      return { success: true };
+    } catch (err) {
+      const message = err?.message || String(err);
+      logMain(`[main] installUpdate failed: ${message}`);
+      throw new Error(message);
+    }
+  });
+
+  ipcMain.handle("app:ignoreUpdate", async (_event, version) => {
+    setIgnoredUpdateVersion(version);
+    return { success: true };
+  });
+
   ipcMain.handle("dialog:chooseDirectory", async (_event, options) => {
     try {
       const result = await dialog.showOpenDialog({
@@ -658,6 +1037,9 @@ async function main() {
 
   await loadWithRetry(win, startUrl);
 
+  // Auto-check updates after the UI has loaded (packaged builds only).
+  checkForUpdatesOnStartup();
+
   // If debug mode is enabled, auto-open DevTools so the user doesn't need menu/shortcuts.
   if (debugEnabled()) {
     try {
@@ -683,20 +1065,22 @@ app.on("before-quit", () => {
   stopBackend();
 });
 
-main().catch((err) => {
-  // eslint-disable-next-line no-console
-  console.error(err);
-  logMain(`[main] fatal: ${err?.stack || String(err)}`);
-  stopBackend();
-  try {
-    const dir = getUserDataDir();
-    if (dir) {
-      dialog.showErrorBox(
-        "WeChatDataAnalysis 启动失败",
-        `启动失败：${err?.message || err}\n\n请查看日志目录：\n${dir}\n\n文件：desktop-main.log / backend-stdio.log / output\\\\logs\\\\...`
-      );
-      shell.openPath(dir);
-    }
-  } catch {}
-  app.quit();
-});
+if (gotSingleInstanceLock) {
+  main().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error(err);
+    logMain(`[main] fatal: ${err?.stack || String(err)}`);
+    stopBackend();
+    try {
+      const dir = getUserDataDir();
+      if (dir) {
+        dialog.showErrorBox(
+          "WeChatDataAnalysis 启动失败",
+          `启动失败：${err?.message || err}\n\n请查看日志目录：\n${dir}\n\n文件：desktop-main.log / backend-stdio.log / output\\\\logs\\\\...`
+        );
+        shell.openPath(dir);
+      }
+    } catch {}
+    app.quit();
+  });
+}

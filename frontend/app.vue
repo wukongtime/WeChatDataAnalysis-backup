@@ -8,6 +8,22 @@
         <NuxtPage />
       </div>
     </div>
+
+    <ClientOnly v-if="isDesktopUpdater">
+      <DesktopUpdateDialog
+        :open="desktopUpdate.open"
+        :info="desktopUpdate.info"
+        :is-downloading="desktopUpdate.isDownloading"
+        :ready-to-install="desktopUpdate.readyToInstall"
+        :progress="desktopUpdate.progress"
+        :error="desktopUpdate.error"
+        :has-ignore="true"
+        @close="desktopUpdate.dismiss"
+        @update="desktopUpdate.startUpdate"
+        @install="desktopUpdate.installUpdate"
+        @ignore="desktopUpdate.ignore"
+      />
+    </ClientOnly>
   </div>
 </template>
 
@@ -16,12 +32,14 @@ import { useChatAccountsStore } from '~/stores/chatAccounts'
 import { usePrivacyStore } from '~/stores/privacy'
 
 const route = useRoute()
+const desktopUpdate = useDesktopUpdate()
 
 // In Electron the server/pre-render doesn't know about `window.wechatDesktop`.
 // If we render different DOM on server vs client, Vue hydration will keep the
 // server HTML (no patch) and the layout/CSS fixes won't apply reliably.
 // So we detect desktop onMounted and update reactively.
 const isDesktop = ref(false)
+const isDesktopUpdater = ref(false)
 
 const updateDprVar = () => {
   const dpr = window.devicePixelRatio || 1
@@ -29,9 +47,21 @@ const updateDprVar = () => {
 }
 
 onMounted(() => {
-  isDesktop.value = !!window?.wechatDesktop
+  const isElectron = /electron/i.test(String(navigator.userAgent || ''))
+  const api = window?.wechatDesktop
+  isDesktop.value = isElectron && !!api
+  const brandOk = !api?.__brand || api.__brand === 'WeChatDataAnalysisDesktop'
+  isDesktopUpdater.value =
+    isDesktop.value &&
+    brandOk &&
+    typeof api?.checkForUpdates === 'function' &&
+    typeof api?.downloadAndInstall === 'function'
   updateDprVar()
   window.addEventListener('resize', updateDprVar)
+
+  if (isDesktopUpdater.value) {
+    void desktopUpdate.initListeners()
+  }
 
   // Init global UI state.
   const chatAccounts = useChatAccountsStore()

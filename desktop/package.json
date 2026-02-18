@@ -9,11 +9,15 @@
     "build:ui": "pushd ..\\\\frontend && npm run generate && popd && node scripts\\\\copy-ui.cjs",
     "build:backend": "uv sync --extra build && node scripts/build-backend.cjs",
     "build:icon": "node scripts/build-icon.cjs",
-    "dist": "npm run build:ui && npm run build:backend && npm run build:icon && electron-builder --win --x64"
+    "dist": "npm run build:ui && npm run build:backend && npm run build:icon && electron-builder --win --x64 --publish never"
+  },
+  "dependencies": {
+    "electron-updater": "^6.7.3"
   },
   "build": {
     "appId": "com.lifearchive.wechatdataanalysis",
     "productName": "WeChatDataAnalysis",
+    "artifactName": "${productName}-${version}-Setup.${ext}",
     "icon": "build/icon.ico",
     "asar": true,
     "directories": {
@@ -38,6 +42,12 @@
       "target": [
         "nsis"
       ]
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "LifeArchiveProject",
+      "repo": "WeChatDataAnalysis",
+      "releaseType": "release"
     },
     "nsis": {
       "oneClick": false,
