@@ -65,26 +65,18 @@
 
 ## 年度总结
 
-年度总结现在支持 3 种不同风格（style1、style2、style3）。如果你对某个风格有更好的修改建议，或有新风格的点子，欢迎到 Issue 区反馈：https://github.com/LifeArchiveProject/WeChatDataAnalysis/issues
+年度总结目前只保留「现代（Modern）」风格。如果你对年度总结有更好的修改建议，欢迎到 Issue 区反馈：https://github.com/LifeArchiveProject/WeChatDataAnalysis/issues
 
-> ⚠️ **提醒**：年度总结目前还不是最终版本，后续还会增加新总结或新风格。
+> ⚠️ **提醒**：年度总结目前还不是最终版本，后续还会增加新总结或新内容。
 
 也欢迎加入下方 QQ 群一起讨论。
 
 <table>
   <tr>
-    <td align="center"><b>Style 1</b></td>
-    <td align="center"><b>Style 2</b></td>
+    <td align="center"><b>Modern</b></td>
   </tr>
   <tr>
-    <td><img src="frontend/public/style1.png" alt="年度总结 Style 1" width="400"/></td>
-    <td><img src="frontend/public/style2.png" alt="年度总结 Style 2" width="400"/></td>
-  </tr>
-  <tr>
-    <td align="center" colspan="2"><b>Style 3</b></td>
-  </tr>
-  <tr>
-    <td align="center" colspan="2"><img src="frontend/public/style3.png" alt="年度总结 Style 3" width="400"/></td>
+    <td align="center"><img src="frontend/public/style1.png" alt="年度总结 Modern" width="400"/></td>
   </tr>
 </table>
 
