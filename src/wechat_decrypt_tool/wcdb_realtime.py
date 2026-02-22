@@ -175,6 +175,36 @@ def _load_wcdb_lib() -> ctypes.CDLL:
         except Exception:
             pass
 
+        # Optional (newer DLLs): update a single message content in message db.
+        # Signature: wcdb_update_message(handle, sessionId, localId, createTime, newContent, outError)
+        try:
+            lib.wcdb_update_message.argtypes = [
+                ctypes.c_int64,
+                ctypes.c_char_p,
+                ctypes.c_int64,
+                ctypes.c_int32,
+                ctypes.c_char_p,
+                ctypes.POINTER(ctypes.c_char_p),
+            ]
+            lib.wcdb_update_message.restype = ctypes.c_int
+        except Exception:
+            pass
+
+        # Optional (newer DLLs): delete a single message in message db.
+        # Signature: wcdb_delete_message(handle, sessionId, localId, createTime, dbPathHint, outError)
+        try:
+            lib.wcdb_delete_message.argtypes = [
+                ctypes.c_int64,
+                ctypes.c_char_p,
+                ctypes.c_int64,
+                ctypes.c_int32,
+                ctypes.c_char_p,
+                ctypes.POINTER(ctypes.c_char_p),
+            ]
+            lib.wcdb_delete_message.restype = ctypes.c_int
+        except Exception:
+            pass
+
         # Optional (newer DLLs): wcdb_get_sns_timeline(handle, limit, offset, usernames_json, keyword, start_time, end_time, out_json)
         try:
             lib.wcdb_get_sns_timeline.argtypes = [
@@ -251,6 +281,32 @@ def _call_out_json(fn, *args) -> str:
             return raw.decode("utf-8", errors="replace")
         except Exception:
             return ""
+    finally:
+        try:
+            if out.value:
+                lib.wcdb_free_string(out)
+        except Exception:
+            pass
+
+
+def _call_out_error(fn, *args) -> None:
+    lib = _load_wcdb_lib()
+    out = ctypes.c_char_p()
+    rc = int(fn(*args, ctypes.byref(out)))
+    try:
+        if rc != 0:
+            err = ""
+            try:
+                if out.value:
+                    err = (out.value or b"").decode("utf-8", errors="replace")
+            except Exception:
+                err = ""
+
+            logs = get_native_logs()
+            hint = f" logs={logs[:6]}" if logs else ""
+            if err:
+                raise WCDBRealtimeError(f"wcdb api call failed: {rc}. error={err}.{hint}")
+            raise WCDBRealtimeError(f"wcdb api call failed: {rc}.{hint}")
     finally:
         try:
             if out.value:
@@ -498,6 +554,64 @@ def exec_query(handle: int, *, kind: str, path: Optional[str], sql: str) -> list
                 out.append(x)
         return out
     return []
+
+
+def update_message(handle: int, *, session_id: str, local_id: int, create_time: int, new_content: str) -> None:
+    """Update a single message content in the live encrypted db_storage via WCDB.
+
+    Requires wcdb_update_message export in wcdb_api.dll.
+    """
+    _ensure_initialized()
+    lib = _load_wcdb_lib()
+    fn = getattr(lib, "wcdb_update_message", None)
+    if not fn:
+        raise WCDBRealtimeError("Current wcdb_api.dll does not support update_message.")
+
+    sid = str(session_id or "").strip()
+    if not sid:
+        raise WCDBRealtimeError("Missing session_id for update_message.")
+
+    _call_out_error(
+        fn,
+        ctypes.c_int64(int(handle)),
+        sid.encode("utf-8"),
+        ctypes.c_int64(int(local_id or 0)),
+        ctypes.c_int32(int(create_time or 0)),
+        str(new_content or "").encode("utf-8"),
+    )
+
+
+def delete_message(
+    handle: int,
+    *,
+    session_id: str,
+    local_id: int,
+    create_time: int,
+    db_path_hint: str | None = None,
+) -> None:
+    """Delete a single message in the live encrypted db_storage via WCDB.
+
+    Requires wcdb_delete_message export in wcdb_api.dll.
+    """
+    _ensure_initialized()
+    lib = _load_wcdb_lib()
+    fn = getattr(lib, "wcdb_delete_message", None)
+    if not fn:
+        raise WCDBRealtimeError("Current wcdb_api.dll does not support delete_message.")
+
+    sid = str(session_id or "").strip()
+    if not sid:
+        raise WCDBRealtimeError("Missing session_id for delete_message.")
+
+    hint = str(db_path_hint or "").strip()
+    _call_out_error(
+        fn,
+        ctypes.c_int64(int(handle)),
+        sid.encode("utf-8"),
+        ctypes.c_int64(int(local_id or 0)),
+        ctypes.c_int32(int(create_time or 0)),
+        hint.encode("utf-8"),
+    )
 
 
 def get_sns_timeline(
