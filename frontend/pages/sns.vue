@@ -108,12 +108,13 @@
       <div ref="timelineScrollEl" class="flex-1 overflow-auto min-h-0 bg-white" @scroll="onScroll">
 	        <div class="max-w-2xl mx-auto px-4 py-4">
             <div class="relative w-full mb-12 -mt-4 bg-white">
-              <div class="h-64 w-full bg-[#333333] relative overflow-hidden group" @mouseenter="onCoverMediaHover">
+              <div class="h-64 w-full bg-[#333333] relative overflow-hidden group">
                 <img
                     v-if="activeCover && activeCover.media && activeCover.media.length > 0"
                     :src="getSnsMediaUrl(activeCover, activeCover.media[0], 0, activeCover.media[0].url)"
                     class="w-full h-full object-cover"
                     alt="朋友圈封面"
+                    @load="onCoverMediaLoaded(activeCover, $event)"
                 />
                 <div
                     v-if="snsMediaStageLabel(snsCoverStageKey(activeCover)) || snsMediaStageLoading[snsCoverStageKey(activeCover)]"
@@ -279,13 +280,62 @@
                   </div>
                 </div>
 
+                <div v-else-if="isExternalShareMoment(post)" class="mt-2 w-full" :class="{ 'privacy-blur': privacyMode }">
+                  <a
+                      v-if="getMomentLinkCardUrl(post)"
+                      :href="getMomentLinkCardUrl(post)"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="block w-full bg-[#F7F7F7] p-2 rounded-sm no-underline hover:bg-[#EFEFEF] transition-colors"
+                  >
+                    <div class="flex items-center gap-3">
+                      <img
+                          v-if="getExternalShareCardThumbSrc(post)"
+                          :src="getExternalShareCardThumbSrc(post)"
+                          class="w-12 h-12 object-cover flex-shrink-0 bg-white"
+                          alt=""
+                          loading="lazy"
+                          referrerpolicy="no-referrer"
+                          @error="onExternalShareCardThumbError(post)"
+                      />
+                      <div v-else class="w-12 h-12 flex items-center justify-center bg-gray-200 text-gray-400 flex-shrink-0 text-xs">
+                        {{ formatExternalSharePlaceholder(post) }}
+                      </div>
+
+                      <div class="flex-1 min-w-0 flex items-center overflow-hidden h-12">
+                        <div class="text-[13px] text-gray-900 leading-tight line-clamp-2">{{ formatExternalShareCardTitle(post) }}</div>
+                      </div>
+                    </div>
+                  </a>
+                  <div v-else class="block w-full bg-[#F7F7F7] p-2 rounded-sm">
+                    <div class="flex items-center gap-3">
+                      <img
+                          v-if="getExternalShareCardThumbSrc(post)"
+                          :src="getExternalShareCardThumbSrc(post)"
+                          class="w-12 h-12 object-cover flex-shrink-0 bg-white"
+                          alt=""
+                          loading="lazy"
+                          referrerpolicy="no-referrer"
+                          @error="onExternalShareCardThumbError(post)"
+                      />
+                      <div v-else class="w-12 h-12 flex items-center justify-center bg-gray-200 text-gray-400 flex-shrink-0 text-xs">
+                        {{ formatExternalSharePlaceholder(post) }}
+                      </div>
+
+                      <div class="flex-1 min-w-0 flex items-center overflow-hidden h-12">
+                        <div class="text-[13px] text-gray-900 leading-tight line-clamp-2">{{ formatExternalShareCardTitle(post) }}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <div v-else-if="post.media && post.media.length > 0" class="mt-2" :class="{ 'privacy-blur': privacyMode }">
                   <div v-if="post.media.length === 1" class="max-w-[360px]">
                     <div
                         v-if="!hasMediaError(post.id, 0) && getMediaThumbSrc(post, post.media[0], 0)"
                         class="inline-block cursor-pointer relative group"
                         @click.stop="onMediaClick(post, post.media[0], 0)"
-                        @mouseenter="onLivePhotoEnter(post.id, 0, post.media[0]); onSnsMediaHover(post, post.media[0], 0)"
+                        @mouseenter="onLivePhotoEnter(post.id, 0, post.media[0])"
                         @mouseleave="onLivePhotoLeave(post.id, 0, post.media[0])"
                     >
                       <video
@@ -297,7 +347,7 @@
                           loop
                           muted
                           playsinline
-                          @loadeddata="onLocalVideoLoaded(post.id, post.media[0].id)"
+                          @loadeddata="onLocalVideoLoaded(post.id, post.media[0].id); onSnsMediaLoaded(post, post.media[0], 0)"
                           @error="onLocalVideoError(post.id, post.media[0].id)"
                       ></video>
 
@@ -311,6 +361,7 @@
                           loop
                           :muted="livePhotoHoverMuted"
                           playsinline
+                          @loadeddata="onSnsMediaLoaded(post, post.media[0], 0)"
                           @error="onLivePhotoVideoError(post.id, 0)"
                       ></video>
 
@@ -321,6 +372,7 @@
                           alt=""
                           loading="lazy"
                           referrerpolicy="no-referrer"
+                          @load="onSnsMediaLoaded(post, post.media[0], 0, $event)"
                           @error="onMediaError(post.id, 0)"
                       />
 
@@ -387,7 +439,7 @@
                         :key="idx"
                         class="w-[116px] h-[116px] rounded-[2px] overflow-hidden bg-gray-100 border border-gray-200 flex items-center justify-center cursor-pointer relative group"
                         @click.stop="onMediaClick(post, m, idx)"
-                        @mouseenter="onLivePhotoEnter(post.id, idx, m); onSnsMediaHover(post, m, idx)"
+                        @mouseenter="onLivePhotoEnter(post.id, idx, m)"
                         @mouseleave="onLivePhotoLeave(post.id, idx, m)"
                     >
                       <video
@@ -399,7 +451,7 @@
                           loop
                           muted
                           playsinline
-                          @loadeddata="onLocalVideoLoaded(post.id, m.id)"
+                          @loadeddata="onLocalVideoLoaded(post.id, m.id); onSnsMediaLoaded(post, m, idx)"
                           @error="onLocalVideoError(post.id, m.id)"
                       ></video>
                       <video
@@ -412,6 +464,7 @@
                           loop
                           :muted="livePhotoHoverMuted"
                           playsinline
+                          @loadeddata="onSnsMediaLoaded(post, m, idx)"
                           @error="onLivePhotoVideoError(post.id, idx)"
                       ></video>
                       <img
@@ -421,6 +474,7 @@
                           alt=""
                           loading="lazy"
                           referrerpolicy="no-referrer"
+                          @load="onSnsMediaLoaded(post, m, idx, $event)"
                           @error="onMediaError(post.id, idx)"
                       />
 
@@ -636,6 +690,17 @@ import { parseTextWithEmoji } from '~/utils/wechat-emojis'
 import { SNS_SETTING_USE_CACHE_KEY, readLocalBoolSetting } from '~/utils/desktop-settings'
 
 useHead({ title: '朋友圈 - 微信数据分析助手' })
+
+// Nuxt dev mode can load hundreds of module resources, quickly filling the default
+// ResourceTiming buffer (150). If it overflows, `<img>` requests may not produce
+// entries, making Server-Timing based stage detection always fall back to "unknown".
+if (process.client) {
+  try {
+    if (typeof performance !== 'undefined' && performance?.setResourceTimingBufferSize) {
+      performance.setResourceTimingBufferSize(5000)
+    }
+  } catch {}
+}
 
 const api = useApi()
 
@@ -893,6 +958,7 @@ const snsMediaStageLabel = (key) => {
   if (source === 'manual-pick') return '手动匹配'
   if (source === 'local-heuristic') return '本地兜底'
   if (source === 'local-heuristic-next') return '本地兜底(跳过)'
+  if (source === 'browser-cache') return '浏览器缓存'
   if (source === 'bkg-cover') return '封面缓存'
   if (source === 'proxy') return '远程代理'
   if (source === 'unknown') return '未知'
@@ -908,6 +974,7 @@ const snsMediaStageBadgeColorClass = (key) => {
   if (source === 'deterministic-hash') return 'bg-sky-600/85 text-white'
   if (source.startsWith('local')) return 'bg-blue-600/85 text-white'
   if (source === 'manual-pick') return 'bg-amber-600/90 text-white'
+  if (source === 'browser-cache') return 'bg-slate-600/85 text-white'
   if (source === 'proxy') return 'bg-fuchsia-600/85 text-white'
   if (source === 'bkg-cover') return 'bg-indigo-600/85 text-white'
   if (source === 'error') return 'bg-red-600/85 text-white'
@@ -929,6 +996,48 @@ const snsMediaStageBadgeTitle = (key) => {
   return parts.join(' · ')
 }
 
+const readSnsStageFromResourceTiming = (url) => {
+  try {
+    if (!process.client) return null
+    if (typeof performance === 'undefined' || !performance?.getEntriesByName) return null
+    const u = String(url || '').trim()
+    if (!u) return null
+    const entries = performance.getEntriesByName(u) || []
+    const latest = [...entries].reverse().find((e) => String(e?.entryType || '') === 'resource')
+    if (!latest) return null
+
+    // Prefer backend-injected stage info from `Server-Timing`.
+    const st = latest?.serverTiming
+    if (Array.isArray(st) && st.length > 0) {
+      let source = ''
+      let hitType = ''
+      let xEnc = ''
+      for (const item of st) {
+        const name = String(item?.name || '').trim()
+        const desc = String(item?.description || '').trim()
+        if (name === 'sns_source' && desc) source = desc
+        else if (name.startsWith('sns_source_')) source = name.slice('sns_source_'.length) || desc
+        else if (name === 'sns_hit' && desc) hitType = desc
+        else if (name.startsWith('sns_hit_')) hitType = name.slice('sns_hit_'.length) || desc
+        else if (name === 'sns_xenc' && desc) xEnc = desc
+        else if (name.startsWith('sns_xenc_')) xEnc = name.slice('sns_xenc_'.length) || desc
+      }
+      if (source) return { source, hitType, xEnc }
+    }
+
+    // When DevTools shows "(from disk cache)", browsers may not expose `serverTiming` at all.
+    // Best-effort: infer a browser cache hit from ResourceTiming sizes.
+    const transferSize = Number(latest?.transferSize)
+    if (Number.isFinite(transferSize) && transferSize === 0) {
+      return { source: 'browser-cache', hitType: 'transfer=0', xEnc: '' }
+    }
+
+    return null
+  } catch {
+    return null
+  }
+}
+
 const ensureSnsMediaStage = async (key, url) => {
   if (!process.client) return
   const k = String(key || '').trim()
@@ -936,7 +1045,8 @@ const ensureSnsMediaStage = async (key, url) => {
   if (!k || !u) return
   if (!isSnsMediaApiUrl(u)) return
 
-  if (snsMediaStage.value[k]) return
+  const existingSource = String(snsMediaStage.value?.[k]?.source || '').trim()
+  if (existingSource && existingSource !== 'unknown') return
   if (snsMediaStageLoading.value[k]) return
   if (snsMediaStageInFlight.has(k)) return
 
@@ -944,36 +1054,42 @@ const ensureSnsMediaStage = async (key, url) => {
   snsMediaStageLoading.value[k] = true
 
   try {
-    const resp = await fetch(u, { method: 'GET', mode: 'cors', cache: 'force-cache' })
-    const source = String(resp.headers.get('X-SNS-Source') || '').trim() || 'unknown'
-    const hitType = String(resp.headers.get('X-SNS-Hit-Type') || '').trim()
-    const xEnc = String(resp.headers.get('X-SNS-X-Enc') || '').trim()
-
-    snsMediaStage.value[k] = { source, hitType, xEnc }
-
-    try {
-      resp.body?.cancel?.()
-    } catch {}
-  } catch {
-    snsMediaStage.value[k] = { source: 'error', hitType: '', xEnc: '' }
+    // Prefer stage info from the *same* request that loaded the <img>/<video> element
+    // (via Server-Timing + Timing-Allow-Origin), to avoid a non-idempotent extra fetch.
+    let info = null
+    for (const delayMs of [0, 0, 16, 50, 120, 250, 500]) {
+      if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs))
+      info = readSnsStageFromResourceTiming(u)
+      if (info) break
+    }
+    snsMediaStage.value[k] = info || { source: 'unknown', hitType: '', xEnc: '' }
   } finally {
     snsMediaStageLoading.value[k] = false
     snsMediaStageInFlight.delete(k)
   }
 }
 
-const onSnsMediaHover = (post, m, idx = 0) => {
+const eventCurrentSrc = (ev) => {
+  try {
+    const el = ev?.target || ev?.currentTarget
+    return String(el?.currentSrc || el?.src || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+const onSnsMediaLoaded = (post, m, idx = 0, ev) => {
   const pid = String(post?.id || '').trim()
   if (!pid) return
   const key = snsMediaStageKey(pid, idx, 'thumb')
-  const u = getMediaThumbSrc(post, m, idx)
+  const u = eventCurrentSrc(ev) || getMediaThumbSrc(post, m, idx)
   ensureSnsMediaStage(key, u)
 }
 
-const onCoverMediaHover = () => {
-  const c = activeCover.value
+const onCoverMediaLoaded = (cover, ev) => {
+  const c = cover || activeCover.value
   if (!c || !Array.isArray(c.media) || c.media.length <= 0) return
-  const u = getSnsMediaUrl(c, c.media[0], 0, c.media[0].url)
+  const u = eventCurrentSrc(ev) || getSnsMediaUrl(c, c.media[0], 0, c.media[0].url)
   ensureSnsMediaStage(snsCoverStageKey(c), u)
 }
 
@@ -1105,6 +1221,68 @@ const getFinderFeedThumbSrc = (post) => {
   return getProxyExternalUrl(u)
 }
 
+const getMomentLinkCardUrl = (post) => {
+  const u = String(post?.contentUrl || '').trim()
+  if (u) return u
+
+  const list = Array.isArray(post?.media) ? post.media : []
+  const m0 = list.length > 0 ? list[0] : null
+  const u2 = String(m0?.url || '').trim()
+  return u2
+}
+
+const isExternalShareMoment = (post) => {
+  const t = Number(post?.type || 0)
+  return t === 42 || t === 5
+}
+
+const formatExternalShareUrlLabel = (url) => {
+  const u = String(url || '').trim()
+  if (!u) return ''
+  try {
+    const parsed = new URL(u)
+    const host = String(parsed.hostname || '').replace(/^www\\./, '')
+    const path = String(parsed.pathname || '')
+    const out = `${host}${path && path !== '/' ? path : ''}`
+    return out || u
+  } catch {
+    return u
+  }
+}
+
+const formatExternalSharePlaceholder = (post) => {
+  const t = Number(post?.type || 0)
+  if (t === 42) return '音乐'
+  return '链接'
+}
+
+const formatExternalShareCardTitle = (post) => {
+  const title = String(post?.title || '').trim()
+  if (title) return title
+  const u = String(getMomentLinkCardUrl(post) || '').trim()
+  if (u) return formatExternalShareUrlLabel(u)
+  const t = Number(post?.type || 0)
+  if (t === 42) return '音乐分享'
+  return '外部分享'
+}
+
+const getExternalShareCardThumbSrc = (post) => {
+  const pid = String(post?.id || '').trim()
+  if (!pid) return ''
+
+  const list = Array.isArray(post?.media) ? post.media : []
+  const m0 = list.length > 0 ? list[0] : null
+  if (!m0) return ''
+  if (hasMediaError(pid, 0)) return ''
+  return getMediaThumbSrc(post, m0, 0)
+}
+
+const onExternalShareCardThumbError = (post) => {
+  const pid = String(post?.id || '').trim()
+  if (!pid) return
+  onMediaError(pid, 0)
+}
+
 const formatFinderFeedCardText = (post) => {
   const title = String(post?.title || '').trim()
   if (title) return title
@@ -1126,6 +1304,18 @@ const formatMomentOfficialSource = (post) => {
   return name ? `${prefix}·${name}` : prefix
 }
 
+const formatExternalShareSourceLabel = (post) => {
+  // Prefer DB-provided source name from Moments XML: `<appInfo><appName>...`
+  const n = String(post?.sourceName || '').trim()
+  if (n) return n
+
+  const url = String(getMomentLinkCardUrl(post) || '').trim()
+  if (!url) {
+    return Number(post?.type || 0) === 42 ? '音乐' : '外部分享'
+  }
+  return formatExternalShareUrlLabel(url)
+}
+
 const formatMomentTypeLabel = (post) => {
   const t = Number(post?.type || 0)
   if (!t) return ''
@@ -1134,6 +1324,7 @@ const formatMomentTypeLabel = (post) => {
     const name = String(post?.finderFeed?.nickname || '').trim()
     return name ? `视频号·${name}` : '视频号'
   }
+  if (isExternalShareMoment(post)) return formatExternalShareSourceLabel(post)
   return ''
 }
 
