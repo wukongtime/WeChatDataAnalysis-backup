@@ -47,6 +47,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-SNS-Source", "X-SNS-Hit-Type", "X-SNS-X-Enc"],
 )
 
 app.include_router(_health_router)

@@ -108,13 +108,25 @@
       <div ref="timelineScrollEl" class="flex-1 overflow-auto min-h-0 bg-white" @scroll="onScroll">
 	        <div class="max-w-2xl mx-auto px-4 py-4">
             <div class="relative w-full mb-12 -mt-4 bg-white">
-              <div class="h-64 w-full bg-[#333333] relative overflow-hidden">
+              <div class="h-64 w-full bg-[#333333] relative overflow-hidden group" @mouseenter="onCoverMediaHover">
                 <img
                     v-if="activeCover && activeCover.media && activeCover.media.length > 0"
                     :src="getSnsMediaUrl(activeCover, activeCover.media[0], 0, activeCover.media[0].url)"
                     class="w-full h-full object-cover"
                     alt="朋友圈封面"
                 />
+                <div
+                    v-if="snsMediaStageLabel(snsCoverStageKey(activeCover)) || snsMediaStageLoading[snsCoverStageKey(activeCover)]"
+                    class="absolute top-3 left-3 z-20 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
+                >
+                  <div
+                      class="text-[10px] px-2 py-0.5 rounded backdrop-blur-sm shadow-sm"
+                      :class="snsMediaStageBadgeColorClass(snsCoverStageKey(activeCover))"
+                      :title="snsMediaStageBadgeTitle(snsCoverStageKey(activeCover))"
+                  >
+                    {{ snsMediaStageLabel(snsCoverStageKey(activeCover)) || '识别中' }}
+                  </div>
+                </div>
 
                 <div
                     v-if="(activeCover && Number(activeCover.createTime || 0)) || (covers && covers.length > 1)"
@@ -271,9 +283,9 @@
                   <div v-if="post.media.length === 1" class="max-w-[360px]">
                     <div
                         v-if="!hasMediaError(post.id, 0) && getMediaThumbSrc(post, post.media[0], 0)"
-                        class="inline-block cursor-pointer relative"
+                        class="inline-block cursor-pointer relative group"
                         @click.stop="onMediaClick(post, post.media[0], 0)"
-                        @mouseenter="onLivePhotoEnter(post.id, 0, post.media[0])"
+                        @mouseenter="onLivePhotoEnter(post.id, 0, post.media[0]); onSnsMediaHover(post, post.media[0], 0)"
                         @mouseleave="onLivePhotoLeave(post.id, 0, post.media[0])"
                     >
                       <video
@@ -311,6 +323,19 @@
                           referrerpolicy="no-referrer"
                           @error="onMediaError(post.id, 0)"
                       />
+
+                      <div
+                          v-if="snsMediaStageLabel(snsMediaStageKey(post.id, 0, 'thumb')) || snsMediaStageLoading[snsMediaStageKey(post.id, 0, 'thumb')]"
+                          class="absolute top-2 left-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
+                      >
+                        <div
+                            class="text-[10px] px-2 py-0.5 rounded backdrop-blur-sm shadow-sm"
+                            :class="snsMediaStageBadgeColorClass(snsMediaStageKey(post.id, 0, 'thumb'))"
+                            :title="snsMediaStageBadgeTitle(snsMediaStageKey(post.id, 0, 'thumb'))"
+                        >
+                          {{ snsMediaStageLabel(snsMediaStageKey(post.id, 0, 'thumb')) || '识别中' }}
+                        </div>
+                      </div>
                       <div
                           v-if="Number(post.media[0]?.type || 0) === 6 && !isLocalVideoLoaded(post.id, post.media[0].id)"
                           class="absolute inset-0 flex items-center justify-center pointer-events-none"
@@ -360,9 +385,9 @@
                     <div
                         v-for="(m, idx) in post.media.slice(0, 9)"
                         :key="idx"
-                        class="w-[116px] h-[116px] rounded-[2px] overflow-hidden bg-gray-100 border border-gray-200 flex items-center justify-center cursor-pointer relative"
+                        class="w-[116px] h-[116px] rounded-[2px] overflow-hidden bg-gray-100 border border-gray-200 flex items-center justify-center cursor-pointer relative group"
                         @click.stop="onMediaClick(post, m, idx)"
-                        @mouseenter="onLivePhotoEnter(post.id, idx, m)"
+                        @mouseenter="onLivePhotoEnter(post.id, idx, m); onSnsMediaHover(post, m, idx)"
                         @mouseleave="onLivePhotoLeave(post.id, idx, m)"
                     >
                       <video
@@ -398,6 +423,19 @@
                           referrerpolicy="no-referrer"
                           @error="onMediaError(post.id, idx)"
                       />
+
+                      <div
+                          v-if="snsMediaStageLabel(snsMediaStageKey(post.id, idx, 'thumb')) || snsMediaStageLoading[snsMediaStageKey(post.id, idx, 'thumb')]"
+                          class="absolute top-1 left-1 z-20 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
+                      >
+                        <div
+                            class="text-[10px] px-1.5 py-0.5 rounded backdrop-blur-sm shadow-sm"
+                            :class="snsMediaStageBadgeColorClass(snsMediaStageKey(post.id, idx, 'thumb'))"
+                            :title="snsMediaStageBadgeTitle(snsMediaStageKey(post.id, idx, 'thumb'))"
+                        >
+                          {{ snsMediaStageLabel(snsMediaStageKey(post.id, idx, 'thumb')) || '识别中' }}
+                        </div>
+                      </div>
                       <!-- 不知道微信朋友圈可不可以发多视频，先这样写吧-->
                       <span v-else class="text-[10px] text-gray-400">图片失败</span>
 
@@ -815,6 +853,135 @@ const hasMediaError = (postId, idx) => !!mediaErrors.value[mediaErrorKey(postId,
 const onMediaError = (postId, idx) => {
   mediaErrors.value[mediaErrorKey(postId, idx)] = true
 }
+
+// Hover badge: show which SNS media pipeline stage produced the image.
+// Backend provides `X-SNS-Source` (and optional `X-SNS-Hit-Type`, `X-SNS-X-Enc`) on `/api/sns/media` responses.
+const snsMediaStage = ref({}) // stageKey -> { source, hitType, xEnc }
+const snsMediaStageLoading = ref({}) // stageKey -> boolean
+const snsMediaStageInFlight = new Set()
+
+const isSnsMediaApiUrl = (url) => {
+  const u = String(url || '').trim()
+  return !!u && u.includes('/api/sns/media')
+}
+
+const snsMediaStageKey = (postId, idx, kind = 'thumb') => {
+  const acc = String(selectedAccount.value || '').trim()
+  const pid = String(postId || '').trim()
+  return `sns:${acc}:${pid}:${String(Number(idx) || 0)}:${String(kind || 'thumb')}`
+}
+
+const snsCoverStageKey = (cover) => {
+  const acc = String(selectedAccount.value || '').trim()
+  const cid = String(cover?.id || cover?.tid || cover?.createTime || '').trim()
+  return `sns:${acc}:cover:${cid || '0'}`
+}
+
+const snsMediaStageLabel = (key) => {
+  const k = String(key || '').trim()
+  if (!k) return ''
+  const info = snsMediaStage.value[k]
+  if (!info || typeof info !== 'object') return ''
+
+  const source = String(info?.source || '').trim()
+  const hitType = String(info?.hitType || '').trim()
+
+  if (source === 'remote-cache') return '远程缓存'
+  if (source === 'remote-decrypt') return '远程解密'
+  if (source === 'remote') return '远程直出'
+  if (source === 'deterministic-hash') return hitType ? `本地命中(${hitType})` : '本地命中'
+  if (source === 'manual-pick') return '手动匹配'
+  if (source === 'local-heuristic') return '本地兜底'
+  if (source === 'local-heuristic-next') return '本地兜底(跳过)'
+  if (source === 'bkg-cover') return '封面缓存'
+  if (source === 'proxy') return '远程代理'
+  if (source === 'unknown') return '未知'
+  if (source === 'error') return '获取失败'
+  return source || '未知'
+}
+
+const snsMediaStageBadgeColorClass = (key) => {
+  const k = String(key || '').trim()
+  const source = String(snsMediaStage.value?.[k]?.source || '').trim()
+
+  if (source.startsWith('remote')) return 'bg-emerald-600/85 text-white'
+  if (source === 'deterministic-hash') return 'bg-sky-600/85 text-white'
+  if (source.startsWith('local')) return 'bg-blue-600/85 text-white'
+  if (source === 'manual-pick') return 'bg-amber-600/90 text-white'
+  if (source === 'proxy') return 'bg-fuchsia-600/85 text-white'
+  if (source === 'bkg-cover') return 'bg-indigo-600/85 text-white'
+  if (source === 'error') return 'bg-red-600/85 text-white'
+  return 'bg-black/50 text-white'
+}
+
+const snsMediaStageBadgeTitle = (key) => {
+  const k = String(key || '').trim()
+  const info = snsMediaStage.value?.[k]
+  if (!info || typeof info !== 'object') return ''
+  const source = String(info?.source || '').trim()
+  const hitType = String(info?.hitType || '').trim()
+  const xEnc = String(info?.xEnc || '').trim()
+
+  const parts = []
+  if (source) parts.push(`source=${source}`)
+  if (hitType) parts.push(`hit=${hitType}`)
+  if (xEnc) parts.push(`x-enc=${xEnc}`)
+  return parts.join(' · ')
+}
+
+const ensureSnsMediaStage = async (key, url) => {
+  if (!process.client) return
+  const k = String(key || '').trim()
+  const u = String(url || '').trim()
+  if (!k || !u) return
+  if (!isSnsMediaApiUrl(u)) return
+
+  if (snsMediaStage.value[k]) return
+  if (snsMediaStageLoading.value[k]) return
+  if (snsMediaStageInFlight.has(k)) return
+
+  snsMediaStageInFlight.add(k)
+  snsMediaStageLoading.value[k] = true
+
+  try {
+    const resp = await fetch(u, { method: 'GET', mode: 'cors', cache: 'force-cache' })
+    const source = String(resp.headers.get('X-SNS-Source') || '').trim() || 'unknown'
+    const hitType = String(resp.headers.get('X-SNS-Hit-Type') || '').trim()
+    const xEnc = String(resp.headers.get('X-SNS-X-Enc') || '').trim()
+
+    snsMediaStage.value[k] = { source, hitType, xEnc }
+
+    try {
+      resp.body?.cancel?.()
+    } catch {}
+  } catch {
+    snsMediaStage.value[k] = { source: 'error', hitType: '', xEnc: '' }
+  } finally {
+    snsMediaStageLoading.value[k] = false
+    snsMediaStageInFlight.delete(k)
+  }
+}
+
+const onSnsMediaHover = (post, m, idx = 0) => {
+  const pid = String(post?.id || '').trim()
+  if (!pid) return
+  const key = snsMediaStageKey(pid, idx, 'thumb')
+  const u = getMediaThumbSrc(post, m, idx)
+  ensureSnsMediaStage(key, u)
+}
+
+const onCoverMediaHover = () => {
+  const c = activeCover.value
+  if (!c || !Array.isArray(c.media) || c.media.length <= 0) return
+  const u = getSnsMediaUrl(c, c.media[0], 0, c.media[0].url)
+  ensureSnsMediaStage(snsCoverStageKey(c), u)
+}
+
+watch([selectedAccount, snsUseCache], () => {
+  snsMediaStage.value = {}
+  snsMediaStageLoading.value = {}
+  snsMediaStageInFlight.clear()
+})
 
 // Article card thumbnail is best-effort: try SNS media thumb first, then fall back to
 // extracting the cover from mp.weixin.qq.com HTML. Track per-post stage so we don't
