@@ -204,13 +204,16 @@ class WeChatKeyFetcher:
             logger.info("Cleaning up hook...")
             wx_key.cleanup_hook()
 
+        aes_key = None  # gemini !!! ???
         xor_key = None
+
         if found_md5_data and "|" in found_md5_data:
-            _, xor_key_dec = found_md5_data.split("|")
+            aes_key, xor_key_dec = found_md5_data.split("|")
             xor_key = f"0x{int(xor_key_dec):02X}"
 
         return {
             "db_key": found_db_key,
+            "aes_key": aes_key,
             "xor_key": xor_key
         }
 

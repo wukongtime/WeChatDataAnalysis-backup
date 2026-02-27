@@ -53,14 +53,14 @@ async def get_saved_keys(account: Optional[str] = None):
     }
 
 
-@router.get("/api/get_db_key", summary="自动获取微信数据库与图片密钥")
+@router.get("/api/get_keys", summary="自动获取微信数据库与图片密钥")
 async def get_wechat_db_key():
     """
     自动流程：
     1. 结束微信进程
     2. 启动微信
     3. 根据版本注入双 Hook
-    4. 抓取 DB 与 图片密钥并返回
+    4. 抓取 DB 与 图片密钥(AES + XOR)并返回
     """
     try:
         keys_data = get_db_key_workflow()
@@ -68,7 +68,7 @@ async def get_wechat_db_key():
         return {
             "status": 0,
             "errmsg": "ok",
-            "data": keys_data # 包含 db_key 和 xor_key
+            "data": keys_data # 现在完美包含了 db_key, aes_key, xor_key
         }
 
     except TimeoutError:
@@ -84,7 +84,7 @@ async def get_wechat_db_key():
             "data": {}
         }
 
-    
+
 
 @router.get("/api/get_image_key", summary="获取并保存微信图片密钥")
 async def get_image_key(account: Optional[str] = None):

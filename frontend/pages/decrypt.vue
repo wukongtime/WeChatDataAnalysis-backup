@@ -434,7 +434,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useApi } from '~/composables/useApi'
 
-const { decryptDatabase, saveMediaKeys, getSavedKeys, getDbKey, getImageKey, getWxStatus } = useApi()
+const { decryptDatabase, saveMediaKeys, getSavedKeys, getKeys, getImageKey, getWxStatus } = useApi()
 
 const loading = ref(false)
 const error = ref('')
@@ -541,7 +541,7 @@ const handleGetDbKey = async () => {
 
     warning.value = '正在启动微信，请确保微信未开启“自动登录”，并在弹窗中正常登录。'
 
-    const res = await getDbKey()
+    const res = await getKeys()
 
     if (res && res.status === 0) {
       if (res.data?.db_key) {
@@ -703,13 +703,13 @@ const handleDecrypt = async () => {
   if (!validateForm()) {
     return
   }
-  
+
   loading.value = true
   error.value = ''
   warning.value = ''
 
   resetDbDecryptProgress()
-  
+
   try {
     const canSse = process.client && typeof window !== 'undefined' && typeof EventSource !== 'undefined'
 
@@ -730,7 +730,6 @@ const handleDecrypt = async () => {
           if (accounts.length > 0) mediaAccount.value = accounts[0]
         } catch (e) {}
 
-        clearManualKeys()
         currentStep.value = 1
         await prefillKeysForAccount(mediaAccount.value)
 
@@ -827,7 +826,6 @@ const handleDecrypt = async () => {
           loading.value = false
 
           if (data.status === 'completed') {
-            clearManualKeys()
             currentStep.value = 1
             await prefillKeysForAccount(mediaAccount.value)
 
