@@ -142,6 +142,24 @@
               <div v-if="desktopBackendPortError" class="text-xs text-red-600 whitespace-pre-wrap -mt-1.5">
                 {{ desktopBackendPortError }}
               </div>
+
+              <div class="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
+                <div class="min-w-0 flex-1">
+                  <div class="text-[13px] font-medium text-[#222]">output 目录</div>
+                  <div class="mt-0.5 text-[11px] text-[#909090] break-words">{{ desktopOutputDirText }}</div>
+                </div>
+                <button
+                  type="button"
+                  class="shrink-0 rounded-[6px] border border-[#e2e2e2] bg-white px-2 py-1 text-[12px] text-[#222] transition hover:bg-[#f9f9f9] disabled:cursor-not-allowed disabled:opacity-50"
+                  :disabled="!isDesktopEnv || desktopOutputDirLoading"
+                  @click="onDesktopOpenOutputDir"
+                >
+                  打开 output
+                </button>
+              </div>
+              <div v-if="desktopOutputDirError" class="text-xs text-red-600 whitespace-pre-wrap -mt-1.5">
+                {{ desktopOutputDirError }}
+              </div>
             </div>
           </section>
 
@@ -287,6 +305,15 @@ const desktopBackendPortLoading = ref(false)
 const desktopBackendPortApplying = ref(false)
 const desktopBackendPortError = ref('')
 const desktopBackendPortDefault = ref(10392)
+
+const desktopOutputDir = ref('')
+const desktopOutputDirLoading = ref(false)
+const desktopOutputDirError = ref('')
+const desktopOutputDirText = computed(() => {
+  if (!isDesktopEnv.value) return '仅桌面端可用'
+  const v = String(desktopOutputDir.value || '').trim()
+  return v || '—'
+})
 
 const switchTrackClass = (enabled, disabled = false) => {
   if (disabled) return enabled ? 'bg-[#07b75b] opacity-50 cursor-not-allowed' : 'bg-[#d0d0d0] opacity-50 cursor-not-allowed'
@@ -437,6 +464,36 @@ const refreshDesktopBackendPort = async () => {
   }
 }
 
+const refreshDesktopOutputDir = async () => {
+  if (!process.client || typeof window === 'undefined') return
+  if (!window.wechatDesktop?.getOutputDir) return
+  desktopOutputDirLoading.value = true
+  desktopOutputDirError.value = ''
+  try {
+    const v = await window.wechatDesktop.getOutputDir()
+    desktopOutputDir.value = String(v || '').trim()
+  } catch (e) {
+    desktopOutputDirError.value = e?.message || '读取 output 目录失败'
+  } finally {
+    desktopOutputDirLoading.value = false
+  }
+}
+
+const onDesktopOpenOutputDir = async () => {
+  if (!process.client || typeof window === 'undefined') return
+  if (!window.wechatDesktop?.openOutputDir) return
+  desktopOutputDirLoading.value = true
+  desktopOutputDirError.value = ''
+  try {
+    const res = await window.wechatDesktop.openOutputDir()
+    if (res?.path) desktopOutputDir.value = String(res.path || '').trim()
+  } catch (e) {
+    desktopOutputDirError.value = e?.message || '打开 output 目录失败'
+  } finally {
+    desktopOutputDirLoading.value = false
+  }
+}
+
 const applyDesktopBackendPort = async () => {
   if (!process.client || typeof window === 'undefined') return
   const raw = String(desktopBackendPortInput.value || '').trim()
@@ -567,6 +624,7 @@ onMounted(async () => {
     void desktopUpdate.initListeners()
     await refreshDesktopAutoLaunch()
     await refreshDesktopCloseBehavior()
+    await refreshDesktopOutputDir()
   }
 
   await nextTick()

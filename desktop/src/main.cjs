@@ -163,7 +163,11 @@ function getExeDir() {
 
 function ensureOutputLink() {
   // Users often expect an `output/` folder near the installed exe. We keep the real data
-  // in the per-user data dir, and (when possible) create a Windows junction next to the exe.
+  // in the per-user data dir.
+  //
+  // NOTE: We intentionally avoid creating a junction/symlink inside the install directory.
+  // Some uninstall/update flows may traverse reparse points and delete the target directory,
+  // causing data loss (the install dir is removed on every update/reinstall).
   if (!app.isPackaged) return;
 
   const exeDir = getExeDir();
@@ -171,26 +175,56 @@ function ensureOutputLink() {
   if (!exeDir || !dataDir) return;
 
   const target = path.join(dataDir, "output");
-  const linkPath = path.join(exeDir, "output");
+  const legacyLinkPath = path.join(exeDir, "output");
 
-  // If the target doesn't exist yet, create it so the link points somewhere real.
+  // Ensure the real output dir exists.
   try {
     fs.mkdirSync(target, { recursive: true });
   } catch {}
 
-  // If something already exists at linkPath, do not overwrite it.
+  // Best-effort: remove a legacy junction/symlink at `exeDir/output` so uninstallers can't
+  // accidentally traverse it and delete the real per-user output directory.
   try {
-    if (fs.existsSync(linkPath)) return;
+    const st = fs.lstatSync(legacyLinkPath);
+    if (st.isSymbolicLink()) {
+      try {
+        fs.unlinkSync(legacyLinkPath);
+        logMain(`[main] removed legacy output link: ${legacyLinkPath}`);
+      } catch (err) {
+        logMain(`[main] failed to remove legacy output link: ${err?.message || err}`);
+      }
+    } else if (st.isDirectory()) {
+      const entries = fs.readdirSync(legacyLinkPath);
+      if (Array.isArray(entries) && entries.length === 0) {
+        // Remove an empty real directory to reduce confusion (it will be recreated by the backend if needed).
+        fs.rmdirSync(legacyLinkPath);
+      } else {
+        // Do not overwrite non-empty directories to avoid data loss.
+        // Note: data stored here will be wiped on update/reinstall.
+        logMain(
+          `[main] output dir exists in install dir (not a link): ${legacyLinkPath}. real data dir output: ${target}`
+        );
+      }
+    } else {
+      logMain(`[main] output path exists and is not a directory/link: ${legacyLinkPath}`);
+    }
   } catch {
-    return;
+    // Doesn't exist yet.
   }
 
+  // Best-effort: drop a helper file next to the exe so users can find the real data.
+  // This avoids the data-loss risks of using junctions/symlinks under the install directory.
   try {
-    fs.symlinkSync(target, linkPath, "junction");
-    logMain(`[main] created output link: ${linkPath} -> ${target}`);
-  } catch (err) {
-    logMain(`[main] failed to create output link: ${err?.message || err}`);
-  }
+    const p = path.join(exeDir, "output-location.txt");
+    const text = `WeChatDataAnalysis data directory\n\nOutput folder:\n${target}\n`;
+    fs.writeFileSync(p, text, { encoding: "utf8" });
+  } catch {}
+
+  try {
+    const p = path.join(exeDir, "open-output.cmd");
+    const text = `@echo off\r\nexplorer \"${target}\"\r\n`;
+    fs.writeFileSync(p, text, { encoding: "utf8" });
+  } catch {}
 }
 
 function getMainLogPath() {
@@ -1254,6 +1288,30 @@ function registerWindowIpc() {
     }
   });
 
+  ipcMain.handle("app:getOutputDir", () => {
+    const dir = resolveDataDir();
+    if (!dir) return "";
+    return path.join(dir, "output");
+  });
+
+  ipcMain.handle("app:openOutputDir", async () => {
+    const dir = resolveDataDir();
+    if (!dir) throw new Error("无法定位数据目录");
+    const outDir = path.join(dir, "output");
+    try {
+      fs.mkdirSync(outDir, { recursive: true });
+    } catch {}
+    try {
+      const err = await shell.openPath(outDir);
+      if (err) throw new Error(err);
+      return { success: true, path: outDir };
+    } catch (e) {
+      const message = e?.message || String(e);
+      logMain(`[main] openOutputDir failed: ${message}`);
+      throw new Error(message);
+    }
+  });
+
   ipcMain.handle("app:checkForUpdates", async () => {
     return await checkForUpdatesInternal();
   });
@@ -1272,6 +1330,11 @@ function registerWindowIpc() {
     }
 
     try {
+      // Safety: remove legacy `output` junctions in the install dir before triggering the NSIS update/uninstall.
+      // Some uninstall flows may traverse reparse points and delete the real per-user output directory.
+      try {
+        ensureOutputLink();
+      } catch {}
       autoUpdater.quitAndInstall(false, true);
       return { success: true };
     } catch (err) {
@@ -1312,7 +1375,7 @@ async function main() {
   registerWindowIpc();
   registerDebugShortcuts();
 
-  // Resolve/create the data dir early so we can log reliably and (optionally) place a link
+  // Resolve/create the data dir early so we can log reliably and place helper files
   // next to the installed exe for easier access.
   resolveDataDir();
   ensureOutputLink();
