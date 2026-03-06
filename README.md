@@ -50,6 +50,24 @@
     <td colspan="2" align="center"><img src="frontend/public/message.png" alt="聊天记录页面" width="800"/></td>
   </tr>
   <tr>
+    <td align="center" colspan="2"><b>修改消息</b>（本地修改，支持恢复）</td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="frontend/public/edit.gif" alt="修改消息" width="800"/></td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2"><b>实时消息同步</b>（点击侧边栏闪电图标后，消息会自动刷新）</td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="frontend/public/RealTimeMessages.gif" alt="实时消息同步" width="800"/></td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2"><b>设置面板</b>（桌面行为、启动偏好、更新、朋友圈缓存策略）</td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="frontend/public/setting.png" alt="设置面板" width="800"/></td>
+  </tr>
+  <tr>
     <td align="center" colspan="2"><b>朋友圈</b>（支持查看用户之前朋友圈的背景图及时间；本地查看过的朋友圈即使后续不可见也可以查看）</td>
   </tr>
   <tr>
@@ -173,6 +191,16 @@ npm run dist
 2. **密钥安全**: 请妥善保管您的解密密钥，不要泄露给他人
 3. **数据隐私**: 解密后的数据包含个人隐私信息，请谨慎处理
 4. **合法使用**: 请遵守相关法律法规，不得用于非法目的
+
+## 修改消息
+
+支持在聊天页对单条消息进行本地修改（如修改消息文本/字段、修复为我发送、反转本地气泡方向），并在“修改记录”页查看原始与当前对比，支持单条恢复或按会话一键恢复。
+
+该功能只修改本机本地数据库（`db_storage` 与解密副本），不会调用远端回写接口。
+
+<p align="center">
+  <img src="frontend/public/edit.gif" alt="本地消息修改" width="800" />
+</p>
 
 ## 致谢
 
