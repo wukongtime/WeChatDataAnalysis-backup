@@ -33,7 +33,7 @@ from ..avatar_cache import (
 )
 from ..logging_config import get_logger
 from ..media_helpers import (
-    _convert_silk_to_wav,
+    _convert_silk_to_browser_audio,
     _decrypt_emoticon_aes_cbc,
     _detect_image_extension,
     _detect_image_media_type,
@@ -1762,12 +1762,12 @@ async def get_chat_voice(server_id: int, account: Optional[str] = None):
     if not isinstance(data, (bytes, bytearray)):
         data = bytes(data)
 
-    # Try to convert SILK to WAV for browser playback
-    wav_data = _convert_silk_to_wav(data)
-    if wav_data != data:
+    payload, ext, media_type = _convert_silk_to_browser_audio(data, preferred_format="mp3")
+    if payload and ext != "silk":
         return Response(
-            content=wav_data,
-            media_type="audio/wav",
+            content=payload,
+            media_type=media_type,
+            headers={"Content-Disposition": f"inline; filename=voice_{int(server_id)}.{ext}"},
         )
 
     # Fallback to raw SILK if conversion fails
@@ -1821,11 +1821,16 @@ async def open_chat_media_folder(
         if not isinstance(data, (bytes, bytearray)):
             data = bytes(data)
 
+        payload, ext, _media_type = _convert_silk_to_browser_audio(data, preferred_format="mp3")
+        if not payload:
+            payload = data
+            ext = "silk"
+
         export_dir = account_dir / "_exports"
         export_dir.mkdir(parents=True, exist_ok=True)
-        p = export_dir / f"voice_{int(server_id)}.silk"
+        p = export_dir / f"voice_{int(server_id)}.{ext}"
         try:
-            p.write_bytes(data)
+            p.write_bytes(payload)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to export voice: {e}")
     else:
