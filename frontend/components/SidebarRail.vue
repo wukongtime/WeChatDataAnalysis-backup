@@ -6,7 +6,12 @@
     <div class="flex-1 flex flex-col justify-start pt-0 gap-0">
       <!-- Avatar -->
       <div class="w-full h-[60px] flex items-center justify-center">
-        <div class="w-[40px] h-[40px] rounded-md overflow-hidden bg-gray-300 flex-shrink-0">
+        <button
+          type="button"
+          class="group relative w-[40px] h-[40px] rounded-md overflow-hidden bg-gray-300 flex-shrink-0 ring-1 ring-transparent transition hover:ring-[#07b75b]/40"
+          title="账号信息"
+          @click="openAccountDialog"
+        >
           <img v-if="selfAvatarUrl" :src="selfAvatarUrl" alt="avatar" class="w-full h-full object-cover" />
           <div
             v-else
@@ -15,7 +20,7 @@
           >
             我
           </div>
-        </div>
+        </button>
       </div>
 
       <!-- Chat -->
@@ -164,22 +169,116 @@
         </div>
       </div>
 
-      <!-- Settings -->
-      <div
-        class="w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
-        @click="goSettings"
-        title="设置"
-      >
-        <div class="w-[var(--sidebar-rail-btn)] h-[var(--sidebar-rail-btn)] rounded-md flex items-center justify-center transition-colors bg-transparent group-hover:bg-[#E1E1E1]">
-          <svg class="w-[var(--sidebar-rail-icon)] h-[var(--sidebar-rail-icon)]" :class="settingsDialogOpen ? 'text-[#07b75b]' : 'text-[#5d5d5d]'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-            />
-            <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-          </svg>
+      <div class="mt-auto">
+        <!-- Guide -->
+        <div
+          class="w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
+          title="引导页"
+          @click="goGuide"
+        >
+          <div class="w-[var(--sidebar-rail-btn)] h-[var(--sidebar-rail-btn)] rounded-md flex items-center justify-center transition-colors bg-transparent group-hover:bg-[#E1E1E1]">
+            <svg class="w-[var(--sidebar-rail-icon)] h-[var(--sidebar-rail-icon)] text-[#5d5d5d]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 10.5L12 3l9 7.5" />
+              <path d="M5 9.5V20h14V9.5" />
+              <path d="M10 20v-6h4v6" />
+            </svg>
+          </div>
         </div>
+
+        <!-- Settings -->
+        <div
+          class="w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
+          @click="goSettings"
+          title="设置"
+        >
+          <div class="w-[var(--sidebar-rail-btn)] h-[var(--sidebar-rail-btn)] rounded-md flex items-center justify-center transition-colors bg-transparent group-hover:bg-[#E1E1E1]">
+            <svg class="w-[var(--sidebar-rail-icon)] h-[var(--sidebar-rail-icon)]" :class="settingsDialogOpen ? 'text-[#07b75b]' : 'text-[#5d5d5d]'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+              />
+              <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div
+    v-if="accountDialogOpen"
+    class="fixed inset-0 z-[130] flex items-center justify-center bg-black/35 px-4"
+    @click.self="closeAccountDialog"
+  >
+    <div class="w-full max-w-[440px] overflow-hidden rounded-[12px] border border-[#e7e7e7] bg-white shadow-2xl">
+      <div class="flex items-center justify-between border-b border-[#efefef] px-4 py-3">
+        <div class="text-[14px] font-semibold text-[#222]">当前账号信息</div>
+        <button
+          type="button"
+          class="flex h-7 w-7 items-center justify-center rounded-md text-[#888] transition hover:bg-[#f2f2f2] hover:text-[#222]"
+          title="关闭"
+          :disabled="accountDeleteLoading"
+          @click="closeAccountDialog"
+        >
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="space-y-3 px-4 py-4">
+        <div v-if="accountInfoLoading" class="text-[12px] text-[#7a7a7a]">正在加载账号信息...</div>
+        <template v-else>
+          <div class="flex items-center gap-3">
+            <div class="w-[42px] h-[42px] rounded-md overflow-hidden bg-gray-300 flex-shrink-0">
+              <img v-if="selfAvatarUrl" :src="selfAvatarUrl" alt="avatar" class="w-full h-full object-cover" />
+              <div
+                v-else
+                class="w-full h-full flex items-center justify-center text-white text-xs font-bold"
+                :style="{ backgroundColor: '#4B5563' }"
+              >
+                我
+              </div>
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="truncate text-[14px] font-semibold text-[#222]">{{ selectedAccount || '未选择账号' }}</div>
+              <div class="mt-0.5 text-[11px] text-[#8a8a8a]">账号标识（wxid）</div>
+            </div>
+          </div>
+
+          <div class="rounded-[8px] border border-[#ededed] bg-[#fafafa] px-3 py-2 text-[12px] text-[#5f5f5f] space-y-1.5">
+            <div class="flex items-start justify-between gap-3">
+              <span class="text-[#8a8a8a] shrink-0">数据库数量</span>
+              <span class="font-medium text-[#333]">{{ accountInfo?.database_count ?? '—' }}</span>
+            </div>
+            <div class="flex items-start justify-between gap-3">
+              <span class="text-[#8a8a8a] shrink-0">数据目录</span>
+              <span class="break-all text-right text-[#444]">{{ accountInfo?.path || (selectedAccount ? `output/databases/${selectedAccount}` : '—') }}</span>
+            </div>
+            <div class="flex items-start justify-between gap-3">
+              <span class="text-[#8a8a8a] shrink-0">最近会话库更新时间</span>
+              <span class="text-[#444]">{{ sessionUpdatedAtText }}</span>
+            </div>
+          </div>
+        </template>
+
+        <div class="rounded-[8px] border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900">
+          仅删除本项目中的该账号解析数据/缓存/编辑记录，不会删除微信客户端中的任何聊天内容或账号数据。
+        </div>
+
+        <button
+          type="button"
+          class="w-full rounded-[8px] border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-medium text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+          :disabled="!selectedAccount || accountDeleteLoading"
+          @click="deleteCurrentAccountData"
+        >
+          {{ accountDeleteLoading ? '删除中...' : '删除当前账号的项目数据' }}
+        </button>
+        <div class="text-[11px] text-[#8a8a8a]">删除成功后将自动返回引导页。</div>
+
+        <div v-if="accountInfoError" class="text-[11px] text-red-600 whitespace-pre-wrap">{{ accountInfoError }}</div>
+        <div v-if="accountDeleteError" class="text-[11px] text-red-600 whitespace-pre-wrap">{{ accountDeleteError }}</div>
       </div>
     </div>
   </div>
@@ -202,9 +301,130 @@ const { privacyMode } = storeToRefs(privacyStore)
 const realtimeStore = useChatRealtimeStore()
 const { enabled: realtimeEnabled, available: realtimeAvailable, checking: realtimeChecking, statusError: realtimeStatusError, toggling: realtimeToggling } = storeToRefs(realtimeStore)
 const { open: settingsDialogOpen, openDialog: openSettingsDialog } = useSettingsDialog()
+const { getChatAccountInfo, deleteChatAccount } = useApi()
+
+const accountDialogOpen = ref(false)
+const accountInfoLoading = ref(false)
+const accountInfoError = ref('')
+const accountInfo = ref(null)
+const accountDeleteLoading = ref(false)
+const accountDeleteError = ref('')
+const accountInfoApiUnsupported = ref(false)
+const deleteAccountApiUnsupported = ref(false)
+
+const sessionUpdatedAtText = computed(() => {
+  const ts = Number(accountInfo.value?.session_updated_at || 0)
+  if (!Number.isFinite(ts) || ts <= 0) return '—'
+  try {
+    return new Date(ts * 1000).toLocaleString('zh-CN')
+  } catch {
+    return '—'
+  }
+})
+
+const isNotFoundError = (error) => {
+  const status = Number(
+    error?.statusCode
+    ?? error?.status
+    ?? error?.response?.status
+    ?? error?.data?.statusCode
+    ?? 0
+  )
+  return status === 404
+}
+
+const loadAccountInfoByDesktopBridge = async (account) => {
+  if (!process.client || typeof window === 'undefined') return null
+  if (!window.wechatDesktop?.getAccountInfo) return null
+  const res = await window.wechatDesktop.getAccountInfo(account)
+  return res && typeof res === 'object' ? res : null
+}
+
+const loadAccountInfo = async () => {
+  accountInfoLoading.value = true
+  accountInfoError.value = ''
+  const account = String(selectedAccount.value || '').trim()
+  if (!account) {
+    accountInfo.value = null
+    accountInfoLoading.value = false
+    return
+  }
+  try {
+    let lastError = null
+    if (!accountInfoApiUnsupported.value) {
+      try {
+        const res = await getChatAccountInfo({ account })
+        if (res?.status !== 'success') {
+          throw new Error(res?.message || '读取账号信息失败')
+        }
+        accountInfo.value = res
+        return
+      } catch (e) {
+        lastError = e
+        if (isNotFoundError(e)) {
+          accountInfoApiUnsupported.value = true
+        }
+      }
+    }
+
+    try {
+      const fallback = await loadAccountInfoByDesktopBridge(account)
+      if (fallback?.status === 'success') {
+        accountInfo.value = fallback
+        accountInfoError.value = ''
+        return
+      }
+      if (fallback && fallback?.status && fallback.status !== 'success') {
+        lastError = new Error(fallback?.message || '读取账号信息失败')
+      } else if (!lastError) {
+        lastError = new Error('读取账号信息失败')
+      }
+    } catch (fallbackErr) {
+      if (!lastError) {
+        lastError = fallbackErr
+      }
+    }
+
+    accountInfo.value = null
+    accountInfoError.value = lastError?.message || '读取账号信息失败'
+  } finally {
+    accountInfoLoading.value = false
+  }
+}
+
+const deleteAccountDataByDesktopBridge = async (account) => {
+  if (!process.client || typeof window === 'undefined') return null
+  if (!window.wechatDesktop?.deleteAccountData) return null
+  const res = await window.wechatDesktop.deleteAccountData(account)
+  return res && typeof res === 'object' ? res : { status: 'success' }
+}
+
+const openAccountDialog = async () => {
+  accountDialogOpen.value = true
+  accountDeleteError.value = ''
+  await loadAccountInfo()
+}
+
+const closeAccountDialog = () => {
+  if (accountDeleteLoading.value) return
+  accountDialogOpen.value = false
+}
+
+watch(selectedAccount, () => {
+  if (!accountDialogOpen.value) return
+  void loadAccountInfo()
+})
 
 onMounted(async () => {
   await chatAccounts.ensureLoaded()
+  if (process.client && typeof window !== 'undefined') {
+    window.addEventListener('keydown', onWindowKeydown)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (!process.client || typeof window === 'undefined') return
+  window.removeEventListener('keydown', onWindowKeydown)
 })
 
 const apiBase = useApiBase()
@@ -240,8 +460,71 @@ const goWrapped = async () => {
   await navigateTo('/wrapped')
 }
 
+const goGuide = async () => {
+  await navigateTo('/')
+}
+
 const goSettings = () => {
   openSettingsDialog()
+}
+
+const onWindowKeydown = (event) => {
+  if (event?.key !== 'Escape') return
+  if (!accountDialogOpen.value) return
+  event.preventDefault()
+  closeAccountDialog()
+}
+
+const deleteCurrentAccountData = async () => {
+  const account = String(selectedAccount.value || '').trim()
+  if (!account || accountDeleteLoading.value) return
+
+  if (process.client && typeof window !== 'undefined') {
+    const confirmed = window.confirm(
+      '将删除当前账号在本项目中的数据（解析缓存、编辑记录、导出缓存等），不会删除微信客户端内容。确认删除吗？'
+    )
+    if (!confirmed) return
+  }
+
+  accountDeleteLoading.value = true
+  accountDeleteError.value = ''
+  try {
+    let deleted = false
+    let lastError = null
+
+    if (!deleteAccountApiUnsupported.value) {
+      try {
+        const apiRes = await deleteChatAccount({ account })
+        if (apiRes?.status && apiRes.status !== 'success') {
+          throw new Error(apiRes?.message || '删除账号数据失败')
+        }
+        deleted = true
+      } catch (apiErr) {
+        lastError = apiErr
+        if (isNotFoundError(apiErr)) {
+          deleteAccountApiUnsupported.value = true
+        }
+      }
+    }
+
+    if (!deleted) {
+      const desktopRes = await deleteAccountDataByDesktopBridge(account)
+      if (!desktopRes) {
+        throw lastError || new Error('删除账号数据失败')
+      }
+      if (desktopRes?.status && desktopRes.status !== 'success') {
+        throw new Error(desktopRes?.message || '删除账号数据失败')
+      }
+    }
+
+    accountDialogOpen.value = false
+    await chatAccounts.ensureLoaded({ force: true })
+    await navigateTo('/')
+  } catch (e) {
+    accountDeleteError.value = e?.message || '删除账号数据失败'
+  } finally {
+    accountDeleteLoading.value = false
+  }
 }
 
 const realtimeBusy = computed(() => !!realtimeChecking.value || !!realtimeToggling.value)
