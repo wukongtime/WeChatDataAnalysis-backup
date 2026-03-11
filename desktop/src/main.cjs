@@ -7,6 +7,7 @@ const {
   globalShortcut,
   dialog,
   shell,
+  session,
 } = require("electron");
 let autoUpdater = null;
 let autoUpdaterLoadError = null;
@@ -465,6 +466,34 @@ function getDesktopSettingsPath() {
   return path.join(dir, "desktop-settings.json");
 }
 
+function getPackagedUiDir() {
+  if (!app.isPackaged) return null;
+  try {
+    return path.join(process.resourcesPath, "ui");
+  } catch {
+    return null;
+  }
+}
+
+function readPackagedUiBuildId() {
+  const uiDir = getPackagedUiDir();
+  if (!uiDir) return "";
+
+  try {
+    const indexPath = path.join(uiDir, "index.html");
+    if (!fs.existsSync(indexPath)) return "";
+    const html = fs.readFileSync(indexPath, { encoding: "utf8" });
+    const match =
+      html.match(/buildId:"([^"]+)"/) ||
+      html.match(/\/_payload\.json\?([^"'&<>\s]+)/) ||
+      html.match(/data-src="\/_payload\.json\?([^"]+)"/);
+    return String(match?.[1] || "").trim();
+  } catch (err) {
+    logMain(`[main] failed to read packaged UI build id: ${err?.message || err}`);
+    return "";
+  }
+}
+
 function loadDesktopSettings() {
   if (desktopSettings) return desktopSettings;
 
@@ -476,6 +505,9 @@ function loadDesktopSettings() {
     ignoredUpdateVersion: "",
     // Backend (FastAPI) listens on this port. Used in packaged builds.
     backendPort: DEFAULT_BACKEND_PORT,
+    // Tracks the packaged UI build so we can invalidate Chromium's HTTP cache
+    // after upgrades without wiping user data/localStorage.
+    lastSeenUiBuildId: "",
   };
 
   const p = getDesktopSettingsPath();
@@ -537,6 +569,33 @@ function setIgnoredUpdateVersion(version) {
   desktopSettings.ignoredUpdateVersion = String(version || "").trim();
   persistDesktopSettings();
   return desktopSettings.ignoredUpdateVersion;
+}
+
+async function refreshRendererCacheForPackagedUi() {
+  if (!app.isPackaged) return;
+
+  const nextBuildId = readPackagedUiBuildId();
+  if (!nextBuildId) return;
+
+  const prevBuildId = String(loadDesktopSettings()?.lastSeenUiBuildId || "").trim();
+  if (prevBuildId === nextBuildId) return;
+
+  try {
+    const ses = session?.defaultSession;
+    if (ses) {
+      await ses.clearCache();
+      try {
+        await ses.clearStorageData({ storages: ["serviceworkers"] });
+      } catch {}
+    }
+    logMain(`[main] cleared renderer cache for UI build change: ${prevBuildId || "(none)"} -> ${nextBuildId}`);
+  } catch (err) {
+    logMain(`[main] failed to clear renderer cache for UI build change: ${err?.message || err}`);
+  }
+
+  loadDesktopSettings();
+  desktopSettings.lastSeenUiBuildId = nextBuildId;
+  persistDesktopSettings();
 }
 
 function parseEnvBool(value) {
@@ -1614,6 +1673,7 @@ function registerWindowIpc() {
 
 async function main() {
   await app.whenReady();
+  await refreshRendererCacheForPackagedUi();
   Menu.setApplicationMenu(null);
   registerWindowIpc();
   registerDebugShortcuts();

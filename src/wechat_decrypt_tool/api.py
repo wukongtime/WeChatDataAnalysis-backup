@@ -99,9 +99,36 @@ class _SPAStaticFiles(StaticFiles):
         self._fallback_200 = Path(str(self.directory)) / "200.html"
         self._fallback_index = Path(str(self.directory)) / "index.html"
 
-    async def get_response(self, path: str, scope):  # type: ignore[override]
+    @staticmethod
+    def _normalize_path(path: str) -> str:
+        return str(path or "").strip().lstrip("/")
+
+    @classmethod
+    def _is_shell_path(cls, path: str) -> bool:
+        normalized = cls._normalize_path(path)
+        return normalized in {"", "index.html", "200.html", "_payload.json"} or normalized.startswith(
+            "_payload.json/"
+        )
+
+    @classmethod
+    def _apply_cache_headers(cls, path: str, response):
+        normalized = cls._normalize_path(path)
         try:
-            return await super().get_response(path, scope)
+            if cls._is_shell_path(normalized):
+                response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+            elif normalized.startswith("_nuxt/"):
+                response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+        except Exception:
+            pass
+        return response
+
+    async def get_response(self, path: str, scope):  # type: ignore[override]
+        normalized = self._normalize_path(path)
+        try:
+            response = await super().get_response(path, scope)
+            return self._apply_cache_headers(normalized, response)
         except StarletteHTTPException as exc:
             if exc.status_code != 404:
                 raise
@@ -112,8 +139,8 @@ class _SPAStaticFiles(StaticFiles):
                 raise
 
             if self._fallback_200.exists():
-                return FileResponse(str(self._fallback_200))
-            return FileResponse(str(self._fallback_index))
+                return self._apply_cache_headers("200.html", FileResponse(str(self._fallback_200)))
+            return self._apply_cache_headers("index.html", FileResponse(str(self._fallback_index)))
 
 
 def _maybe_mount_frontend() -> None:
