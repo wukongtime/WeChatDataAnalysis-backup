@@ -1,3 +1,5 @@
+import { reportServerError } from '~/utils/server-error-logging'
+
 // API请求组合式函数
 export const useApi = () => {
   const baseURL = useApiBase()
@@ -8,10 +10,19 @@ export const useApi = () => {
       const response = await $fetch(url, {
         baseURL,
         ...options,
-        onResponseError({ response }) {
+        async onResponseError({ response }) {
           if (response.status === 400) {
             throw new Error(response._data?.detail || '请求参数错误')
-          } else if (response.status === 500) {
+          } else if (response.status >= 500) {
+            await reportServerError({
+              status: response.status,
+              method: options?.method || 'GET',
+              requestUrl: url,
+              message: '服务器错误，请稍后重试',
+              backendDetail: response._data?.detail || '',
+              source: 'useApi',
+              apiBase: baseURL,
+            })
             throw new Error('服务器错误，请稍后重试')
           }
         }

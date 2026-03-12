@@ -13,11 +13,13 @@ import httpx
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from starlette.requests import Request
 
+from ..logging_config import get_log_file_path, get_logger
 from ..path_fix import PathFixRoute
 from ..runtime_settings import read_effective_backend_port, write_backend_port_env_file, write_backend_port_setting
 
 
 router = APIRouter(route_class=PathFixRoute)
+logger = get_logger(__name__)
 
 DEFAULT_BACKEND_PORT = 10392
 _PORT_CHANGE_IN_PROGRESS = False
@@ -56,6 +58,36 @@ def _is_loopback_client(request: Request) -> bool:
         if host.lower() == "localhost":
             return True
     return False
+
+
+def _get_current_log_file_path() -> Path:
+    log_file = Path(get_log_file_path())
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    if not log_file.exists():
+        try:
+            log_file.touch(exist_ok=True)
+        except Exception:
+            pass
+    return log_file
+
+
+def _open_path_with_default_app(path: Path) -> None:
+    target = str(path)
+    if os.name == "nt":
+        opener = getattr(os, "startfile", None)
+        if opener is None:
+            raise RuntimeError("当前系统不支持默认打开文件")
+        opener(target)
+        return
+
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", target])
+        return
+
+    subprocess.Popen(["xdg-open", target])
 
 
 def _is_port_available(port: int, host: str) -> bool:
@@ -124,6 +156,54 @@ async def _exit_process_after(delay_s: float) -> None:
     except Exception:
         pass
     os._exit(0)  # noqa: S404
+
+
+@router.get("/api/admin/log-file", summary="获取当前后端日志文件路径")
+async def get_backend_log_file() -> dict:
+    log_file = _get_current_log_file_path()
+    return {"path": str(log_file), "exists": log_file.exists()}
+
+
+@router.post("/api/admin/log-file/open", summary="打开当前后端日志文件（仅允许本机访问）")
+async def open_backend_log_file(request: Request) -> dict:
+    if not _is_loopback_client(request):
+        raise HTTPException(status_code=403, detail="仅允许本机访问该接口")
+
+    log_file = _get_current_log_file_path()
+    try:
+        _open_path_with_default_app(log_file)
+    except Exception as e:
+        logger.error("open_backend_log_file failed path=%s err=%s", log_file, e)
+        raise HTTPException(status_code=500, detail=f"打开日志文件失败：{e}")
+    return {"success": True, "path": str(log_file)}
+
+
+@router.post("/api/admin/log-frontend-server-error", summary="记录前端感知到的服务器错误")
+async def log_frontend_server_error(payload: dict) -> dict:
+    data = payload if isinstance(payload, dict) else {}
+    try:
+        status = int(data.get("status"))
+    except Exception:
+        status = 0
+
+    method = str(data.get("method") or "").strip().upper() or "GET"
+    request_url = str(data.get("request_url") or "").strip()
+    message = str(data.get("message") or "").strip()
+    backend_detail = str(data.get("backend_detail") or "").strip()
+    source = str(data.get("source") or "").strip()
+    page_url = str(data.get("page_url") or "").strip()
+
+    logger.error(
+        "[frontend-server-error] status=%s method=%s request_url=%s message=%s backend_detail=%s source=%s page_url=%s",
+        status,
+        method,
+        request_url,
+        message,
+        backend_detail,
+        source,
+        page_url,
+    )
+    return {"success": True, "path": str(_get_current_log_file_path())}
 
 
 @router.get("/api/admin/port", summary="获取后端端口（用于前端设置页）")

@@ -2495,6 +2495,7 @@ definePageMeta({
 import { useApi } from '~/composables/useApi'
 import { parseTextWithEmoji } from '~/utils/wechat-emojis'
 import { DESKTOP_SETTING_AUTO_REALTIME_KEY, readLocalBoolSetting } from '~/utils/desktop-settings'
+import { reportServerErrorFromResponse } from '~/utils/server-error-logging'
 import { heatColor } from '~/utils/wrapped/heatmap'
 import { useChatAccountsStore } from '~/stores/chatAccounts'
 import { useChatRealtimeStore } from '~/stores/chatRealtime'
@@ -3578,6 +3579,12 @@ const saveExportToSelectedFolder = async (options = {}) => {
   try {
     const resp = await fetch(getExportDownloadUrl(exportId))
     if (!resp.ok) {
+      await reportServerErrorFromResponse(resp, {
+        method: 'GET',
+        requestUrl: getExportDownloadUrl(exportId),
+        message: `下载导出文件失败（${resp.status}）`,
+        source: 'chat.exportDownload',
+      })
       throw new Error(`下载导出文件失败（${resp.status}）`)
     }
     const blob = await resp.blob()

@@ -167,6 +167,26 @@
                   {{ desktopOutputDirError }}
                 </div>
               </div>
+
+              <div class="px-3.5 py-3">
+                <div class="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
+                  <div class="min-w-0 flex-1">
+                    <div class="text-[13px] font-medium text-[#222]">日志文件</div>
+                    <div class="mt-0.5 text-[11px] text-[#909090] break-words">{{ desktopLogFileText }}</div>
+                  </div>
+                  <button
+                    type="button"
+                    class="shrink-0 rounded-[6px] border border-[#e2e2e2] bg-white px-2 py-1 text-[12px] text-[#222] transition hover:bg-[#f9f9f9] disabled:cursor-not-allowed disabled:opacity-50"
+                    :disabled="desktopLogFileLoading || desktopLogFileOpening"
+                    @click="onOpenBackendLogFile"
+                  >
+                    {{ desktopLogFileOpening ? '打开中...' : '打开日志' }}
+                  </button>
+                </div>
+                <div v-if="desktopLogFileError" class="mt-1.5 text-[11px] text-red-600 whitespace-pre-wrap">
+                  {{ desktopLogFileError }}
+                </div>
+              </div>
             </div>
           </section>
 
@@ -271,8 +291,9 @@
 <script setup>
 import { DESKTOP_SETTING_AUTO_REALTIME_KEY, DESKTOP_SETTING_DEFAULT_TO_CHAT_KEY, SNS_SETTING_USE_CACHE_KEY, readLocalBoolSetting, writeLocalBoolSetting } from '~/utils/desktop-settings'
 import { readApiBaseOverride, writeApiBaseOverride } from '~/utils/api-settings'
+import { reportServerErrorFromError } from '~/utils/server-error-logging'
 
-defineProps({
+const props = defineProps({
   open: {
     type: Boolean,
     default: false,
@@ -331,6 +352,15 @@ const desktopOutputDirText = computed(() => {
   return v || '—'
 })
 
+const desktopLogFilePath = ref('')
+const desktopLogFileLoading = ref(false)
+const desktopLogFileOpening = ref(false)
+const desktopLogFileError = ref('')
+const desktopLogFileText = computed(() => {
+  const v = String(desktopLogFilePath.value || '').trim()
+  return v || '—'
+})
+
 const switchTrackClass = (enabled, disabled = false) => {
   if (disabled) return enabled ? 'bg-[#07b75b] opacity-50 cursor-not-allowed' : 'bg-[#d0d0d0] opacity-50 cursor-not-allowed'
   return enabled ? 'bg-[#07b75b] hover:brightness-95' : 'bg-[#d0d0d0] hover:brightness-95'
@@ -374,6 +404,24 @@ const onEscKeydown = (event) => {
   if (event?.key !== 'Escape') return
   event.preventDefault()
   handleClose()
+}
+
+const fetchAdminEndpoint = async (url, options = {}) => {
+  const apiBase = useApiBase()
+  try {
+    return await $fetch(url, {
+      baseURL: apiBase,
+      ...options,
+    })
+  } catch (e) {
+    await reportServerErrorFromError(e, {
+      method: options?.method || 'GET',
+      requestUrl: url,
+      source: 'SettingsDialog',
+      apiBase,
+    })
+    throw e
+  }
 }
 
 const refreshDesktopAutoLaunch = async () => {
@@ -452,8 +500,7 @@ const refreshDesktopBackendPort = async () => {
     }
 
     try {
-      const apiBase = useApiBase()
-      const resp = await $fetch('/admin/port', { baseURL: apiBase })
+      const resp = await fetchAdminEndpoint('/admin/port')
       const n = Number(resp?.port)
       const d = Number(resp?.default_port)
       if (Number.isInteger(d) && d >= 1 && d <= 65535) desktopBackendPortDefault.value = d
@@ -510,6 +557,34 @@ const onDesktopOpenOutputDir = async () => {
   }
 }
 
+const refreshBackendLogFileInfo = async () => {
+  if (!process.client || typeof window === 'undefined') return
+  desktopLogFileLoading.value = true
+  desktopLogFileError.value = ''
+  try {
+    const resp = await fetchAdminEndpoint('/admin/log-file')
+    desktopLogFilePath.value = String(resp?.path || '').trim()
+  } catch (e) {
+    desktopLogFileError.value = e?.message || '读取日志文件失败'
+  } finally {
+    desktopLogFileLoading.value = false
+  }
+}
+
+const onOpenBackendLogFile = async () => {
+  if (!process.client || typeof window === 'undefined') return
+  desktopLogFileOpening.value = true
+  desktopLogFileError.value = ''
+  try {
+    const resp = await fetchAdminEndpoint('/admin/log-file/open', { method: 'POST' })
+    if (resp?.path) desktopLogFilePath.value = String(resp.path || '').trim()
+  } catch (e) {
+    desktopLogFileError.value = e?.message || '打开日志文件失败'
+  } finally {
+    desktopLogFileOpening.value = false
+  }
+}
+
 const applyDesktopBackendPort = async () => {
   if (!process.client || typeof window === 'undefined') return
   const raw = String(desktopBackendPortInput.value || '').trim()
@@ -526,10 +601,9 @@ const applyDesktopBackendPort = async () => {
       return
     }
 
-    const currentApiBase = useApiBase()
     let currentBackendPort = null
     try {
-      const info = await $fetch('/admin/port', { baseURL: currentApiBase })
+      const info = await fetchAdminEndpoint('/admin/port')
       const p = Number(info?.port)
       if (Number.isInteger(p) && p >= 1 && p <= 65535) currentBackendPort = p
     } catch {}
@@ -540,8 +614,7 @@ const applyDesktopBackendPort = async () => {
     })()
     const isUiServedByBackend = !!(currentBackendPort && uiPort === currentBackendPort)
 
-    await $fetch('/admin/port', {
-      baseURL: currentApiBase,
+    await fetchAdminEndpoint('/admin/port', {
       method: 'POST',
       body: { port: n },
     })
@@ -623,6 +696,11 @@ const toggleSnsUseCache = () => {
 const onDesktopCheckUpdates = async () => {
   await desktopUpdate.manualCheck()
 }
+
+watch(() => props.open, async (isOpen) => {
+  if (!isOpen) return
+  await refreshBackendLogFileInfo()
+}, { immediate: true })
 
 onMounted(async () => {
   if (process.client && typeof window !== 'undefined') {

@@ -15,6 +15,7 @@ from .logging_config import setup_logging, get_logger
 # 初始化日志系统
 setup_logging()
 logger = get_logger(__name__)
+request_logger = get_logger("wechat_decrypt_tool.request")
 
 from . import __version__ as APP_VERSION
 from .path_fix import PathFixRoute
@@ -32,6 +33,7 @@ from .routers.sns import router as _sns_router
 from .routers.sns_export import router as _sns_export_router
 from .routers.wechat_detection import router as _wechat_detection_router
 from .routers.wrapped import router as _wrapped_router
+from .request_logging import log_server_errors_middleware
 from .sns_stage_timing import add_sns_stage_timing_headers
 from .wcdb_realtime import WCDB_REALTIME, shutdown as _wcdb_shutdown
 
@@ -74,6 +76,11 @@ async def _add_sns_stage_timing_headers(request: Request, call_next):
     except Exception:
         pass
     return response
+
+
+@app.middleware("http")
+async def _log_server_errors(request: Request, call_next):
+    return await log_server_errors_middleware(request_logger, request, call_next)
 
 
 app.include_router(_health_router)

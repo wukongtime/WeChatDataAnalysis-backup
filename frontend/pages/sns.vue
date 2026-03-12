@@ -707,6 +707,7 @@ import { useChatAccountsStore } from '~/stores/chatAccounts'
 import { usePrivacyStore } from '~/stores/privacy'
 import { parseTextWithEmoji } from '~/utils/wechat-emojis'
 import { SNS_SETTING_USE_CACHE_KEY, readLocalBoolSetting } from '~/utils/desktop-settings'
+import { reportServerErrorFromError } from '~/utils/server-error-logging'
 
 useHead({ title: '朋友圈 - 微信数据分析助手' })
 
@@ -1131,6 +1132,12 @@ const loadSelfInfo = async () => {
       selfInfo.value = resp
     }
   } catch (e) {
+    await reportServerErrorFromError(e, {
+      method: 'GET',
+      requestUrl: `${apiBase}/sns/self_info?account=${encodeURIComponent(selectedAccount.value)}`,
+      source: 'sns.loadSelfInfo',
+      apiBase,
+    })
     console.error('获取个人信息失败', e)
   }
 }
