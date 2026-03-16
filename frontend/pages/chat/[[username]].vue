@@ -502,6 +502,7 @@ const chatState = {
   availableAccounts,
   contacts,
   selectedContact,
+  searchContext,
   filteredContacts,
   searchQuery,
   showSearchAccountSwitcher,

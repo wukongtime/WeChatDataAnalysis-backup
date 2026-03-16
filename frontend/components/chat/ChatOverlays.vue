@@ -1086,7 +1086,8 @@
 
     <div
       v-if="contextMenu.visible"
-      class="fixed z-[12000] bg-white border border-gray-200 rounded-md shadow-lg text-sm"
+      ref="contextMenuElement"
+      class="fixed z-[12000] max-h-[calc(100vh-16px)] overflow-y-auto bg-white border border-gray-200 rounded-md shadow-lg text-sm"
       :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
       @click.stop
     >

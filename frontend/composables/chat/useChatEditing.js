@@ -1,4 +1,6 @@
-import { ref, toRaw } from 'vue'
+import { nextTick, ref, toRaw } from 'vue'
+
+const CONTEXT_MENU_MARGIN = 8
 
 const initialContextMenu = () => ({
   visible: false,
@@ -45,11 +47,50 @@ export const useChatEditing = ({
   locateMessageByServerId
 }) => {
   const contextMenu = ref(initialContextMenu())
+  const contextMenuElement = ref(null)
   const messageEditModal = ref(initialMessageEditModal())
   const messageFieldsModal = ref(initialMessageFieldsModal())
 
   const closeContextMenu = () => {
     contextMenu.value = initialContextMenu()
+  }
+
+  const repositionContextMenu = () => {
+    if (!process.client || !contextMenu.value.visible) return
+    const menuEl = contextMenuElement.value
+    if (!menuEl) return
+
+    const rect = menuEl.getBoundingClientRect()
+    const viewportWidth = Math.max(window.innerWidth || 0, document.documentElement?.clientWidth || 0)
+    const viewportHeight = Math.max(window.innerHeight || 0, document.documentElement?.clientHeight || 0)
+    if (!viewportWidth || !viewportHeight) return
+
+    const maxX = Math.max(CONTEXT_MENU_MARGIN, viewportWidth - rect.width - CONTEXT_MENU_MARGIN)
+    const maxY = Math.max(CONTEXT_MENU_MARGIN, viewportHeight - rect.height - CONTEXT_MENU_MARGIN)
+    const currentX = Number(contextMenu.value.x || 0)
+    const currentY = Number(contextMenu.value.y || 0)
+    const nextX = Math.min(Math.max(currentX, CONTEXT_MENU_MARGIN), maxX)
+    const nextY = Math.min(Math.max(currentY, CONTEXT_MENU_MARGIN), maxY)
+
+    if (nextX !== currentX || nextY !== currentY) {
+      contextMenu.value = {
+        ...contextMenu.value,
+        x: nextX,
+        y: nextY
+      }
+    }
+  }
+
+  const scheduleContextMenuReposition = () => {
+    if (!process.client) return
+    void nextTick(() => {
+      const run = () => repositionContextMenu()
+      if (typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(run)
+      } else {
+        run()
+      }
+    })
   }
 
   const loadContextMenuEditStatus = async (params) => {
@@ -67,16 +108,19 @@ export const useChatEditing = ({
       const current = String(contextMenu.value?.message?.id || '').trim()
       if (contextMenu.value.visible && current === messageId) {
         contextMenu.value.editStatus = response || { modified: false }
+        scheduleContextMenuReposition()
       }
     } catch {
       const current = String(contextMenu.value?.message?.id || '').trim()
       if (contextMenu.value.visible && current === messageId) {
         contextMenu.value.editStatus = null
+        scheduleContextMenuReposition()
       }
     } finally {
       const current = String(contextMenu.value?.message?.id || '').trim()
       if (contextMenu.value.visible && current === messageId) {
         contextMenu.value.editStatusLoading = false
+        scheduleContextMenuReposition()
       }
     }
   }
@@ -126,6 +170,8 @@ export const useChatEditing = ({
         void loadContextMenuEditStatus({ account, username, message_id: messageId })
       }
     } catch {}
+
+    scheduleContextMenuReposition()
   }
 
   const prettyJson = (value) => {
@@ -519,6 +565,7 @@ export const useChatEditing = ({
 
   return {
     contextMenu,
+    contextMenuElement,
     messageEditModal,
     messageFieldsModal,
     closeContextMenu,
