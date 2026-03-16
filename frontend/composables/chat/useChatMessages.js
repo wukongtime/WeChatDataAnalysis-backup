@@ -47,12 +47,21 @@ export const useChatMessages = ({
     })
   }
 
+  const summarizeRenderTypes = (list) => {
+    const counts = {}
+    for (const item of Array.isArray(list) ? list : []) {
+      const key = String(item?.renderType || 'unknown').trim() || 'unknown'
+      counts[key] = Number(counts[key] || 0) + 1
+    }
+    return counts
+  }
+
   const previewImageUrl = ref(null)
   const previewVideoUrl = ref(null)
   const previewVideoPosterUrl = ref('')
   const previewVideoError = ref('')
 
-  const voiceRefs = ref({})
+  const voiceRefs = new Map()
   const currentPlayingVoice = ref(null)
   const playingVoiceId = ref(null)
 
@@ -230,18 +239,16 @@ export const useChatMessages = ({
     const key = String(id || '').trim()
     if (!key) return
     if (element) {
-      voiceRefs.value = { ...voiceRefs.value, [key]: element }
-    } else if (voiceRefs.value[key]) {
-      const next = { ...voiceRefs.value }
-      delete next[key]
-      voiceRefs.value = next
+      voiceRefs.set(key, element)
+    } else {
+      voiceRefs.delete(key)
     }
   }
 
   const playVoiceById = async (voiceId) => {
     const key = String(voiceId || '').trim()
     if (!key) return
-    const audio = voiceRefs.value[key]
+    const audio = voiceRefs.get(key)
     if (!audio) return
 
     try {
@@ -421,7 +428,8 @@ export const useChatMessages = ({
       const mapped = dedupeMessagesById(raw.map(normalizeMessage))
       logMessagePhase('loadMessages:normalize:end', {
         username,
-        mappedCount: mapped.length
+        mappedCount: mapped.length,
+        renderTypeCounts: summarizeRenderTypes(mapped)
       })
 
       if (activeMessagesFor.value !== username) {
@@ -598,7 +606,18 @@ export const useChatMessages = ({
     } catch {}
   }
 
+  const clearVoicePlaybackState = () => {
+    try {
+      currentPlayingVoice.value?.pause?.()
+      if (currentPlayingVoice.value) currentPlayingVoice.value.currentTime = 0
+    } catch {}
+    currentPlayingVoice.value = null
+    playingVoiceId.value = null
+    voiceRefs.clear()
+  }
+
   const resetMessageState = () => {
+    clearVoicePlaybackState()
     allMessages.value = {}
     messagesMeta.value = {}
     messagesError.value = ''
@@ -807,6 +826,7 @@ export const useChatMessages = ({
     if (highlightTimer) clearTimeout(highlightTimer)
     highlightTimer = null
     clearContactProfileHoverHideTimer()
+    clearVoicePlaybackState()
   })
 
   return {
