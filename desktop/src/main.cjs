@@ -1359,6 +1359,34 @@ function getRendererConsoleLogPath() {
   }
 }
 
+function getRendererDebugLogPath() {
+  try {
+    const dir = app.getPath("userData");
+    fs.mkdirSync(dir, { recursive: true });
+    return path.join(dir, "renderer-debug.log");
+  } catch {
+    return null;
+  }
+}
+
+function appendRendererDebugLog(line) {
+  const logPath = getRendererDebugLogPath();
+  if (!logPath) return;
+  try {
+    fs.appendFileSync(logPath, line, { encoding: "utf8" });
+  } catch {}
+}
+
+function stringifyDebugDetails(details) {
+  if (details == null) return "";
+  if (typeof details === "string") return details;
+  try {
+    return JSON.stringify(details);
+  } catch (err) {
+    return `[unserializable:${err?.message || err}]`;
+  }
+}
+
 function setupRendererConsoleLogging(win) {
   if (!debugEnabled()) return;
 
@@ -1573,6 +1601,15 @@ function registerWindowIpc() {
       logMain(`[main] app:isDebugEnabled failed: ${err?.message || err}`);
       return false;
     }
+  });
+
+  ipcMain.on("debug:log", (event, payload) => {
+    const scope = String(payload?.scope || "renderer").trim() || "renderer";
+    const message = String(payload?.message || "").trim() || "(empty)";
+    const url = String(payload?.url || event?.sender?.getURL?.() || "").trim();
+    const details = stringifyDebugDetails(payload?.details);
+    const suffix = details ? ` details=${details}` : "";
+    appendRendererDebugLog(`[${nowIso()}] [${scope}] ${message} url=${url}${suffix}\n`);
   });
 
   ipcMain.handle("app:setCloseBehavior", (_event, behavior) => {

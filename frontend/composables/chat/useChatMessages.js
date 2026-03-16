@@ -36,6 +36,9 @@ export const useChatMessages = ({
 
   const logMessagePhase = (phase, details = {}) => {
     if (!isDesktopRenderer()) return
+    try {
+      window.wechatDesktop?.logDebug?.('chat-messages', phase, details)
+    } catch {}
     console.info(`[chat-messages] ${phase}`, {
       account: String(selectedAccount.value || '').trim(),
       selectedUsername: String(selectedContact.value?.username || '').trim(),

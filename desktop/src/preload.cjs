@@ -1,5 +1,65 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
+function sendDebugLog(scope, message, details) {
+  try {
+    ipcRenderer.send("debug:log", {
+      scope: String(scope || "renderer"),
+      message: String(message || ""),
+      details: details == null ? {} : details,
+      url: typeof location !== "undefined" ? String(location.href || "") : "",
+    });
+  } catch {}
+}
+
+sendDebugLog("preload", "script-start", {
+  userAgent: typeof navigator !== "undefined" ? String(navigator.userAgent || "") : "",
+});
+
+if (typeof document !== "undefined") {
+  document.addEventListener("readystatechange", () => {
+    sendDebugLog("preload", "document-readystate", {
+      readyState: String(document.readyState || ""),
+    });
+  });
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("DOMContentLoaded", () => {
+    sendDebugLog("preload", "dom-content-loaded");
+  });
+
+  window.addEventListener("load", () => {
+    sendDebugLog("preload", "window-load");
+  });
+
+  window.addEventListener("error", (event) => {
+    sendDebugLog("preload", "window-error", {
+      message: String(event?.message || ""),
+      filename: String(event?.filename || ""),
+      lineno: Number(event?.lineno || 0),
+      colno: Number(event?.colno || 0),
+    });
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event?.reason;
+    sendDebugLog("preload", "window-unhandledrejection", {
+      reason:
+        reason instanceof Error
+          ? {
+              name: String(reason.name || "Error"),
+              message: String(reason.message || ""),
+              stack: String(reason.stack || ""),
+            }
+          : String(reason || ""),
+    });
+  });
+
+  window.setTimeout(() => {
+    sendDebugLog("preload", "set-timeout-0");
+  }, 0);
+}
+
 contextBridge.exposeInMainWorld("wechatDesktop", {
   // Marker used by the frontend to distinguish the Electron desktop shell from the pure web build.
   __brand: "WeChatDataAnalysisDesktop",
@@ -8,6 +68,7 @@ contextBridge.exposeInMainWorld("wechatDesktop", {
   close: () => ipcRenderer.invoke("window:close"),
   isMaximized: () => ipcRenderer.invoke("window:isMaximized"),
   isDebugEnabled: () => ipcRenderer.invoke("app:isDebugEnabled"),
+  logDebug: (scope, message, details = {}) => sendDebugLog(scope, message, details),
 
   getAutoLaunch: () => ipcRenderer.invoke("app:getAutoLaunch"),
   setAutoLaunch: (enabled) => ipcRenderer.invoke("app:setAutoLaunch", !!enabled),

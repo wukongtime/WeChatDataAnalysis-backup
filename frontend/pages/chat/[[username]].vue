@@ -94,6 +94,9 @@ const shouldLogChatBootstrap = () => isDesktopShell() || desktopDebugEnabled.val
 
 const logChatBootstrap = (phase, details = {}) => {
   if (!shouldLogChatBootstrap()) return
+  try {
+    window.wechatDesktop?.logDebug?.('chat-bootstrap', phase, details)
+  } catch {}
   console.info(`[chat-bootstrap] ${phase}`, {
     elapsedMs: chatBootstrapElapsedMs(),
     route: route.fullPath,
