@@ -26,25 +26,41 @@ _DEFAULT_WCDB_API_DLL = _NATIVE_DIR / "wcdb_api.dll"
 _WCDB_API_DLL_SELECTED: Optional[Path] = None
 
 
+def _is_project_wcdb_api_dll_path(path: Path) -> bool:
+    try:
+        resolved = path.resolve(strict=False)
+    except Exception:
+        resolved = path
+
+    try:
+        default_resolved = _DEFAULT_WCDB_API_DLL.resolve(strict=False)
+    except Exception:
+        default_resolved = _DEFAULT_WCDB_API_DLL
+
+    if resolved == default_resolved:
+        return True
+
+    parts = tuple(str(part).lower() for part in resolved.parts)
+    allowed_suffixes = (
+        ("backend", "native", "wcdb_api.dll"),
+        ("wechat_decrypt_tool", "native", "wcdb_api.dll"),
+    )
+    return any(parts[-len(suffix) :] == suffix for suffix in allowed_suffixes)
+
+
 def _candidate_wcdb_api_dll_paths() -> list[Path]:
-    """Return possible locations for wcdb_api.dll (prefer WeFlow's newer build when present)."""
+    """Return allowed locations for wcdb_api.dll."""
     cands: list[Path] = []
 
     env = str(os.environ.get("WECHAT_TOOL_WCDB_API_DLL_PATH", "") or "").strip()
     if env:
-        cands.append(Path(env))
+        env_path = Path(env)
+        if _is_project_wcdb_api_dll_path(env_path):
+            cands.append(env_path)
+        else:
+            logger.warning("[wcdb] ignore external wcdb_api.dll override: %s", env_path)
 
-    # Repo checkout convenience: reuse bundled WeFlow / echotrace DLLs when available.
-    try:
-        repo_root = Path(__file__).resolve().parents[2]
-    except Exception:
-        repo_root = Path.cwd()
-
-    for p in [
-        repo_root / "WeFlow" / "resources" / "wcdb_api.dll",
-        repo_root / "echotrace" / "assets" / "dll" / "wcdb_api.dll",
-        _DEFAULT_WCDB_API_DLL,
-    ]:
+    for p in (_DEFAULT_WCDB_API_DLL,):
         if p not in cands:
             cands.append(p)
 
