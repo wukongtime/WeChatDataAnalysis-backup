@@ -1290,52 +1290,77 @@
           </div>
 
           <div class="space-y-5">
-            <div class="flex flex-wrap items-end gap-6">
+            <div class="flex flex-wrap items-end gap-3 xl:flex-nowrap">
               <div>
                 <div class="text-sm font-medium text-gray-800 mb-2">范围</div>
-                <div class="flex flex-wrap gap-2 text-sm text-gray-700">
-                  <label class="flex items-center gap-1.5 px-3 py-1.5 rounded-md border cursor-pointer transition-colors" :class="exportScope === 'current' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'">
-                    <input type="radio" value="current" v-model="exportScope" class="hidden" />
-                    <span>当前会话</span>
-                  </label>
-                  <label class="flex items-center gap-1.5 px-3 py-1.5 rounded-md border cursor-pointer transition-colors" :class="exportScope === 'selected' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'">
-                    <input type="radio" value="selected" v-model="exportScope" class="hidden" />
-                    <span>选择会话（批量）</span>
-                  </label>
+                <div class="flex flex-wrap items-center gap-2 text-sm text-gray-700">
+                  <button
+                    type="button"
+                    class="px-2.5 py-1 text-xs rounded-md border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    :class="exportScope === 'current' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
+                    :disabled="!selectedContact?.username"
+                    @click="exportScope = 'current'"
+                  >
+                    当前会话
+                  </button>
+                  <button
+                    type="button"
+                    class="px-2.5 py-1 text-xs rounded-md border transition-colors"
+                    :class="exportScope === 'selected' && exportListTab === 'all' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
+                    @click="onExportBatchScopeClick('all')"
+                  >
+                    全部 {{ exportContactCounts.total }}
+                  </button>
+                  <button
+                    type="button"
+                    class="px-2.5 py-1 text-xs rounded-md border transition-colors"
+                    :class="exportScope === 'selected' && exportListTab === 'groups' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
+                    @click="onExportBatchScopeClick('groups')"
+                  >
+                    群聊 {{ exportContactCounts.groups }}
+                  </button>
+                  <button
+                    type="button"
+                    class="px-2.5 py-1 text-xs rounded-md border transition-colors"
+                    :class="exportScope === 'selected' && exportListTab === 'singles' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
+                    @click="onExportBatchScopeClick('singles')"
+                  >
+                    单聊 {{ exportContactCounts.singles }}
+                  </button>
                 </div>
               </div>
 
               <div>
                 <div class="text-sm font-medium text-gray-800 mb-2">格式</div>
                 <div class="flex items-center gap-2 text-sm text-gray-700">
-                  <label class="flex items-center gap-1.5 px-3 py-1.5 rounded-md border cursor-pointer transition-colors" :class="exportFormat === 'json' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'">
+                  <label class="flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border cursor-pointer transition-colors" :class="exportFormat === 'json' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'">
                     <input type="radio" value="json" v-model="exportFormat" class="hidden" />
                     <span>JSON</span>
                   </label>
-                  <label class="flex items-center gap-1.5 px-3 py-1.5 rounded-md border cursor-pointer transition-colors" :class="exportFormat === 'txt' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'">
+                  <label class="flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border cursor-pointer transition-colors" :class="exportFormat === 'txt' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'">
                     <input type="radio" value="txt" v-model="exportFormat" class="hidden" />
                     <span>TXT</span>
                   </label>
-                  <label class="flex items-center gap-1.5 px-3 py-1.5 rounded-md border cursor-pointer transition-colors" :class="exportFormat === 'html' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'">
+                  <label class="flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border cursor-pointer transition-colors" :class="exportFormat === 'html' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'">
                     <input type="radio" value="html" v-model="exportFormat" class="hidden" />
                     <span>HTML</span>
                   </label>
                 </div>
               </div>
 
-              <div class="flex-1 min-w-[320px]">
+              <div class="flex-1 min-w-[280px]">
                 <div class="text-sm font-medium text-gray-800 mb-2">时间范围（可选）</div>
-                <div class="flex items-center gap-2 flex-wrap">
+                <div class="flex items-center gap-1.5 flex-wrap">
                   <input
                     v-model="exportStartLocal"
                     type="datetime-local"
-                    class="px-2.5 py-1.5 text-sm rounded-md border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#03C160]/30"
+                    class="px-2 py-1 text-xs rounded-md border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#03C160]/30"
                   />
                   <span class="text-gray-400">-</span>
                   <input
                     v-model="exportEndLocal"
                     type="datetime-local"
-                    class="px-2.5 py-1.5 text-sm rounded-md border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#03C160]/30"
+                    class="px-2 py-1 text-xs rounded-md border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#03C160]/30"
                   />
                 </div>
               </div>
@@ -1367,32 +1392,8 @@
             </div>
 
             <div v-if="exportScope === 'selected'" class="mt-3">
-              <div class="flex items-center gap-2 mb-2">
-                <button
-                  type="button"
-                  class="text-xs px-2 py-1 rounded border border-gray-200"
-                  :class="exportListTab === 'all' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white hover:bg-gray-50 text-gray-700'"
-                  @click="exportListTab = 'all'"
-                >
-                  全部 {{ exportContactCounts.total }}
-                </button>
-                <button
-                  type="button"
-                  class="text-xs px-2 py-1 rounded border border-gray-200"
-                  :class="exportListTab === 'groups' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white hover:bg-gray-50 text-gray-700'"
-                  @click="exportListTab = 'groups'"
-                >
-                  群聊 {{ exportContactCounts.groups }}
-                </button>
-                <button
-                  type="button"
-                  class="text-xs px-2 py-1 rounded border border-gray-200"
-                  :class="exportListTab === 'singles' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white hover:bg-gray-50 text-gray-700'"
-                  @click="exportListTab = 'singles'"
-                >
-                  单聊 {{ exportContactCounts.singles }}
-                </button>
-                <div class="ml-auto text-xs text-gray-500">点击 tab 筛选</div>
+              <div class="mb-2 text-xs text-gray-500">
+                点击上方范围可筛选并默认全选当前结果，再次点击可取消全选；下方整行可点选会话
               </div>
               <div class="flex items-center gap-2 mb-2">
                 <input
@@ -1404,26 +1405,27 @@
                 />
               </div>
               <div class="border border-gray-200 rounded-md max-h-56 overflow-y-auto">
-                <div
+                <label
                   v-for="c in exportFilteredContacts"
                   :key="c.username"
-                  class="px-3 py-2 border-b border-gray-100 flex items-center gap-2 hover:bg-gray-50"
+                  class="px-3 py-2 border-b border-gray-100 flex items-center gap-2 cursor-pointer transition-colors"
+                  :class="isExportContactSelected(c.username) ? 'bg-[#03C160]/5 hover:bg-[#03C160]/10' : 'hover:bg-gray-50'"
                 >
-                  <input type="checkbox" :value="c.username" v-model="exportSelectedUsernames" />
+                  <input type="checkbox" :value="c.username" v-model="exportSelectedUsernames" class="cursor-pointer" />
                   <div class="w-9 h-9 rounded-md overflow-hidden bg-gray-200 flex-shrink-0" :class="{ 'privacy-blur': privacyMode }">
                     <img v-if="c.avatar" :src="c.avatar" :alt="c.name + '头像'" class="w-full h-full object-cover" referrerpolicy="no-referrer" @error="onAvatarError($event, c)" />
                     <div v-else class="w-full h-full flex items-center justify-center text-xs font-bold text-gray-600">
                       {{ (c.name || c.username || '?').charAt(0) }}
                     </div>
                   </div>
-                  <div class="min-w-0" :class="{ 'privacy-blur': privacyMode }">
+                  <div class="min-w-0 flex-1" :class="{ 'privacy-blur': privacyMode }">
                     <div class="text-sm text-gray-800 truncate">
                       {{ c.name }}
                       <span class="text-xs text-gray-500">{{ c.isGroup ? '（群）' : '' }}</span>
                     </div>
                     <div class="text-xs text-gray-500 truncate">{{ c.username }}</div>
                   </div>
-                </div>
+                </label>
                 <div v-if="exportFilteredContacts.length === 0" class="px-3 py-3 text-sm text-gray-500">
                   无匹配会话
                 </div>
