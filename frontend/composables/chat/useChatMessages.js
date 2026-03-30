@@ -74,6 +74,7 @@ export const useChatMessages = ({
   let highlightTimer = null
 
   const messageTypeFilter = ref('all')
+  const localMediaVersion = ref(0)
   const messageTypeFilterOptions = [
     { value: 'all', label: '全部' },
     { value: 'text', label: '文本' },
@@ -95,8 +96,38 @@ export const useChatMessages = ({
   const normalizeMessage = createMessageNormalizer({
     apiBase,
     getSelectedAccount: () => selectedAccount.value,
-    getSelectedContact: () => selectedContact.value
+    getSelectedContact: () => selectedContact.value,
+    getLocalMediaVersion: () => localMediaVersion.value
   })
+
+  const bumpLocalMediaVersion = () => {
+    localMediaVersion.value = (localMediaVersion.value + 1) % 1000000000
+    return localMediaVersion.value
+  }
+
+  const renormalizeLoadedMessages = (username) => {
+    const key = String(username || '').trim()
+    if (!key) return
+    const existing = allMessages.value[key]
+    if (!Array.isArray(existing) || !existing.length) return
+
+    const refreshed = dedupeMessagesById(existing.map((message) => {
+      const normalized = normalizeMessage(message)
+      return {
+        ...message,
+        ...normalized,
+        _emojiDownloading: !!message?._emojiDownloading,
+        _emojiDownloaded: typeof message?._emojiDownloaded === 'boolean' ? message._emojiDownloaded : normalized._emojiDownloaded,
+        _quoteImageError: false,
+        _quoteThumbError: false
+      }
+    }))
+
+    allMessages.value = {
+      ...allMessages.value,
+      [key]: refreshed
+    }
+  }
 
   const messages = computed(() => {
     if (!selectedContact.value) return []
@@ -534,7 +565,15 @@ export const useChatMessages = ({
 
   const refreshSelectedMessages = async () => {
     if (!selectedContact.value) return
+    bumpLocalMediaVersion()
     await loadMessages({ username: selectedContact.value.username, reset: true })
+  }
+
+  const refreshCurrentMessageMedia = async () => {
+    if (!selectedContact.value?.username) return
+    bumpLocalMediaVersion()
+    renormalizeLoadedMessages(selectedContact.value.username)
+    await nextTick()
   }
 
   const refreshRealtimeIncremental = async () => {
@@ -912,6 +951,7 @@ export const useChatMessages = ({
     loadMessages,
     loadMoreMessages,
     refreshSelectedMessages,
+    refreshCurrentMessageMedia,
     refreshRealtimeIncremental,
     queueRealtimeRefresh,
     tryEnableRealtimeAuto,

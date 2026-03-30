@@ -216,6 +216,7 @@ const {
   loadMessages,
   loadMoreMessages,
   refreshSelectedMessages,
+  refreshCurrentMessageMedia,
   queueRealtimeRefresh,
   tryEnableRealtimeAuto,
   resetMessageState,
@@ -568,6 +569,28 @@ const onGlobalKeyDown = (event) => {
   }
 }
 
+let lastResumeMediaRefreshAt = 0
+
+const maybeRefreshMediaOnResume = () => {
+  if (!process.client) return
+  if (!selectedContact.value?.username) return
+  if (searchContext.value?.active) return
+
+  const now = Date.now()
+  if ((now - lastResumeMediaRefreshAt) < 1200) return
+  lastResumeMediaRefreshAt = now
+  void refreshCurrentMessageMedia()
+}
+
+const onWindowFocus = () => {
+  maybeRefreshMediaOnResume()
+}
+
+const onVisibilityChange = () => {
+  if (document.visibilityState !== 'visible') return
+  maybeRefreshMediaOnResume()
+}
+
 onMounted(async () => {
   if (!process.client) return
 
@@ -585,6 +608,8 @@ onMounted(async () => {
   document.addEventListener('touchmove', onFloatingWindowMouseMove)
   document.addEventListener('touchend', onFloatingWindowMouseUp)
   document.addEventListener('touchcancel', onFloatingWindowMouseUp)
+  window.addEventListener('focus', onWindowFocus)
+  document.addEventListener('visibilitychange', onVisibilityChange)
 
   logChatBootstrap('loadContacts:start', {
     selectedAccount: selectedAccount.value
@@ -635,6 +660,8 @@ onUnmounted(() => {
   document.removeEventListener('touchmove', onFloatingWindowMouseMove)
   document.removeEventListener('touchend', onFloatingWindowMouseUp)
   document.removeEventListener('touchcancel', onFloatingWindowMouseUp)
+  window.removeEventListener('focus', onWindowFocus)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 
   if (locateServerIdTimer) clearTimeout(locateServerIdTimer)
   locateServerIdTimer = null

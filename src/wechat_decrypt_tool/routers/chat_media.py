@@ -67,6 +67,87 @@ logger = get_logger(__name__)
 router = APIRouter(route_class=PathFixRoute)
 
 
+def _build_uncached_media_response(data: bytes, media_type: str) -> Response:
+    resp = Response(content=data, media_type=media_type)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+def _image_candidate_variant_rank(path: Path) -> int:
+    stem = str(path.stem or "").lower()
+    if stem.endswith(("_b", ".b")):
+        return 0
+    if stem.endswith(("_h", ".h")):
+        return 1
+    if stem.endswith(("_c", ".c")):
+        return 3
+    if stem.endswith(("_t", ".t")):
+        return 4
+    return 2
+
+
+def _image_candidate_stat(path: Optional[Path]) -> tuple[int, float]:
+    if not path:
+        return 0, 0.0
+    try:
+        st = path.stat()
+        return int(st.st_size), float(st.st_mtime)
+    except Exception:
+        return 0, 0.0
+
+
+def _should_prefer_live_image_candidates(
+    *,
+    cached_path: Optional[Path],
+    live_candidates: list[Path],
+) -> bool:
+    if not live_candidates:
+        return False
+    if not cached_path:
+        return True
+
+    best_live = live_candidates[0]
+    live_rank = _image_candidate_variant_rank(best_live)
+    if live_rank < 2:
+        return True
+
+    cache_size, cache_mtime = _image_candidate_stat(cached_path)
+    live_size, live_mtime = _image_candidate_stat(best_live)
+    if live_rank == 2 and live_size > cache_size:
+        return True
+    if live_rank == 2 and live_size >= cache_size and live_mtime > cache_mtime:
+        return True
+    return False
+
+
+def _write_cached_chat_image(account_dir: Path, md5: str, data: bytes) -> None:
+    md5_norm = str(md5 or "").strip().lower()
+    if (not md5_norm) or (not data):
+        return
+
+    ext = _detect_image_extension(data)
+    out_path = _get_decrypted_resource_path(account_dir, md5_norm, ext)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    for stale_ext in ("jpg", "png", "gif", "webp", "dat"):
+        stale_path = _get_decrypted_resource_path(account_dir, md5_norm, stale_ext)
+        if stale_path == out_path:
+            continue
+        try:
+            if stale_path.exists():
+                stale_path.unlink()
+        except Exception:
+            pass
+
+    try:
+        if out_path.exists() and out_path.read_bytes() == data:
+            return
+    except Exception:
+        pass
+
+    out_path.write_bytes(data)
+
+
 def _resolve_avatar_remote_url(*, account_dir: Path, username: str) -> str:
     u = str(username or "").strip()
     if not u:
@@ -1311,20 +1392,26 @@ async def get_chat_image(
             if md5_from_msg:
                 md5 = md5_from_msg
 
-    # md5 模式：优先从解密资源目录读取（更快）
+    cached_path: Optional[Path] = None
+    cached_data = b""
+    cached_media_type = "application/octet-stream"
+
+    # md5 模式：优先检查解密资源目录；如果微信目录里已经有更高质量版本，会在后面自动升级。
     if md5:
         decrypted_path = _try_find_decrypted_resource(account_dir, str(md5).lower())
         if decrypted_path:
             data = decrypted_path.read_bytes()
             media_type = _detect_image_media_type(data[:32])
             if media_type != "application/octet-stream" and _is_probably_valid_image(data, media_type):
-                return Response(content=data, media_type=media_type)
+                cached_path = decrypted_path
+                cached_data = data
+                cached_media_type = media_type
             # Corrupted cached file (e.g. wrong ext / partial data): remove and regenerate from source.
-            try:
-                if decrypted_path.suffix.lower() in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
+            elif decrypted_path.suffix.lower() in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
+                try:
                     decrypted_path.unlink()
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
     # 回退：从微信数据目录实时定位并解密
     wxid_dir = _resolve_account_wxid_dir(account_dir)
@@ -1414,10 +1501,35 @@ async def get_chat_image(
                 break
 
     if not p:
+        if cached_path:
+            return _build_uncached_media_response(cached_data, cached_media_type)
         raise HTTPException(status_code=404, detail="Image not found.")
 
     candidates.extend(_iter_media_source_candidates(p))
     candidates = _order_media_candidates(candidates)
+
+    if cached_path:
+        try:
+            cached_key = str(cached_path.resolve())
+        except Exception:
+            cached_key = str(cached_path)
+
+        live_candidates: list[Path] = []
+        seen_live: set[str] = set()
+        for candidate in candidates:
+            try:
+                key = str(candidate.resolve())
+            except Exception:
+                key = str(candidate)
+            if key == cached_key or key in seen_live:
+                continue
+            seen_live.add(key)
+            live_candidates.append(candidate)
+
+        if _should_prefer_live_image_candidates(cached_path=cached_path, live_candidates=live_candidates):
+            candidates = [*live_candidates, cached_path]
+        else:
+            candidates = [cached_path, *live_candidates]
 
     logger.info(f"chat_image: md5={md5} file_id={file_id} candidates={len(candidates)} first={p}")
 
@@ -1443,19 +1555,14 @@ async def get_chat_image(
     # 仅在 md5 有效时缓存到 resource 目录；file_id 可能非常长，避免写入超长文件名
     if md5 and media_type.startswith("image/"):
         try:
-            out_md5 = str(md5).lower()
-            ext = _detect_image_extension(data)
-            out_path = _get_decrypted_resource_path(account_dir, out_md5, ext)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            if not out_path.exists():
-                out_path.write_bytes(data)
+            _write_cached_chat_image(account_dir, str(md5), data)
         except Exception:
             pass
 
     logger.info(
         f"chat_image: md5={md5} file_id={file_id} chosen={chosen} media_type={media_type} bytes={len(data)}"
     )
-    return Response(content=data, media_type=media_type)
+    return _build_uncached_media_response(data, media_type)
 
 
 @router.get("/api/chat/media/emoji", summary="获取表情消息资源")
