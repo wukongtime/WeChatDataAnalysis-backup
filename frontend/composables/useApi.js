@@ -617,7 +617,16 @@ export const useApi = () => {
     return `${base}/biz/proxy_image?${query.toString()}`
   }
 
+  const pickSystemDirectory = async (params = {}) => {
+    const query = new URLSearchParams()
+    if (params && params.title) query.set('title', params.title)
+    if (params && params.initial_dir) query.set('initial_dir', params.initial_dir)
+    const url = '/system/pick_directory' + (query.toString() ? `?${query.toString()}` : '')
+    return await request(url)
+  }
+
   return {
+    pickSystemDirectory,
     detectWechat,
     detectCurrentAccount,
     decryptDatabase,
