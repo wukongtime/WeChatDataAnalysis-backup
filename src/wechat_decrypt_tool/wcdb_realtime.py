@@ -1,4 +1,5 @@
 import ctypes
+import base64
 import binascii
 import json
 import os
@@ -6,6 +7,8 @@ import re
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -121,14 +124,188 @@ def _resolve_wcdb_api_dll_path() -> Path:
 _lib_lock = threading.Lock()
 _lib: Optional[ctypes.CDLL] = None
 _initialized = False
+_loaded_wcdb_api_dll: Optional[Path] = None
+_preloaded_native_libs: list[ctypes.CDLL] = []
+_protection_checked = False
+_protection_result: Optional[tuple[int, str]] = None
 
 
 def _is_windows() -> bool:
     return sys.platform.startswith("win")
 
 
+def _iter_wcdb_resource_paths(wcdb_api_dll: Path) -> tuple[Path, ...]:
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: str | Path | None) -> None:
+        if not path:
+            return
+        try:
+            resolved = Path(path).resolve()
+        except Exception:
+            resolved = Path(path)
+        key = str(resolved).replace("/", "\\").rstrip("\\").lower()
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(resolved)
+
+    dll_dir = wcdb_api_dll.parent
+    add(dll_dir)
+    add(dll_dir.parent)
+    add(_NATIVE_DIR)
+    add(_NATIVE_DIR.parent)
+
+    cwd = Path.cwd()
+    add(cwd)
+    add(cwd / "resources")
+
+    data_dir = str(os.environ.get("WECHAT_TOOL_DATA_DIR", "") or "").strip()
+    if data_dir:
+        add(data_dir)
+        add(Path(data_dir) / "resources")
+
+    if getattr(sys, "frozen", False):
+        try:
+            exe_dir = Path(sys.executable).resolve().parent
+        except Exception:
+            exe_dir = Path(sys.executable).parent
+        add(exe_dir)
+        add(exe_dir / "resources")
+
+    return tuple(candidates)
+
+
+def _preload_wcdb_dependencies(wcdb_api_dll: Path) -> None:
+    dll_dir = wcdb_api_dll.parent
+    for name in ("WCDB.dll", "SDL2.dll", "VoipEngine.dll"):
+        dep_path = dll_dir / name
+        if not dep_path.exists():
+            continue
+        try:
+            _preloaded_native_libs.append(ctypes.CDLL(str(dep_path)))
+            logger.info("[wcdb] preloaded dependency: %s", dep_path)
+        except Exception as exc:
+            logger.warning("[wcdb] preload dependency failed: %s err=%s", dep_path, exc)
+
+
+def _run_init_protection(lib: ctypes.CDLL, wcdb_api_dll: Path) -> None:
+    global _protection_checked, _protection_result
+    if _protection_checked:
+        return
+    _protection_checked = True
+
+    fn = getattr(lib, "InitProtection", None)
+    if not fn:
+        logger.info("[wcdb] InitProtection not exported: %s", wcdb_api_dll)
+        return
+
+    try:
+        fn.argtypes = [ctypes.c_char_p]
+        fn.restype = ctypes.c_int32
+    except Exception:
+        pass
+
+    best: Optional[tuple[int, str]] = None
+    for resource_path in _iter_wcdb_resource_paths(wcdb_api_dll):
+        try:
+            rc = int(fn(str(resource_path).encode("utf-8")))
+            logger.info("[wcdb] InitProtection rc=%s path=%s", rc, resource_path)
+            if rc == 0:
+                _protection_result = (rc, str(resource_path))
+                return
+            if best is None:
+                best = (rc, str(resource_path))
+        except Exception as exc:
+            logger.warning("[wcdb] InitProtection exception path=%s err=%s", resource_path, exc)
+
+    _protection_result = best
+
+
+def _format_protection_hint() -> str:
+    if not _protection_result:
+        return ""
+    rc, resource_path = _protection_result
+    return f" protection_rc={rc} protection_path={resource_path}"
+
+
+def _sidecar_url() -> str:
+    return str(os.environ.get("WECHAT_TOOL_WCDB_SIDECAR_URL", "") or "").strip().rstrip("/")
+
+
+def _sidecar_enabled() -> bool:
+    return bool(_sidecar_url())
+
+
+def _sidecar_call(action: str, payload: Optional[dict[str, Any]] = None, *, timeout: float = 30.0) -> dict[str, Any]:
+    base_url = _sidecar_url()
+    if not base_url:
+        raise WCDBRealtimeError("WCDB sidecar is not configured.")
+
+    token = str(os.environ.get("WECHAT_TOOL_WCDB_SIDECAR_TOKEN", "") or "").strip()
+    body = json.dumps(
+        {
+            "action": str(action or "").strip(),
+            "payload": payload or {},
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    deadline = time.monotonic() + max(1.0, float(timeout or 30.0))
+    last_err: Exception | None = None
+    attempts = 20 if action == "init" else 3
+    for attempt in range(attempts):
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "Accept": "application/json",
+        }
+        if token:
+            headers["X-WCDB-Sidecar-Token"] = token
+        req = urllib.request.Request(
+            f"{base_url}/call",
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            remaining = max(0.5, deadline - time.monotonic())
+            with urllib.request.urlopen(req, timeout=min(remaining, max(0.5, timeout))) as resp:
+                raw = resp.read()
+            decoded = json.loads(raw.decode("utf-8", errors="replace") or "{}")
+            if not isinstance(decoded, dict):
+                raise WCDBRealtimeError("WCDB sidecar returned invalid response.")
+            if decoded.get("ok"):
+                result = decoded.get("result")
+                return result if isinstance(result, dict) else {}
+            rc = decoded.get("rc")
+            err = str(decoded.get("error") or "WCDB sidecar call failed")
+            logs = decoded.get("logs")
+            hint = ""
+            if isinstance(logs, list) and logs:
+                hint = f" logs={[str(x) for x in logs[:6]]}"
+            raise WCDBRealtimeError(f"{err} rc={rc}.{hint}")
+        except WCDBRealtimeError:
+            raise
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_err = exc
+            if attempt >= attempts - 1 or time.monotonic() >= deadline:
+                break
+            time.sleep(0.15)
+        except Exception as exc:
+            last_err = exc
+            break
+
+    raise WCDBRealtimeError(f"WCDB sidecar unavailable: {last_err}")
+
+
+def _sidecar_payload(action: str, payload: Optional[dict[str, Any]] = None, *, timeout: float = 30.0) -> str:
+    result = _sidecar_call(action, payload, timeout=timeout)
+    return str(result.get("payload") or "")
+
+
 def _load_wcdb_lib() -> ctypes.CDLL:
-    global _lib
+    global _lib, _loaded_wcdb_api_dll
     with _lib_lock:
         if _lib is not None:
             return _lib
@@ -146,6 +323,7 @@ def _load_wcdb_lib() -> ctypes.CDLL:
         except Exception:
             pass
 
+        _preload_wcdb_dependencies(wcdb_api_dll)
         lib = ctypes.CDLL(str(wcdb_api_dll))
         logger.info("[wcdb] using wcdb_api.dll: %s", wcdb_api_dll)
 
@@ -291,20 +469,50 @@ def _load_wcdb_lib() -> ctypes.CDLL:
         lib.wcdb_free_string.argtypes = [ctypes.c_char_p]
         lib.wcdb_free_string.restype = None
 
+        _loaded_wcdb_api_dll = wcdb_api_dll
         _lib = lib
         return lib
 
 
 def _ensure_initialized() -> None:
-    global _initialized
+    global _initialized, _loaded_wcdb_api_dll, _protection_result
+    if _sidecar_enabled():
+        with _lib_lock:
+            if _initialized:
+                return
+        result = _sidecar_call("init", timeout=30.0)
+        dll_path = str(result.get("dllPath") or "").strip()
+        if dll_path:
+            try:
+                _loaded_wcdb_api_dll = Path(dll_path)
+            except Exception:
+                pass
+        protection = result.get("protection")
+        if isinstance(protection, list):
+            for item in protection:
+                if isinstance(item, dict) and "rc" in item:
+                    try:
+                        _protection_result = (int(item.get("rc")), str(item.get("path") or ""))
+                        if int(item.get("rc")) == 0:
+                            break
+                    except Exception:
+                        continue
+        with _lib_lock:
+            _initialized = True
+        return
+
     lib = _load_wcdb_lib()
     with _lib_lock:
         if _initialized:
             return
+        wcdb_api_dll = _loaded_wcdb_api_dll or _resolve_wcdb_api_dll_path()
+        _run_init_protection(lib, wcdb_api_dll)
         rc = int(lib.wcdb_init())
         if rc != 0:
             logs = get_native_logs(require_initialized=False)
-            hint = f" logs={logs[:6]}" if logs else ""
+            hint = _format_protection_hint()
+            if logs:
+                hint += f" logs={logs[:6]}"
             raise WCDBRealtimeError(f"wcdb_init failed: {rc}.{hint}")
         _initialized = True
 
@@ -368,6 +576,21 @@ def _call_out_error(fn, *args) -> None:
 
 
 def get_native_logs(*, require_initialized: bool = True) -> list[str]:
+    if _sidecar_enabled():
+        if require_initialized:
+            try:
+                _ensure_initialized()
+            except Exception:
+                return []
+        try:
+            result = _sidecar_call("get_logs", timeout=5.0)
+            logs = result.get("logs")
+            if isinstance(logs, list):
+                return [str(x) for x in logs]
+            return []
+        except Exception:
+            return []
+
     if require_initialized:
         try:
             _ensure_initialized()
@@ -404,6 +627,20 @@ def open_account(session_db_path: Path, key_hex: str) -> int:
     if len(key) != 64:
         raise WCDBRealtimeError("Invalid db key (must be 64 hex chars).")
 
+    if _sidecar_enabled():
+        result = _sidecar_call(
+            "open_account",
+            {
+                "path": str(p),
+                "key": key,
+            },
+            timeout=30.0,
+        )
+        handle = int(result.get("handle") or 0)
+        if handle <= 0:
+            raise WCDBRealtimeError("wcdb_open_account failed: invalid sidecar handle.")
+        return handle
+
     lib = _load_wcdb_lib()
     out_handle = ctypes.c_int64(0)
     rc = int(lib.wcdb_open_account(str(p).encode("utf-8"), key.encode("utf-8"), ctypes.byref(out_handle)))
@@ -421,13 +658,20 @@ def set_my_wxid(handle: int, wxid: str) -> bool:
     except Exception:
         return False
 
+    w = str(wxid or "").strip()
+    if not w:
+        return False
+
+    if _sidecar_enabled():
+        try:
+            result = _sidecar_call("set_my_wxid", {"handle": int(handle), "wxid": w}, timeout=10.0)
+            return bool(result.get("success"))
+        except Exception:
+            return False
+
     lib = _load_wcdb_lib()
     fn = getattr(lib, "wcdb_set_my_wxid", None)
     if not fn:
-        return False
-
-    w = str(wxid or "").strip()
-    if not w:
         return False
 
     try:
@@ -449,6 +693,12 @@ def close_account(handle: int) -> None:
         _ensure_initialized()
     except Exception:
         return
+    if _sidecar_enabled():
+        try:
+            _sidecar_call("close_account", {"handle": h}, timeout=5.0)
+        except Exception:
+            pass
+        return
     lib = _load_wcdb_lib()
     try:
         lib.wcdb_close_account(ctypes.c_int64(h))
@@ -458,6 +708,13 @@ def close_account(handle: int) -> None:
 
 def get_sessions(handle: int) -> list[dict[str, Any]]:
     _ensure_initialized()
+    if _sidecar_enabled():
+        payload = _sidecar_payload("get_sessions", {"handle": int(handle)}, timeout=30.0)
+        decoded = _safe_load_json(payload)
+        if isinstance(decoded, list):
+            return [x for x in decoded if isinstance(x, dict)]
+        return []
+
     lib = _load_wcdb_lib()
     payload = _call_out_json(lib.wcdb_get_sessions, ctypes.c_int64(int(handle)))
     decoded = _safe_load_json(payload)
@@ -472,10 +729,26 @@ def get_sessions(handle: int) -> list[dict[str, Any]]:
 
 def get_messages(handle: int, username: str, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
     _ensure_initialized()
-    lib = _load_wcdb_lib()
     u = str(username or "").strip()
     if not u:
         return []
+    if _sidecar_enabled():
+        payload = _sidecar_payload(
+            "get_messages",
+            {
+                "handle": int(handle),
+                "username": u,
+                "limit": int(limit),
+                "offset": int(offset),
+            },
+            timeout=30.0,
+        )
+        decoded = _safe_load_json(payload)
+        if isinstance(decoded, list):
+            return [x for x in decoded if isinstance(x, dict)]
+        return []
+
+    lib = _load_wcdb_lib()
     payload = _call_out_json(
         lib.wcdb_get_messages,
         ctypes.c_int64(int(handle)),
@@ -495,10 +768,21 @@ def get_messages(handle: int, username: str, *, limit: int = 50, offset: int = 0
 
 def get_message_count(handle: int, username: str) -> int:
     _ensure_initialized()
-    lib = _load_wcdb_lib()
     u = str(username or "").strip()
     if not u:
         return 0
+    if _sidecar_enabled():
+        result = _sidecar_call(
+            "get_message_count",
+            {"handle": int(handle), "username": u},
+            timeout=30.0,
+        )
+        try:
+            return int(result.get("count") or 0)
+        except Exception:
+            return 0
+
+    lib = _load_wcdb_lib()
     out_count = ctypes.c_int32(0)
     rc = int(lib.wcdb_get_message_count(ctypes.c_int64(int(handle)), u.encode("utf-8"), ctypes.byref(out_count)))
     if rc != 0:
@@ -508,11 +792,22 @@ def get_message_count(handle: int, username: str) -> int:
 
 def get_display_names(handle: int, usernames: list[str]) -> dict[str, str]:
     _ensure_initialized()
-    lib = _load_wcdb_lib()
     uniq = [str(u or "").strip() for u in usernames if str(u or "").strip()]
     uniq = list(dict.fromkeys(uniq))
     if not uniq:
         return {}
+    if _sidecar_enabled():
+        out_json = _sidecar_payload(
+            "get_display_names",
+            {"handle": int(handle), "usernames": uniq},
+            timeout=30.0,
+        )
+        decoded = _safe_load_json(out_json)
+        if isinstance(decoded, dict):
+            return {str(k): str(v) for k, v in decoded.items()}
+        return {}
+
+    lib = _load_wcdb_lib()
     payload = json.dumps(uniq, ensure_ascii=False).encode("utf-8")
     out_json = _call_out_json(lib.wcdb_get_display_names, ctypes.c_int64(int(handle)), payload)
     decoded = _safe_load_json(out_json)
@@ -523,11 +818,22 @@ def get_display_names(handle: int, usernames: list[str]) -> dict[str, str]:
 
 def get_avatar_urls(handle: int, usernames: list[str]) -> dict[str, str]:
     _ensure_initialized()
-    lib = _load_wcdb_lib()
     uniq = [str(u or "").strip() for u in usernames if str(u or "").strip()]
     uniq = list(dict.fromkeys(uniq))
     if not uniq:
         return {}
+    if _sidecar_enabled():
+        out_json = _sidecar_payload(
+            "get_avatar_urls",
+            {"handle": int(handle), "usernames": uniq},
+            timeout=30.0,
+        )
+        decoded = _safe_load_json(out_json)
+        if isinstance(decoded, dict):
+            return {str(k): str(v) for k, v in decoded.items()}
+        return {}
+
+    lib = _load_wcdb_lib()
     payload = json.dumps(uniq, ensure_ascii=False).encode("utf-8")
     out_json = _call_out_json(lib.wcdb_get_avatar_urls, ctypes.c_int64(int(handle)), payload)
     decoded = _safe_load_json(out_json)
@@ -538,10 +844,21 @@ def get_avatar_urls(handle: int, usernames: list[str]) -> dict[str, str]:
 
 def get_group_members(handle: int, chatroom_id: str) -> list[dict[str, Any]]:
     _ensure_initialized()
-    lib = _load_wcdb_lib()
     cid = str(chatroom_id or "").strip()
     if not cid:
         return []
+    if _sidecar_enabled():
+        out_json = _sidecar_payload(
+            "get_group_members",
+            {"handle": int(handle), "chatroom_id": cid},
+            timeout=30.0,
+        )
+        decoded = _safe_load_json(out_json)
+        if isinstance(decoded, list):
+            return [x for x in decoded if isinstance(x, dict)]
+        return []
+
+    lib = _load_wcdb_lib()
     out_json = _call_out_json(lib.wcdb_get_group_members, ctypes.c_int64(int(handle)), cid.encode("utf-8"))
     decoded = _safe_load_json(out_json)
     if isinstance(decoded, list):
@@ -555,13 +872,27 @@ def get_group_members(handle: int, chatroom_id: str) -> list[dict[str, Any]]:
 
 def get_group_nicknames(handle: int, chatroom_id: str) -> dict[str, str]:
     _ensure_initialized()
+    cid = str(chatroom_id or "").strip()
+    if not cid:
+        return {}
+
+    if _sidecar_enabled():
+        try:
+            out_json = _sidecar_payload(
+                "get_group_nicknames",
+                {"handle": int(handle), "chatroom_id": cid},
+                timeout=30.0,
+            )
+        except Exception:
+            return {}
+        decoded = _safe_load_json(out_json)
+        if isinstance(decoded, dict):
+            return {str(k): str(v) for k, v in decoded.items()}
+        return {}
+
     lib = _load_wcdb_lib()
     fn = getattr(lib, "wcdb_get_group_nicknames", None)
     if not fn:
-        return {}
-
-    cid = str(chatroom_id or "").strip()
-    if not cid:
         return {}
 
     out_json = _call_out_json(fn, ctypes.c_int64(int(handle)), cid.encode("utf-8"))
@@ -577,11 +908,6 @@ def exec_query(handle: int, *, kind: str, path: Optional[str], sql: str) -> list
     This is primarily used for SNS/other dbs that are not directly exposed by dedicated APIs.
     """
     _ensure_initialized()
-    lib = _load_wcdb_lib()
-    fn = getattr(lib, "wcdb_exec_query", None)
-    if not fn:
-        raise WCDBRealtimeError("Current wcdb_api.dll does not support exec_query.")
-
     k = str(kind or "").strip()
     if not k:
         raise WCDBRealtimeError("Missing kind for exec_query.")
@@ -591,6 +917,27 @@ def exec_query(handle: int, *, kind: str, path: Optional[str], sql: str) -> list
         return []
 
     p = None if path is None else str(path or "").strip()
+
+    if _sidecar_enabled():
+        out_json = _sidecar_payload(
+            "exec_query",
+            {
+                "handle": int(handle),
+                "kind": k,
+                "path": p,
+                "sql": s,
+            },
+            timeout=60.0,
+        )
+        decoded = _safe_load_json(out_json)
+        if isinstance(decoded, list):
+            return [x for x in decoded if isinstance(x, dict)]
+        return []
+
+    lib = _load_wcdb_lib()
+    fn = getattr(lib, "wcdb_exec_query", None)
+    if not fn:
+        raise WCDBRealtimeError("Current wcdb_api.dll does not support exec_query.")
 
     out_json = _call_out_json(
         fn,
@@ -615,14 +962,28 @@ def update_message(handle: int, *, session_id: str, local_id: int, create_time: 
     Requires wcdb_update_message export in wcdb_api.dll.
     """
     _ensure_initialized()
+    sid = str(session_id or "").strip()
+    if not sid:
+        raise WCDBRealtimeError("Missing session_id for update_message.")
+
+    if _sidecar_enabled():
+        _sidecar_call(
+            "update_message",
+            {
+                "handle": int(handle),
+                "session_id": sid,
+                "local_id": int(local_id or 0),
+                "create_time": int(create_time or 0),
+                "new_content": str(new_content or ""),
+            },
+            timeout=30.0,
+        )
+        return
+
     lib = _load_wcdb_lib()
     fn = getattr(lib, "wcdb_update_message", None)
     if not fn:
         raise WCDBRealtimeError("Current wcdb_api.dll does not support update_message.")
-
-    sid = str(session_id or "").strip()
-    if not sid:
-        raise WCDBRealtimeError("Missing session_id for update_message.")
 
     _call_out_error(
         fn,
@@ -647,16 +1008,30 @@ def delete_message(
     Requires wcdb_delete_message export in wcdb_api.dll.
     """
     _ensure_initialized()
-    lib = _load_wcdb_lib()
-    fn = getattr(lib, "wcdb_delete_message", None)
-    if not fn:
-        raise WCDBRealtimeError("Current wcdb_api.dll does not support delete_message.")
-
     sid = str(session_id or "").strip()
     if not sid:
         raise WCDBRealtimeError("Missing session_id for delete_message.")
 
     hint = str(db_path_hint or "").strip()
+    if _sidecar_enabled():
+        _sidecar_call(
+            "delete_message",
+            {
+                "handle": int(handle),
+                "session_id": sid,
+                "local_id": int(local_id or 0),
+                "create_time": int(create_time or 0),
+                "db_path_hint": hint,
+            },
+            timeout=30.0,
+        )
+        return
+
+    lib = _load_wcdb_lib()
+    fn = getattr(lib, "wcdb_delete_message", None)
+    if not fn:
+        raise WCDBRealtimeError("Current wcdb_api.dll does not support delete_message.")
+
     _call_out_error(
         fn,
         ctypes.c_int64(int(handle)),
@@ -682,11 +1057,6 @@ def get_sns_timeline(
     Requires a newer wcdb_api.dll export: wcdb_get_sns_timeline.
     """
     _ensure_initialized()
-    lib = _load_wcdb_lib()
-    fn = getattr(lib, "wcdb_get_sns_timeline", None)
-    if not fn:
-        raise WCDBRealtimeError("Current wcdb_api.dll does not support sns timeline.")
-
     lim = max(0, int(limit or 0))
     off = max(0, int(offset or 0))
 
@@ -695,6 +1065,30 @@ def get_sns_timeline(
     users_json = json.dumps(users, ensure_ascii=False) if users else ""
 
     kw = str(keyword or "").strip()
+
+    if _sidecar_enabled():
+        payload = _sidecar_payload(
+            "get_sns_timeline",
+            {
+                "handle": int(handle),
+                "limit": lim,
+                "offset": off,
+                "usernames": users,
+                "keyword": kw,
+                "start_time": int(start_time or 0),
+                "end_time": int(end_time or 0),
+            },
+            timeout=60.0,
+        )
+        decoded = _safe_load_json(payload)
+        if isinstance(decoded, list):
+            return [x for x in decoded if isinstance(x, dict)]
+        return []
+
+    lib = _load_wcdb_lib()
+    fn = getattr(lib, "wcdb_get_sns_timeline", None)
+    if not fn:
+        raise WCDBRealtimeError("Current wcdb_api.dll does not support sns timeline.")
 
     payload = _call_out_json(
         fn,
@@ -724,11 +1118,6 @@ def decrypt_sns_image(encrypted_data: bytes, key: str) -> bytes:
     - On failure, returns the original encrypted_data (best-effort behavior like WeFlow).
     """
     _ensure_initialized()
-    lib = _load_wcdb_lib()
-    fn = getattr(lib, "wcdb_decrypt_sns_image", None)
-    if not fn:
-        raise WCDBRealtimeError("Current wcdb_api.dll does not support sns image decryption.")
-
     raw = bytes(encrypted_data or b"")
     if not raw:
         return b""
@@ -736,6 +1125,28 @@ def decrypt_sns_image(encrypted_data: bytes, key: str) -> bytes:
     k = str(key or "").strip()
     if not k:
         return raw
+
+    if _sidecar_enabled():
+        result = _sidecar_call(
+            "decrypt_sns_image",
+            {
+                "data_b64": base64.b64encode(raw).decode("ascii"),
+                "key": k,
+            },
+            timeout=60.0,
+        )
+        data_b64 = str(result.get("data_b64") or "")
+        if not data_b64:
+            return raw
+        try:
+            return base64.b64decode(data_b64)
+        except Exception:
+            return raw
+
+    lib = _load_wcdb_lib()
+    fn = getattr(lib, "wcdb_decrypt_sns_image", None)
+    if not fn:
+        raise WCDBRealtimeError("Current wcdb_api.dll does not support sns image decryption.")
 
     out_ptr = ctypes.c_void_p()
     buf = ctypes.create_string_buffer(raw, len(raw))
@@ -775,6 +1186,17 @@ def decrypt_sns_image(encrypted_data: bytes, key: str) -> bytes:
 
 def shutdown() -> None:
     global _initialized
+    if _sidecar_enabled():
+        with _lib_lock:
+            if not _initialized:
+                return
+        try:
+            _sidecar_call("shutdown", timeout=5.0)
+        finally:
+            with _lib_lock:
+                _initialized = False
+        return
+
     lib = _load_wcdb_lib()
     with _lib_lock:
         if not _initialized:
@@ -893,6 +1315,7 @@ class WCDBRealtimeManager:
         with self._mu:
             failed_at = self._failed.get(account)
             if failed_at is not None and (time.monotonic() - failed_at) < self._FAILED_TTL:
+                logger.warning("[wcdb] recent failure cache hit account=%s ttl=%ss", account, int(self._FAILED_TTL))
                 raise WCDBRealtimeError("WCDB connection recently failed; retry after 60s.")
 
         deadline = time.monotonic() + timeout
@@ -926,9 +1349,11 @@ class WCDBRealtimeManager:
             if len(key) != 64:
                 with self._mu:
                     self._failed[account] = time.monotonic()
+                logger.warning("[wcdb] missing/invalid db key account=%s key_len=%s", account, len(key))
                 raise WCDBRealtimeError("Missing db key for this account (call /api/keys or decrypt first).")
             db_storage_dir = _resolve_account_db_storage_dir(account_dir)
             if db_storage_dir is None:
+                logger.warning("[wcdb] db_storage resolve failed account=%s account_dir=%s", account, account_dir)
                 raise WCDBRealtimeError("Cannot resolve db_storage directory for this account.")
 
             session_db_path = _resolve_session_db_path(db_storage_dir)
@@ -952,14 +1377,27 @@ class WCDBRealtimeManager:
             if open_thread.is_alive():
                 with self._mu:
                     self._failed[account] = time.monotonic()
+                logger.warning(
+                    "[wcdb] open_account timeout account=%s timeout=%ss session_db=%s",
+                    account,
+                    int(timeout),
+                    session_db_path,
+                )
                 raise WCDBRealtimeError(
                     f"open_account timed out after {timeout:.0f}s for {session_db_path}"
                 )
             if _open_err:
                 with self._mu:
                     self._failed[account] = time.monotonic()
+                logger.warning(
+                    "[wcdb] open_account failed account=%s session_db=%s error=%s",
+                    account,
+                    session_db_path,
+                    _open_err[0],
+                )
                 raise _open_err[0]
             if not _handle_box:
+                logger.warning("[wcdb] open_account returned no handle account=%s session_db=%s", account, session_db_path)
                 raise WCDBRealtimeError("open_account returned no handle.")
 
             handle = _handle_box[0]
@@ -980,7 +1418,8 @@ class WCDBRealtimeManager:
 
             with self._mu:
                 self._conns[account] = conn
-            logger.info(f"[wcdb] connected account={account} session_db={session_db_path}")
+                self._failed.pop(account, None)
+            logger.info("[wcdb] connected account=%s handle=%s session_db=%s", account, int(handle), session_db_path)
             return conn
         finally:
             with self._mu:

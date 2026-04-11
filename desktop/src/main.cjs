@@ -17,6 +17,7 @@ try {
   autoUpdaterLoadError = err;
 }
 const { spawn, spawnSync } = require("child_process");
+const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
 const net = require("net");
@@ -33,6 +34,10 @@ const DEFAULT_BACKEND_HOST = String(process.env.WECHAT_TOOL_HOST || "127.0.0.1")
 const DEFAULT_BACKEND_PORT = parsePort(process.env.WECHAT_TOOL_PORT) ?? 10392;
 
 let backendProc = null;
+let wcdbSidecarProc = null;
+let wcdbSidecarPort = null;
+let wcdbSidecarUrl = "";
+let wcdbSidecarToken = "";
 let resolvedDataDir = null;
 let mainWindow = null;
 let tray = null;
@@ -1452,8 +1457,159 @@ function getPackagedWcdbDllPath() {
   return path.join(process.resourcesPath, "backend", "native", "wcdb_api.dll");
 }
 
+function getDevWcdbDllPath() {
+  return path.join(repoRoot(), "src", "wechat_decrypt_tool", "native", "wcdb_api.dll");
+}
+
+function getWcdbDllPath() {
+  return app.isPackaged ? getPackagedWcdbDllPath() : getDevWcdbDllPath();
+}
+
+function getWcdbDllDir() {
+  return path.dirname(getWcdbDllPath());
+}
+
+function getWcdbSidecarScriptPath() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "wcdb-sidecar.cjs")
+    : path.join(__dirname, "wcdb-sidecar.cjs");
+}
+
+function getKoffiDir() {
+  return app.isPackaged ? path.join(process.resourcesPath, "koffi") : path.join(repoRoot(), "desktop", "vendor", "koffi");
+}
+
+function getWcdbSidecarStdioLogPath(dataDir) {
+  return path.join(dataDir, "wcdb-sidecar-stdio.log");
+}
+
+function getWcdbSidecarPort() {
+  if (parsePort(wcdbSidecarPort) != null) return wcdbSidecarPort;
+  const envPort = parsePort(process.env.WECHAT_TOOL_WCDB_SIDECAR_PORT);
+  wcdbSidecarPort = envPort ?? Math.min(65535, getBackendPort() + 101);
+  return wcdbSidecarPort;
+}
+
+async function prepareWcdbSidecarPort() {
+  if (parsePort(wcdbSidecarPort) != null) return wcdbSidecarPort;
+  const envPort = parsePort(process.env.WECHAT_TOOL_WCDB_SIDECAR_PORT);
+  if (envPort != null) {
+    wcdbSidecarPort = envPort;
+    return wcdbSidecarPort;
+  }
+  const preferred = Math.min(65535, getBackendPort() + 101);
+  wcdbSidecarPort = await chooseAvailablePort(preferred, "127.0.0.1");
+  if (wcdbSidecarPort == null) wcdbSidecarPort = preferred;
+  return wcdbSidecarPort;
+}
+
+function getWcdbResourcePaths() {
+  const out = [];
+  const seen = new Set();
+
+  const add = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return;
+    const resolved = path.resolve(raw);
+    const key = resolved.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(resolved);
+  };
+
+  const dllDir = getWcdbDllDir();
+  add(dllDir);
+  add(path.dirname(dllDir));
+  add(repoRoot());
+  add(path.join(repoRoot(), "resources"));
+  const dataDir = resolveDataDir();
+  if (dataDir) {
+    add(dataDir);
+    add(path.join(dataDir, "resources"));
+  }
+  return out;
+}
+
+function ensureWcdbSidecarEnv(env) {
+  if (!wcdbSidecarUrl || !wcdbSidecarToken) return env;
+  env.WECHAT_TOOL_WCDB_SIDECAR_URL = wcdbSidecarUrl;
+  env.WECHAT_TOOL_WCDB_SIDECAR_TOKEN = wcdbSidecarToken;
+  return env;
+}
+
+function startWcdbSidecar() {
+  if (process.env.WECHAT_TOOL_WCDB_SIDECAR === "0") return null;
+  if (wcdbSidecarProc && wcdbSidecarProc.exitCode == null) return wcdbSidecarProc;
+  if (process.platform !== "win32") return null;
+
+  const dllPath = getWcdbDllPath();
+  const sidecarScript = getWcdbSidecarScriptPath();
+  const koffiDir = getKoffiDir();
+  if (!fs.existsSync(dllPath)) {
+    logMain(`[wcdb-sidecar] skip: missing wcdb_api.dll ${dllPath}`);
+    return null;
+  }
+  if (!fs.existsSync(sidecarScript)) {
+    logMain(`[wcdb-sidecar] skip: missing sidecar script ${sidecarScript}`);
+    return null;
+  }
+  if (!fs.existsSync(koffiDir)) {
+    logMain(`[wcdb-sidecar] skip: missing koffi runtime ${koffiDir}`);
+    return null;
+  }
+
+  const port = getWcdbSidecarPort();
+  const host = "127.0.0.1";
+  wcdbSidecarUrl = `http://${host}:${port}`;
+  wcdbSidecarToken = wcdbSidecarToken || crypto.randomBytes(24).toString("hex");
+
+  const env = {
+    ...process.env,
+    ELECTRON_RUN_AS_NODE: "1",
+    WECHAT_TOOL_WCDB_SIDECAR_HOST: host,
+    WECHAT_TOOL_WCDB_SIDECAR_PORT: String(port),
+    WECHAT_TOOL_WCDB_SIDECAR_TOKEN: wcdbSidecarToken,
+    WECHAT_TOOL_WCDB_API_DLL_PATH: dllPath,
+    WECHAT_TOOL_WCDB_DLL_DIR: getWcdbDllDir(),
+    WECHAT_TOOL_WCDB_RESOURCE_PATHS: JSON.stringify(getWcdbResourcePaths()),
+    WECHAT_TOOL_KOFFI_DIR: koffiDir,
+  };
+
+  logMain(`[wcdb-sidecar] starting url=${wcdbSidecarUrl} dll=${dllPath}`);
+  wcdbSidecarProc = spawn(process.execPath, [sidecarScript], {
+    cwd: path.dirname(sidecarScript),
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+
+  const dataDir = resolveDataDir() || getUserDataDir() || repoRoot();
+  attachBackendStdio(wcdbSidecarProc, getWcdbSidecarStdioLogPath(dataDir));
+
+  const proc = wcdbSidecarProc;
+  proc.on("exit", (code, signal) => {
+    if (wcdbSidecarProc === proc) wcdbSidecarProc = null;
+    logMain(`[wcdb-sidecar] exited code=${code} signal=${signal}`);
+  });
+
+  process.env.WECHAT_TOOL_WCDB_SIDECAR_URL = wcdbSidecarUrl;
+  process.env.WECHAT_TOOL_WCDB_SIDECAR_TOKEN = wcdbSidecarToken;
+  return wcdbSidecarProc;
+}
+
+function stopWcdbSidecar() {
+  if (!wcdbSidecarProc) return;
+  const pid = wcdbSidecarProc.pid;
+  logMain(`[wcdb-sidecar] stop pid=${pid || "?"}`);
+  try {
+    wcdbSidecarProc.kill();
+  } catch {}
+  wcdbSidecarProc = null;
+}
+
 function startBackend() {
   if (backendProc) return backendProc;
+  startWcdbSidecar();
 
   const env = {
     ...process.env,
@@ -1462,6 +1618,7 @@ function startBackend() {
     // Make sure Python prints UTF-8 to stdout/stderr.
     PYTHONIOENCODING: process.env.PYTHONIOENCODING || "utf-8",
   };
+  ensureWcdbSidecarEnv(env);
 
   // In packaged mode we expect to provide the generated Nuxt output dir via env.
   if (app.isPackaged && !env.WECHAT_TOOL_UI_DIR) {
@@ -2135,6 +2292,7 @@ async function main() {
   await applyPendingOutputDirOnStartup();
   ensureOutputLink();
   await ensureBackendPortAvailableOnStartup();
+  await prepareWcdbSidecarPort();
 
   logMain(`[main] app.isPackaged=${app.isPackaged} argv=${JSON.stringify(process.argv)}`);
 
@@ -2190,6 +2348,7 @@ async function main() {
 
 app.on("window-all-closed", () => {
   stopBackend();
+  stopWcdbSidecar();
   if (process.platform !== "darwin") app.quit();
 });
 
@@ -2203,6 +2362,7 @@ app.on("before-quit", () => {
   isQuitting = true;
   destroyTray();
   stopBackend();
+  stopWcdbSidecar();
 });
 
 if (gotSingleInstanceLock) {
@@ -2211,6 +2371,7 @@ if (gotSingleInstanceLock) {
     console.error(err);
     logMain(`[main] fatal: ${err?.stack || String(err)}`);
     stopBackend();
+    stopWcdbSidecar();
     try {
       const dir = getUserDataDir();
       const outputDir = resolveOutputDir();

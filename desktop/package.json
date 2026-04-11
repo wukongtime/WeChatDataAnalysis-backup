@@ -57,6 +57,14 @@
       {
         "from": "resources/backend",
         "to": "backend"
+      },
+      {
+        "from": "src/wcdb-sidecar.cjs",
+        "to": "wcdb-sidecar.cjs"
+      },
+      {
+        "from": "vendor/koffi",
+        "to": "koffi"
       }
     ],
     "win": {
