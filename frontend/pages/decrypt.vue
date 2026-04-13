@@ -448,6 +448,7 @@ const error = ref('')
 const warning = ref('') // 警告，用于密钥提示
 const currentStep = ref(0)
 const mediaAccount = ref('')
+const activeKeyAccount = ref('')
 const isGettingDbKey = ref(false)
 
 // 步骤定义
@@ -485,6 +486,8 @@ const manualKeyErrors = reactive({
   aes_key: ''
 })
 
+const normalizeAccountId = (value) => String(value || '').trim()
+
 const normalizeXorKey = (value) => {
   const raw = String(value || '').trim()
   if (!raw) return { ok: false, value: '', message: '请输入 XOR 密钥' }
@@ -503,7 +506,7 @@ const normalizeAesKey = (value) => {
 }
 
 const prefillKeysForAccount = async (account) => {
-  const acc = String(account || '').trim()
+  const acc = normalizeAccountId(account)
   if (!acc) return
   try {
     const resp = await getSavedKeys({ account: acc })
@@ -527,6 +530,44 @@ const prefillKeysForAccount = async (account) => {
   } catch (e) {
     // ignore
   }
+}
+
+const tryAutoFetchImageKeys = async (account) => {
+  const acc = normalizeAccountId(account)
+  if (!acc) return
+  if (String(manualKeys.xor_key || '').trim() || String(manualKeys.aes_key || '').trim()) return
+
+  warning.value = '正在通过云端/本地算法自动获取图片密钥，请稍候...'
+  try {
+    const imgRes = await getImageKey({
+      account: acc,
+      db_storage_path: String(formData.db_storage_path || '').trim()
+    })
+
+    if (imgRes && imgRes.status === 0) {
+      if (imgRes.data?.xor_key) manualKeys.xor_key = imgRes.data.xor_key
+      if (imgRes.data?.aes_key) manualKeys.aes_key = imgRes.data.aes_key
+      warning.value = '已通过云端成功获取图片密钥！'
+      setTimeout(() => { if (warning.value.includes('成功获取')) warning.value = '' }, 3000)
+    } else {
+      warning.value = '云端获取图片密钥失败，您可以尝试手动填写。'
+    }
+  } catch (e) {
+    warning.value = '网络请求失败，请手动填写图片密钥。'
+  }
+}
+
+const ensureKeysForAccount = async (account) => {
+  const acc = normalizeAccountId(account)
+  if (!acc) return
+
+  if (activeKeyAccount.value && activeKeyAccount.value !== acc) {
+    clearManualKeys()
+  }
+
+  activeKeyAccount.value = acc
+  await prefillKeysForAccount(acc)
+  await tryAutoFetchImageKeys(acc)
 }
 
 const handleGetDbKey = async () => {
@@ -605,6 +646,7 @@ const clearManualKeys = () => {
   manualKeyErrors.aes_key = ''
   mediaKeys.xor_key = ''
   mediaKeys.aes_key = ''
+  activeKeyAccount.value = ''
 }
 
 // 图片解密相关
@@ -759,26 +801,7 @@ const handleDecrypt = async () => {
         } catch (e) {}
 
         currentStep.value = 1
-        await prefillKeysForAccount(mediaAccount.value)
-
-        if (!manualKeys.xor_key && !manualKeys.aes_key) {
-          warning.value = '正在通过云端/本地算法自动获取图片密钥，请稍候...'
-          try {
-            const params = mediaAccount.value ? { account: mediaAccount.value } : {}
-            const imgRes = await getImageKey(params)
-
-            if (imgRes && imgRes.status === 0) {
-              if (imgRes.data?.xor_key) manualKeys.xor_key = imgRes.data.xor_key
-              if (imgRes.data?.aes_key) manualKeys.aes_key = imgRes.data.aes_key
-              warning.value = '已通过云端成功获取图片密钥！'
-              setTimeout(() => { if(warning.value.includes('成功获取')) warning.value = '' }, 3000)
-            } else {
-              warning.value = '云端获取图片密钥失败，您可以尝试手动填写。'
-            }
-          } catch (e) {
-            warning.value = '网络请求失败，请手动填写图片密钥。'
-          }
-        }
+        await ensureKeysForAccount(mediaAccount.value)
 
       } else if (result.status === 'failed') {
         if (result.failure_count > 0 && result.success_count === 0) {
@@ -863,25 +886,7 @@ const handleDecrypt = async () => {
 
           if (data.status === 'completed') {
             currentStep.value = 1
-            await prefillKeysForAccount(mediaAccount.value)
-
-            if (!manualKeys.xor_key && !manualKeys.aes_key) {
-              warning.value = '正在通过云端/本地算法自动获取图片密钥，请稍候...'
-              try {
-                const params = mediaAccount.value ? { account: mediaAccount.value } : {}
-                const imgRes = await getImageKey(params)
-                if (imgRes && imgRes.status === 0) {
-                  if (imgRes.data?.xor_key) manualKeys.xor_key = imgRes.data.xor_key
-                  if (imgRes.data?.aes_key) manualKeys.aes_key = imgRes.data.aes_key
-                  warning.value = '已通过云端成功获取图片密钥！'
-                  setTimeout(() => { if(warning.value.includes('成功获取')) warning.value = '' }, 3000)
-                } else {
-                  warning.value = '云端获取图片密钥失败，您可以尝试手动填写。'
-                }
-              } catch (e) {
-                warning.value = '网络请求失败，请手动填写图片密钥。'
-              }
-            }
+            await ensureKeysForAccount(mediaAccount.value)
           } else if (data.status === 'failed') {
             error.value = data.message || '所有文件解密失败'
           } else {
@@ -1063,7 +1068,7 @@ onMounted(async () => {
         }
         // 清除sessionStorage
         sessionStorage.removeItem('selectedAccount')
-        await prefillKeysForAccount(mediaAccount.value)
+        await ensureKeysForAccount(mediaAccount.value)
       } catch (e) {
         console.error('解析账户信息失败:', e)
       }

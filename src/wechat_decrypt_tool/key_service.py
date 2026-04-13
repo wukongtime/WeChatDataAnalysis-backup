@@ -30,6 +30,43 @@ from .media_helpers import _resolve_account_dir, _resolve_account_wxid_dir
 logger = logging.getLogger(__name__)
 
 
+def _resolve_wxid_dir_for_image_key(
+    account: Optional[str] = None,
+    *,
+    wxid_dir: Optional[str] = None,
+    db_storage_path: Optional[str] = None,
+) -> Path:
+    explicit_wxid_dir = str(wxid_dir or "").strip()
+    if explicit_wxid_dir:
+        candidate = Path(explicit_wxid_dir).expanduser()
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+        raise FileNotFoundError(f"指定的 wxid_dir 不存在或不是目录: {candidate}")
+
+    explicit_db_storage_path = str(db_storage_path or "").strip()
+    if explicit_db_storage_path:
+        db_storage_dir = Path(explicit_db_storage_path).expanduser()
+        if db_storage_dir.exists() and db_storage_dir.is_dir():
+            if db_storage_dir.name.lower() == "db_storage":
+                candidate = db_storage_dir.parent
+                if candidate.exists() and candidate.is_dir():
+                    return candidate
+            nested_db_storage = db_storage_dir / "db_storage"
+            if nested_db_storage.exists() and nested_db_storage.is_dir():
+                return db_storage_dir
+
+    if account:
+        try:
+            account_dir = _resolve_account_dir(account)
+            wx_id_dir = _resolve_account_wxid_dir(account_dir)
+            if wx_id_dir:
+                return wx_id_dir
+        except Exception:
+            pass
+
+    raise FileNotFoundError("无法定位该账号的 wxid_dir，请传入有效的 db_storage_path 或先完成数据库解密")
+
+
 # ======================  以下是hook逻辑  ======================================
 
 class WeChatKeyFetcher:
@@ -171,7 +208,12 @@ def try_get_local_image_keys() -> List[Dict[str, Any]]:
         return []
 
 
-async def get_image_key_integrated_workflow(account: Optional[str] = None) -> Dict[str, Any]:
+async def get_image_key_integrated_workflow(
+    account: Optional[str] = None,
+    *,
+    wxid_dir: Optional[str] = None,
+    db_storage_path: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     集成图片密钥获取流程：
     1. 优先尝试本地算法提取
@@ -181,22 +223,26 @@ async def get_image_key_integrated_workflow(account: Optional[str] = None) -> Di
     local_keys = try_get_local_image_keys()
     
     target_account_wxid = None
-    if account:
+    if account or wxid_dir or db_storage_path:
         try:
-            account_dir = _resolve_account_dir(account)
-            wx_id_dir = _resolve_account_wxid_dir(account_dir)
-            target_account_wxid = wx_id_dir.name
-        except:
+            resolved_wxid_dir = _resolve_wxid_dir_for_image_key(
+                account,
+                wxid_dir=wxid_dir,
+                db_storage_path=db_storage_path,
+            )
+            target_account_wxid = resolved_wxid_dir.name
+        except Exception:
             target_account_wxid = account
+    target_account_wxid = str(target_account_wxid or "").strip().lower()
 
     if local_keys:
         # 如果指定了账号，尝试在本地结果中找匹配的
         if target_account_wxid:
             for k in local_keys:
-                if k['wxid'] in target_account_wxid:
-                    logger.info(f"成功通过本地算法匹配到账号 {target_account_wxid} 的图片密钥")
+                local_wxid = str(k.get("wxid") or "").strip().lower()
+                if local_wxid and local_wxid == target_account_wxid:
                     upsert_account_keys_in_store(
-                        account=k['wxid'],
+                        account=str(k.get("wxid") or "").strip(),
                         image_xor_key=k['xor_key'],
                         image_aes_key=k['aes_key']
                     )
@@ -215,12 +261,24 @@ async def get_image_key_integrated_workflow(account: Optional[str] = None) -> Di
 
     # 2. 本地提取失败或不匹配，尝试远程解析
     logger.info("本地算法提取未命中，尝试远程 API 解析...")
-    return await fetch_and_save_remote_keys(account)
+    return await fetch_and_save_remote_keys(
+        account,
+        wxid_dir=wxid_dir,
+        db_storage_path=db_storage_path,
+    )
 
 
-async def fetch_and_save_remote_keys(account: Optional[str] = None) -> Dict[str, Any]:
-    account_dir = _resolve_account_dir(account)
-    wx_id_dir = _resolve_account_wxid_dir(account_dir)
+async def fetch_and_save_remote_keys(
+    account: Optional[str] = None,
+    *,
+    wxid_dir: Optional[str] = None,
+    db_storage_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    wx_id_dir = _resolve_wxid_dir_for_image_key(
+        account,
+        wxid_dir=wxid_dir,
+        db_storage_path=db_storage_path,
+    )
     wxid = wx_id_dir.name
 
     url = "https://view.free.c3o.re/api/key"

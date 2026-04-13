@@ -87,7 +87,11 @@ async def get_wechat_db_key():
 
 
 @router.get("/api/get_image_key", summary="获取并保存微信图片密钥")
-async def get_image_key(account: Optional[str] = None):
+async def get_image_key(
+    account: Optional[str] = None,
+    db_storage_path: Optional[str] = None,
+    wxid_dir: Optional[str] = None,
+):
     """
     通过模拟 Next.js Server Action 协议，利用本地微信配置文件换取 AES/XOR 密钥。
 
@@ -97,7 +101,11 @@ async def get_image_key(account: Optional[str] = None):
     4. 解析返回流，自动存入本地数据库
     """
     try:
-        result = await get_image_key_integrated_workflow(account)
+        result = await get_image_key_integrated_workflow(
+            account,
+            db_storage_path=db_storage_path,
+            wxid_dir=wxid_dir,
+        )
 
         return {
             "status": 0,

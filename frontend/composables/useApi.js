@@ -578,6 +578,8 @@ export const useApi = () => {
   const getImageKey = async (params = {}) => {
     const query = new URLSearchParams()
     if (params && params.account) query.set('account', params.account)
+    if (params && params.db_storage_path) query.set('db_storage_path', params.db_storage_path)
+    if (params && params.wxid_dir) query.set('wxid_dir', params.wxid_dir)
     const url = '/get_image_key' + (query.toString() ? `?${query.toString()}` : '')
 
     return await request(url)
