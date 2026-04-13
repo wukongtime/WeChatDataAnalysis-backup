@@ -30,8 +30,17 @@
                   </div>
                   <div v-else-if="message.renderType === 'image'"
                     class="max-w-sm">
-                    <div class="msg-radius overflow-hidden cursor-pointer" :class="message.isSent ? '' : ''" @click="message.imageUrl && openImagePreview(message.imageUrl)" @contextmenu="openMediaContextMenu($event, message, 'image')">
-                      <img v-if="message.imageUrl" :src="message.imageUrl" alt="图片" class="max-w-[240px] max-h-[240px] object-cover hover:opacity-90 transition-opacity">
+                  <div class="msg-radius overflow-hidden cursor-pointer" :class="message.isSent ? '' : ''" @click="message.imageUrl && openImagePreview(message.imageUrl)" @contextmenu="openMediaContextMenu($event, message, 'image')">
+                      <img
+                        v-if="message.imageUrl"
+                        v-chat-lazy-src="message.imageUrl"
+                        alt="图片"
+                        class="block min-w-[96px] min-h-[96px] max-w-[240px] max-h-[240px] object-cover bg-gray-100 hover:opacity-90 transition-opacity"
+                        loading="lazy"
+                        decoding="async"
+                        fetchpriority="low"
+                        v-chat-media-perf="{ kind: 'message-image', meta: { conversation: selectedContact?.username || '', messageId: message.id, serverId: message.serverIdStr || '', imageMd5: message.imageMd5 || '', imageFileId: message.imageFileId || '' } }"
+                      >
                       <div v-else class="px-3 py-2 text-sm max-w-sm relative msg-bubble whitespace-pre-wrap break-words leading-relaxed"
                         :class="message.isSent ? 'bg-[#95EC69] text-black bubble-tail-r' : 'bg-white text-gray-800 bubble-tail-l'">
                         {{ message.content }}
@@ -40,7 +49,16 @@
                   </div>
                   <div v-else-if="message.renderType === 'video'" class="max-w-sm">
                     <div class="msg-radius overflow-hidden relative bg-black/5" @contextmenu="openMediaContextMenu($event, message, 'video')">
-                      <img v-if="message.videoThumbUrl" :src="message.videoThumbUrl" alt="视频" class="block w-[220px] max-w-[260px] h-auto max-h-[260px] object-cover">
+                      <img
+                        v-if="message.videoThumbUrl"
+                        v-chat-lazy-src="message.videoThumbUrl"
+                        alt="视频"
+                        class="block w-[220px] min-h-[120px] max-w-[260px] h-auto max-h-[260px] object-cover bg-gray-100"
+                        loading="lazy"
+                        decoding="async"
+                        fetchpriority="low"
+                        v-chat-media-perf="{ kind: 'message-video-thumb', meta: { conversation: selectedContact?.username || '', messageId: message.id, serverId: message.serverIdStr || '', videoThumbMd5: message.videoThumbMd5 || '', videoThumbFileId: message.videoThumbFileId || '' } }"
+                      >
                       <div v-else class="px-3 py-2 text-sm relative msg-bubble whitespace-pre-wrap break-words leading-relaxed"
                         :class="message.isSent ? 'bg-[#95EC69] text-black bubble-tail-r' : 'bg-white text-gray-800 bubble-tail-l'">
                         {{ message.content }}
@@ -100,7 +118,15 @@
                   </div>
                   <div v-else-if="message.renderType === 'emoji'" class="max-w-sm flex items-center group" :class="message.isSent ? 'flex-row-reverse' : ''">
                     <template v-if="message.emojiUrl">
-                      <img :src="message.emojiUrl" alt="表情" class="w-24 h-24 object-contain" @contextmenu="openMediaContextMenu($event, message, 'emoji')">
+                      <img
+                        v-chat-lazy-src="message.emojiUrl"
+                        alt="表情"
+                        class="w-24 h-24 object-contain"
+                        loading="lazy"
+                        decoding="async"
+                        fetchpriority="low"
+                        @contextmenu="openMediaContextMenu($event, message, 'emoji')"
+                      >
                       <button
                         v-if="shouldShowEmojiDownload(message)"
                         class="text-xs px-2 py-1 rounded bg-white border border-gray-200 text-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -122,7 +148,7 @@
                       :class="message.isSent ? 'bg-[#95EC69] text-black bubble-tail-r' : 'bg-white text-gray-800 bubble-tail-l'">
                       <span v-for="(seg, idx) in parseTextWithEmoji(message.content)" :key="idx">
                         <span v-if="seg.type === 'text'">{{ seg.content }}</span>
-                        <img v-else :src="seg.emojiSrc" :alt="seg.content" class="inline-block w-[1.25em] h-[1.25em] align-text-bottom mx-px">
+                        <img v-else :src="seg.emojiSrc" :alt="seg.content" class="inline-block w-[1.25em] h-[1.25em] align-text-bottom mx-px" loading="lazy" decoding="async">
                       </span>
                     </div>
                       <div
@@ -189,13 +215,15 @@
                          class="ml-2 my-2 flex-shrink-0 max-w-[98px] max-h-[49px] overflow-hidden flex items-center justify-center cursor-pointer"
                          @click.stop="openImagePreview(message.quoteThumbUrl)"
                        >
-                         <img
-                           :src="message.quoteThumbUrl"
-                           alt="引用链接缩略图"
-                           class="max-h-[49px] w-auto max-w-[98px] object-contain"
-                           loading="lazy"
-                           decoding="async"
-                           referrerpolicy="no-referrer"
+                          <img
+                            v-chat-lazy-src="message.quoteThumbUrl"
+                            alt="引用链接缩略图"
+                            class="max-h-[49px] w-auto max-w-[98px] object-contain"
+                            loading="lazy"
+                            decoding="async"
+                            fetchpriority="low"
+                            referrerpolicy="no-referrer"
+                            v-chat-media-perf="{ kind: 'quote-thumb', meta: { conversation: selectedContact?.username || '', messageId: message.id, quoteServerId: message.quoteServerId || '' } }"
                            @error="onQuoteThumbError(message)"
                          />
                        </div>
@@ -204,12 +232,14 @@
                          class="ml-2 my-2 flex-shrink-0 max-w-[98px] max-h-[49px] overflow-hidden flex items-center justify-center cursor-pointer"
                          @click.stop="openImagePreview(message.quoteImageUrl)"
                        >
-                         <img
-                           :src="message.quoteImageUrl"
-                           alt="引用图片"
-                           class="max-h-[49px] w-auto max-w-[98px] object-contain"
-                           loading="lazy"
-                           decoding="async"
+                          <img
+                            v-chat-lazy-src="message.quoteImageUrl"
+                            alt="引用图片"
+                            class="max-h-[49px] w-auto max-w-[98px] object-contain"
+                            loading="lazy"
+                            decoding="async"
+                            fetchpriority="low"
+                            v-chat-media-perf="{ kind: 'quote-image', meta: { conversation: selectedContact?.username || '', messageId: message.id, quoteServerId: message.quoteServerId || '' } }"
                            @error="onQuoteImageError(message)"
                          />
                        </div>
