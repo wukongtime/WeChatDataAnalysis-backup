@@ -233,13 +233,13 @@
           <!-- 跳过按钮 -->
           <div class="text-center mt-4">
             <button @click="skipToChat" class="text-sm text-[#7F7F7F] hover:text-[#07C160] transition-colors">
-              跳过图片解密，直接查看聊天记录 →
+              跳过后续媒体准备，直接查看聊天记录 →
             </button>
           </div>
         </div>
       </div>
 
-      <!-- 步骤3: 批量解密图片 -->
+      <!-- 步骤3: 图片解密 -->
       <div v-if="currentStep === 2" class="bg-white rounded-2xl border border-[#EDEDED]">
         <div class="p-8">
           <div class="flex items-center justify-between mb-6">
@@ -251,7 +251,7 @@
               </div>
               <div>
                 <h2 class="text-xl font-bold text-[#000000e6]">批量解密图片</h2>
-                <p class="text-sm text-[#7F7F7F]">仅解密加密的图片文件(.dat)，其他文件无需解密</p>
+                <p class="text-sm text-[#7F7F7F]">仅解密加密图片文件(.dat)，完成后可继续进入表情下载步骤</p>
               </div>
             </div>
             <!-- 进度计数 -->
@@ -261,12 +261,30 @@
             </div>
           </div>
 
+          <div class="mb-6 bg-lime-50 border border-lime-100 rounded-lg p-4">
+            <label class="block text-sm font-medium text-[#000000e6] mb-2">解密并发线程数</label>
+            <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+              <input
+                v-model.number="mediaDecryptConcurrency"
+                type="number"
+                min="1"
+                max="64"
+                step="1"
+                :disabled="mediaDecrypting"
+                class="w-40 px-3 py-2 border border-[#EDEDED] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#91D300] disabled:bg-gray-100"
+              />
+              <div class="text-xs text-[#7F7F7F]">
+                默认 10；图片解密主要吃本地磁盘和 CPU，机器较快可适度调高。
+              </div>
+            </div>
+          </div>
+
           <!-- 实时进度条 -->
           <div v-if="mediaDecrypting || decryptProgress.total > 0" class="mb-6">
             <!-- 进度条 -->
             <div class="mb-3">
               <div class="flex justify-between text-xs text-[#7F7F7F] mb-1">
-                <span>解密进度</span>
+                <span>{{ decryptProgress.message || '解密进度' }}</span>
                 <span>{{ progressPercent }}%</span>
               </div>
               <div class="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
@@ -297,10 +315,14 @@
             </div>
 
             <!-- 实时统计 -->
-            <div class="grid grid-cols-4 gap-3 text-center bg-gray-50 rounded-lg p-3">
+            <div class="grid grid-cols-5 gap-3 text-center bg-gray-50 rounded-lg p-3">
               <div>
                 <div class="text-xl font-bold text-[#10AEEF]">{{ decryptProgress.total }}</div>
                 <div class="text-xs text-[#7F7F7F]">总图片</div>
+              </div>
+              <div>
+                <div class="text-xl font-bold text-[#91D300]">{{ decryptProgress.concurrency || getMediaDecryptConcurrency() }}</div>
+                <div class="text-xs text-[#7F7F7F]">并发线程</div>
               </div>
               <div>
                 <div class="text-xl font-bold text-[#07C160]">{{ decryptProgress.success_count }}</div>
@@ -328,6 +350,12 @@
               </div>
               <div class="text-sm text-green-600">
                 输出目录: <code class="bg-white px-2 py-1 rounded text-xs">{{ mediaDecryptResult.output_dir }}</code>
+              </div>
+              <div class="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-green-700">
+                <div>并发线程: {{ mediaDecryptResult.concurrency || decryptProgress.concurrency }}</div>
+                <div>平均解密: {{ mediaDecryptResult.decrypt_stats?.avg_decrypt_ms || 0 }} ms</div>
+                <div>最大解密: {{ mediaDecryptResult.decrypt_stats?.max_decrypt_ms || 0 }} ms</div>
+                <div>慢解密数: {{ mediaDecryptResult.decrypt_stats?.slow_decrypt_count || 0 }}</div>
               </div>
             </div>
           </div>
@@ -374,8 +402,195 @@
               停止解密
             </button>
             <button
+              @click="goToEmojiDownloadStep"
+              :disabled="mediaDecrypting"
+              class="inline-flex items-center px-6 py-3 bg-[#FA8C16] text-white rounded-lg font-medium hover:bg-[#E67E11] transition-all duration-200 disabled:opacity-50"
+            >
+              下一步：下载表情
+              <svg class="w-5 h-5 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+              </svg>
+            </button>
+            <button
               @click="skipToChat"
               :disabled="mediaDecrypting"
+              class="inline-flex items-center px-6 py-3 bg-[#07C160] text-white rounded-lg font-medium hover:bg-[#06AD56] transition-all duration-200 disabled:opacity-50"
+            >
+              查看聊天记录
+              <svg class="w-5 h-5 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 步骤4: 表情下载 -->
+      <div v-if="currentStep === 3" class="bg-white rounded-2xl border border-[#EDEDED]">
+        <div class="p-8">
+          <div class="flex items-center justify-between mb-6">
+            <div class="flex items-center">
+              <div class="w-12 h-12 bg-[#FA8C16] rounded-lg flex items-center justify-center mr-4">
+                <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M12 21a9 9 0 100-18 9 9 0 000 18z"/>
+                </svg>
+              </div>
+              <div>
+                <h2 class="text-xl font-bold text-[#000000e6]">批量下载表情包</h2>
+                <p class="text-sm text-[#7F7F7F]">从 `emoticon.db` 和聊天消息 XML 收集可下载表情，下载过的会自动跳过</p>
+              </div>
+            </div>
+            <div v-if="emojiDownloading && emojiDownloadProgress.total > 0" class="text-right">
+              <div class="text-lg font-bold text-[#FA8C16]">{{ emojiDownloadProgress.current }} / {{ emojiDownloadProgress.total }}</div>
+              <div class="text-xs text-[#7F7F7F]">已处理 / 总表情</div>
+            </div>
+          </div>
+
+          <p class="mb-4 text-xs text-[#7F7F7F]">
+            表情会缓存到本地 `resource` 目录，后续聊天导出时可直接复用，不必再临时查找或下载。
+          </p>
+
+          <div class="mb-4 bg-orange-50 border border-orange-100 rounded-lg p-4">
+            <label class="block text-sm font-medium text-[#000000e6] mb-2">下载并发线程数</label>
+            <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+              <input
+                v-model.number="emojiDownloadConcurrency"
+                type="number"
+                min="1"
+                max="100"
+                step="1"
+                :disabled="emojiDownloading"
+                class="w-40 px-3 py-2 border border-[#EDEDED] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FA8C16] disabled:bg-gray-100"
+              />
+              <div class="text-xs text-[#7F7F7F]">
+                默认 20；网络带宽足够可调高，超时/失败变多时建议调低。
+              </div>
+            </div>
+          </div>
+
+          <div v-if="emojiDownloading || emojiDownloadProgress.total > 0" class="mb-4">
+            <div class="mb-3">
+              <div class="flex justify-between text-xs text-[#7F7F7F] mb-1">
+                <span>{{ emojiDownloadProgress.message || '下载进度' }}</span>
+                <span>{{ emojiProgressPercent }}%</span>
+              </div>
+              <div class="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
+                <div
+                  class="h-2.5 rounded-full transition-all duration-300 ease-out"
+                  :class="emojiDownloadProgress.status === 'complete' ? 'bg-[#07C160]' : emojiDownloadProgress.status === 'cancelled' ? 'bg-[#FAAD14]' : 'bg-[#FA8C16]'"
+                  :style="{ width: emojiProgressPercent + '%' }"
+                ></div>
+              </div>
+            </div>
+
+            <div v-if="emojiDownloadProgress.current_file" class="flex items-center text-sm text-[#7F7F7F] mb-3">
+              <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M12 21a9 9 0 100-18 9 9 0 000 18z"/>
+              </svg>
+              <span class="truncate font-mono text-xs">{{ emojiDownloadProgress.current_file }}</span>
+              <span
+                class="ml-2 px-2 py-0.5 rounded text-xs"
+                :class="{
+                  'bg-green-100 text-green-700': emojiDownloadProgress.fileStatus === 'success',
+                  'bg-gray-100 text-gray-600': emojiDownloadProgress.fileStatus === 'skip',
+                  'bg-red-100 text-red-700': emojiDownloadProgress.fileStatus === 'fail'
+                }"
+              >
+                {{ emojiDownloadProgress.fileStatus === 'success' ? '下载成功' : emojiDownloadProgress.fileStatus === 'skip' ? '已存在' : emojiDownloadProgress.fileStatus === 'fail' ? '失败' : '' }}
+              </span>
+            </div>
+
+            <div class="grid grid-cols-5 gap-3 text-center bg-gray-50 rounded-lg p-3">
+              <div>
+                <div class="text-xl font-bold text-[#10AEEF]">{{ emojiDownloadProgress.total }}</div>
+                <div class="text-xs text-[#7F7F7F]">总表情</div>
+              </div>
+              <div>
+                <div class="text-xl font-bold text-[#FA8C16]">{{ emojiDownloadProgress.concurrency || getEmojiDownloadConcurrency() }}</div>
+                <div class="text-xs text-[#7F7F7F]">并发线程</div>
+              </div>
+              <div>
+                <div class="text-xl font-bold text-[#07C160]">{{ emojiDownloadProgress.success_count }}</div>
+                <div class="text-xs text-[#7F7F7F]">成功</div>
+              </div>
+              <div>
+                <div class="text-xl font-bold text-[#7F7F7F]">{{ emojiDownloadProgress.skip_count }}</div>
+                <div class="text-xs text-[#7F7F7F]">跳过(已下载)</div>
+              </div>
+              <div>
+                <div class="text-xl font-bold text-[#FA5151]">{{ emojiDownloadProgress.fail_count }}</div>
+                <div class="text-xs text-[#7F7F7F]">失败</div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="emojiDownloadResult && !emojiDownloading" class="mb-4">
+            <div class="bg-green-50 border border-green-200 rounded-lg p-4">
+              <div class="flex items-center mb-2">
+                <svg class="w-5 h-5 text-green-600 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                </svg>
+                <span class="font-medium text-green-700">表情下载完成</span>
+              </div>
+              <div class="text-sm text-green-600">
+                输出目录: <code class="bg-white px-2 py-1 rounded text-xs">{{ emojiDownloadResult.output_dir }}</code>
+              </div>
+              <div class="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-green-700">
+                <div>并发线程: {{ emojiDownloadResult.concurrency || emojiDownloadProgress.concurrency }}</div>
+                <div>平均下载: {{ emojiDownloadResult.download_stats?.avg_fetch_ms || 0 }} ms</div>
+                <div>最大下载: {{ emojiDownloadResult.download_stats?.max_fetch_ms || 0 }} ms</div>
+                <div>慢下载数: {{ emojiDownloadResult.download_stats?.slow_fetch_count || 0 }}</div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="emojiDownloadProgress.fail_count > 0" class="mb-4">
+            <details class="text-sm">
+              <summary class="cursor-pointer text-[#7F7F7F] hover:text-[#000000e6]">
+                <span class="ml-1">查看表情下载失败说明</span>
+              </summary>
+              <div class="mt-2 bg-gray-50 rounded-lg p-3 text-xs text-[#7F7F7F]">
+                <ul class="list-disc list-inside space-y-1">
+                  <li><strong>未找到可下载地址</strong>：该表情在数据库里没有可用的 CDN 链接</li>
+                  <li><strong>下载失败</strong>：网络超时、远端资源失效或微信 CDN 已回收文件</li>
+                  <li><strong>写入失败</strong>：本地目录无权限或目标文件被占用</li>
+                </ul>
+              </div>
+            </details>
+          </div>
+
+          <div class="flex gap-3 justify-center pt-4 border-t border-[#EDEDED]">
+            <button
+              @click="goBackToMediaDecryptStep"
+              :disabled="emojiDownloading"
+              class="inline-flex items-center px-6 py-3 bg-white text-[#000000e6] border border-[#EDEDED] rounded-lg font-medium hover:bg-gray-50 transition-all duration-200 disabled:opacity-50"
+            >
+              上一步
+            </button>
+            <button
+              @click="downloadAllEmojis"
+              :disabled="emojiDownloading"
+              class="inline-flex items-center px-6 py-3 bg-[#FA8C16] text-white rounded-lg font-medium hover:bg-[#E67E11] transition-all duration-200 disabled:opacity-50"
+            >
+              <svg v-if="emojiDownloading" class="w-5 h-5 mr-2 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+              </svg>
+              <svg v-else class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M12 21a9 9 0 100-18 9 9 0 000 18z"/>
+              </svg>
+              {{ emojiDownloading ? '下载中...' : (emojiDownloadResult ? '重新检查表情' : '开始下载表情') }}
+            </button>
+            <button
+              v-if="emojiDownloading"
+              @click="cancelEmojiDownload"
+              class="inline-flex items-center px-6 py-3 bg-[#FA5151] text-white rounded-lg font-medium hover:bg-[#E54D4D] transition-all duration-200"
+            >
+              停止下载
+            </button>
+            <button
+              @click="skipToChat"
+              :disabled="emojiDownloading"
               class="inline-flex items-center px-6 py-3 bg-[#07C160] text-white rounded-lg font-medium hover:bg-[#06AD56] transition-all duration-200 disabled:opacity-50"
             >
               查看聊天记录
@@ -455,7 +670,8 @@ const isGettingDbKey = ref(false)
 const steps = [
   { title: '数据库解密' },
   { title: '填写图片密钥' },
-  { title: '图片解密' }
+  { title: '图片解密' },
+  { title: '表情下载' }
 ]
 
 // 表单数据
@@ -735,6 +951,10 @@ const clearManualKeys = () => {
 // 图片解密相关
 const mediaDecryptResult = ref(null)
 const mediaDecrypting = ref(false)
+const mediaDecryptConcurrency = ref(10)
+const emojiDownloadResult = ref(null)
+const emojiDownloading = ref(false)
+const emojiDownloadConcurrency = ref(20)
 
 // 数据库解密进度（SSE）
 const dbDecryptProgress = reactive({
@@ -756,12 +976,14 @@ const dbProgressPercent = computed(() => {
 const decryptProgress = reactive({
   current: 0,
   total: 0,
+  concurrency: 0,
   success_count: 0,
   skip_count: 0,
   fail_count: 0,
   current_file: '',
   fileStatus: '',
-  status: ''
+  status: '',
+  message: ''
 })
 
 // 进度百分比
@@ -769,6 +991,36 @@ const progressPercent = computed(() => {
   if (decryptProgress.total === 0) return 0
   return Math.round((decryptProgress.current / decryptProgress.total) * 100)
 })
+
+const emojiDownloadProgress = reactive({
+  current: 0,
+  total: 0,
+  concurrency: 0,
+  success_count: 0,
+  skip_count: 0,
+  fail_count: 0,
+  current_file: '',
+  fileStatus: '',
+  status: '',
+  message: ''
+})
+
+const emojiProgressPercent = computed(() => {
+  if (emojiDownloadProgress.total === 0) return 0
+  return Math.round((emojiDownloadProgress.current / emojiDownloadProgress.total) * 100)
+})
+
+const getEmojiDownloadConcurrency = () => {
+  const raw = Number.parseInt(String(emojiDownloadConcurrency.value || 20), 10)
+  if (!Number.isFinite(raw)) return 20
+  return Math.max(1, Math.min(100, raw))
+}
+
+const getMediaDecryptConcurrency = () => {
+  const raw = Number.parseInt(String(mediaDecryptConcurrency.value || 10), 10)
+  if (!Number.isFinite(raw)) return 10
+  return Math.max(1, Math.min(64, raw))
+}
 
 // 解密结果存储
 const decryptResult = ref(null)
@@ -802,6 +1054,7 @@ const validateForm = () => {
 
 let dbDecryptEventSource = null
 let mediaDecryptEventSource = null
+let emojiDownloadEventSource = null
 
 const closeMediaDecryptEventSource = () => {
   try {
@@ -810,6 +1063,16 @@ const closeMediaDecryptEventSource = () => {
     // ignore
   } finally {
     mediaDecryptEventSource = null
+  }
+}
+
+const closeEmojiDownloadEventSource = () => {
+  try {
+    if (emojiDownloadEventSource) emojiDownloadEventSource.close()
+  } catch (e) {
+    // ignore
+  } finally {
+    emojiDownloadEventSource = null
   }
 }
 
@@ -823,6 +1086,7 @@ onBeforeUnmount(() => {
   }
 
   closeMediaDecryptEventSource()
+  closeEmojiDownloadEventSource()
 })
 
 const resetDbDecryptProgress = () => {
@@ -838,12 +1102,27 @@ const resetDbDecryptProgress = () => {
 const resetMediaDecryptProgress = () => {
   decryptProgress.current = 0
   decryptProgress.total = 0
+  decryptProgress.concurrency = 0
   decryptProgress.success_count = 0
   decryptProgress.skip_count = 0
   decryptProgress.fail_count = 0
   decryptProgress.current_file = ''
   decryptProgress.fileStatus = ''
   decryptProgress.status = ''
+  decryptProgress.message = ''
+}
+
+const resetEmojiDownloadProgress = () => {
+  emojiDownloadProgress.current = 0
+  emojiDownloadProgress.total = 0
+  emojiDownloadProgress.concurrency = 0
+  emojiDownloadProgress.success_count = 0
+  emojiDownloadProgress.skip_count = 0
+  emojiDownloadProgress.fail_count = 0
+  emojiDownloadProgress.current_file = ''
+  emojiDownloadProgress.fileStatus = ''
+  emojiDownloadProgress.status = ''
+  emojiDownloadProgress.message = ''
 }
 
 // 处理解密
@@ -861,6 +1140,14 @@ const handleDecrypt = async () => {
   warning.value = ''
 
   resetDbDecryptProgress()
+  resetMediaDecryptProgress()
+  resetEmojiDownloadProgress()
+  mediaDecryptResult.value = null
+  emojiDownloadResult.value = null
+  mediaDecrypting.value = false
+  emojiDownloading.value = false
+  closeMediaDecryptEventSource()
+  closeEmojiDownloadEventSource()
 
   try {
     const canSse = process.client && typeof window !== 'undefined' && typeof EventSource !== 'undefined'
@@ -1024,8 +1311,11 @@ const decryptAllImages = async () => {
   mediaDecryptResult.value = null
   error.value = ''
   warning.value = ''
+  const configuredConcurrency = getMediaDecryptConcurrency()
+  mediaDecryptConcurrency.value = configuredConcurrency
   logDecryptDebug('media-decrypt:start', {
     account: mediaAccount.value,
+    concurrency: configuredConcurrency,
     keys: summarizeKeyStateForLog(mediaKeys.xor_key, mediaKeys.aes_key)
   })
   
@@ -1038,6 +1328,7 @@ const decryptAllImages = async () => {
     if (mediaAccount.value) params.set('account', mediaAccount.value)
     if (mediaKeys.xor_key) params.set('xor_key', mediaKeys.xor_key)
     if (mediaKeys.aes_key) params.set('aes_key', mediaKeys.aes_key)
+    params.set('concurrency', String(configuredConcurrency))
     const apiBase = useApiBase()
     const url = `${apiBase}/media/decrypt_all_stream?${params.toString()}`
     
@@ -1053,28 +1344,37 @@ const decryptAllImages = async () => {
         
         if (data.type === 'scanning') {
           decryptProgress.current_file = '正在扫描文件...'
+          decryptProgress.message = data.message || '正在扫描图片文件...'
         } else if (data.type === 'start') {
-          decryptProgress.total = data.total
+          decryptProgress.total = data.total || 0
+          decryptProgress.concurrency = data.concurrency || configuredConcurrency
+          decryptProgress.message = data.message || ''
         } else if (data.type === 'progress') {
-          decryptProgress.current = data.current
-          decryptProgress.total = data.total
-          decryptProgress.success_count = data.success_count
-          decryptProgress.skip_count = data.skip_count
-          decryptProgress.fail_count = data.fail_count
-          decryptProgress.current_file = data.current_file
-          decryptProgress.fileStatus = data.status
+          decryptProgress.current = data.current || 0
+          decryptProgress.total = data.total || 0
+          decryptProgress.concurrency = data.concurrency || configuredConcurrency
+          decryptProgress.success_count = data.success_count || 0
+          decryptProgress.skip_count = data.skip_count || 0
+          decryptProgress.fail_count = data.fail_count || 0
+          decryptProgress.current_file = data.current_file || ''
+          decryptProgress.fileStatus = data.status || ''
+          decryptProgress.message = data.message || ''
         } else if (data.type === 'complete') {
           decryptProgress.status = 'complete'
-          decryptProgress.current = data.total
-          decryptProgress.total = data.total
-          decryptProgress.success_count = data.success_count
-          decryptProgress.skip_count = data.skip_count
-          decryptProgress.fail_count = data.fail_count
+          decryptProgress.current = data.total || 0
+          decryptProgress.total = data.total || 0
+          decryptProgress.concurrency = data.concurrency || configuredConcurrency
+          decryptProgress.success_count = data.success_count || 0
+          decryptProgress.skip_count = data.skip_count || 0
+          decryptProgress.fail_count = data.fail_count || 0
+          decryptProgress.message = data.message || '解密完成'
           mediaDecryptResult.value = data
           mediaDecrypting.value = false
           logDecryptDebug('media-decrypt:complete', {
             account: mediaAccount.value,
             total: data.total,
+            concurrency: data.concurrency,
+            decrypt_stats: data.decrypt_stats,
             success_count: data.success_count,
             skip_count: data.skip_count,
             fail_count: data.fail_count
@@ -1115,9 +1415,146 @@ const cancelMediaDecrypt = () => {
   if (!mediaDecrypting.value) return
 
   decryptProgress.status = 'cancelled'
+  decryptProgress.message = '已停止图片解密'
   mediaDecrypting.value = false
   warning.value = '已停止图片解密，已完成的图片会保留。'
+  logDecryptDebug('media-decrypt:cancelled', {
+    account: mediaAccount.value,
+    current: decryptProgress.current,
+    total: decryptProgress.total,
+    concurrency: decryptProgress.concurrency || getMediaDecryptConcurrency()
+  })
   closeMediaDecryptEventSource()
+}
+
+const downloadAllEmojis = async () => {
+  closeEmojiDownloadEventSource()
+  emojiDownloading.value = true
+  emojiDownloadResult.value = null
+  error.value = ''
+  warning.value = ''
+  const configuredConcurrency = getEmojiDownloadConcurrency()
+  emojiDownloadConcurrency.value = configuredConcurrency
+  logDecryptDebug('emoji-download:start', {
+    account: mediaAccount.value,
+    concurrency: configuredConcurrency
+  })
+
+  resetEmojiDownloadProgress()
+
+  try {
+    const params = new URLSearchParams()
+    if (mediaAccount.value) params.set('account', mediaAccount.value)
+    params.set('concurrency', String(configuredConcurrency))
+    const apiBase = useApiBase()
+    const url = `${apiBase}/media/emoji/download_all_stream?${params.toString()}`
+
+    const eventSource = new EventSource(url)
+    emojiDownloadEventSource = eventSource
+
+    eventSource.onmessage = (event) => {
+      if (emojiDownloadEventSource !== eventSource) return
+
+      try {
+        const data = JSON.parse(event.data)
+
+        if (data.type === 'scanning') {
+          emojiDownloadProgress.current_file = '正在扫描表情资源...'
+          emojiDownloadProgress.message = data.message || '正在扫描表情资源...'
+        } else if (data.type === 'start') {
+          emojiDownloadProgress.total = data.total || 0
+          emojiDownloadProgress.concurrency = data.concurrency || configuredConcurrency
+          emojiDownloadProgress.message = data.message || ''
+        } else if (data.type === 'progress') {
+          emojiDownloadProgress.current = data.current || 0
+          emojiDownloadProgress.total = data.total || 0
+          emojiDownloadProgress.concurrency = data.concurrency || configuredConcurrency
+          emojiDownloadProgress.success_count = data.success_count || 0
+          emojiDownloadProgress.skip_count = data.skip_count || 0
+          emojiDownloadProgress.fail_count = data.fail_count || 0
+          emojiDownloadProgress.current_file = data.current_file || ''
+          emojiDownloadProgress.fileStatus = data.status || ''
+          emojiDownloadProgress.message = data.message || ''
+        } else if (data.type === 'complete') {
+          emojiDownloadProgress.status = 'complete'
+          emojiDownloadProgress.current = data.total || 0
+          emojiDownloadProgress.total = data.total || 0
+          emojiDownloadProgress.concurrency = data.concurrency || configuredConcurrency
+          emojiDownloadProgress.success_count = data.success_count || 0
+          emojiDownloadProgress.skip_count = data.skip_count || 0
+          emojiDownloadProgress.fail_count = data.fail_count || 0
+          emojiDownloadProgress.message = data.message || '表情下载完成'
+          emojiDownloadResult.value = data
+          emojiDownloading.value = false
+          logDecryptDebug('emoji-download:complete', {
+            account: mediaAccount.value,
+            total: data.total,
+            concurrency: data.concurrency,
+            download_stats: data.download_stats,
+            success_count: data.success_count,
+            skip_count: data.skip_count,
+            fail_count: data.fail_count
+          })
+          closeEmojiDownloadEventSource()
+        } else if (data.type === 'error') {
+          error.value = data.message || '表情下载失败'
+          logDecryptDebug('emoji-download:error-event', {
+            account: mediaAccount.value,
+            message: data.message
+          })
+          emojiDownloading.value = false
+          closeEmojiDownloadEventSource()
+        }
+      } catch (e) {
+        console.error('解析表情下载SSE消息失败:', e)
+      }
+    }
+
+    eventSource.onerror = (e) => {
+      if (emojiDownloadEventSource !== eventSource) return
+
+      console.error('表情下载SSE连接错误:', e)
+      closeEmojiDownloadEventSource()
+      if (emojiDownloading.value) {
+        error.value = '表情下载连接中断，请重试'
+        emojiDownloading.value = false
+      }
+    }
+  } catch (err) {
+    error.value = err.message || '表情下载过程中发生错误'
+    emojiDownloading.value = false
+    closeEmojiDownloadEventSource()
+  }
+}
+
+const cancelEmojiDownload = () => {
+  if (!emojiDownloading.value) return
+
+  emojiDownloadProgress.status = 'cancelled'
+  emojiDownloading.value = false
+  warning.value = '已停止表情下载，已完成的表情会保留。'
+  logDecryptDebug('emoji-download:cancelled', {
+    account: mediaAccount.value,
+    current: emojiDownloadProgress.current,
+    total: emojiDownloadProgress.total
+  })
+  closeEmojiDownloadEventSource()
+}
+
+const goToEmojiDownloadStep = () => {
+  if (mediaDecrypting.value) return
+
+  error.value = ''
+  warning.value = ''
+  currentStep.value = 3
+}
+
+const goBackToMediaDecryptStep = () => {
+  if (emojiDownloading.value) return
+
+  error.value = ''
+  warning.value = ''
+  currentStep.value = 2
 }
 
 // 从密钥步骤进入图片解密步骤
