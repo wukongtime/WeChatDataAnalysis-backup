@@ -1440,39 +1440,12 @@
             <div>
               <div class="text-sm font-medium text-gray-800 mb-2">消息类型（导出内容）</div>
               <div class="mt-2 p-3 bg-gray-50 rounded-md border border-gray-200">
-                <div class="flex items-center gap-2 mb-2">
-                  <button
-                    type="button"
-                    class="text-xs px-2 py-1 rounded border border-gray-200 bg-white hover:bg-gray-50"
-                    @click="exportMessageTypes = exportMessageTypeOptions.map((x) => x.value)"
+                <div class="grid grid-cols-2 gap-x-2 gap-y-2 text-[13px] text-gray-700 md:grid-cols-[repeat(13,max-content)] md:justify-between md:gap-x-3 md:gap-y-0">
+                  <label
+                    v-for="opt in exportMessageTypeOptions"
+                    :key="opt.value"
+                    class="flex items-center gap-1.5 whitespace-nowrap md:flex-shrink-0"
                   >
-                    全选
-                  </button>
-                  <button
-                    type="button"
-                    class="text-xs px-2 py-1 rounded border border-gray-200 bg-white hover:bg-gray-50"
-                    @click="exportMessageTypes = ['voice']"
-                  >
-                    只语音
-                  </button>
-                  <button
-                    type="button"
-                    class="text-xs px-2 py-1 rounded border border-gray-200 bg-white hover:bg-gray-50"
-                    @click="exportMessageTypes = ['transfer']"
-                  >
-                    只转账
-                  </button>
-                  <button
-                    type="button"
-                    class="text-xs px-2 py-1 rounded border border-gray-200 bg-white hover:bg-gray-50"
-                    @click="exportMessageTypes = ['redPacket']"
-                  >
-                    只红包
-                  </button>
-                  <div class="ml-auto text-xs text-gray-500">已选 {{ exportMessageTypes.length }} 项</div>
-                </div>
-                <div class="grid grid-cols-3 md:grid-cols-4 gap-2 text-sm text-gray-700">
-                  <label v-for="opt in exportMessageTypeOptions" :key="opt.value" class="flex items-center gap-2">
                     <input type="checkbox" :value="opt.value" v-model="exportMessageTypes" />
                     <span>{{ opt.label }}</span>
                   </label>
@@ -1512,7 +1485,7 @@
                     v-if="exportFolder"
                     type="button"
                     class="text-sm px-3 py-2 rounded-md bg-white border border-gray-200 hover:bg-gray-50"
-                    @click="exportFolder = ''; exportFolderHandle = null; exportSaveMsg = ''"
+                    @click="clearExportFolderSelection"
                   >
                     清空
                   </button>
@@ -1563,34 +1536,32 @@
               <div>消息：{{ exportJob.progress?.messagesExported || 0 }}；媒体：{{ exportJob.progress?.mediaCopied || 0 }}；缺失：{{ exportJob.progress?.mediaMissing || 0 }}</div>
             </div>
 
-            <div class="mt-3 flex items-center gap-2">
-              <button
-                v-if="exportJob.status === 'done' && hasWebExportFolder"
-                class="text-sm px-3 py-2 rounded-md bg-[#03C160] text-white hover:bg-[#02a650] disabled:opacity-60"
-                type="button"
-                :disabled="exportSaveBusy"
-                @click="saveExportToSelectedFolder"
-              >
-                {{ exportSaveBusy ? '保存中...' : '保存到已选目录' }}
-              </button>
+            <div v-if="exportJob.status === 'done'" class="mt-3 rounded-md border border-gray-200 bg-white/80 px-3 py-2 text-xs text-gray-700 space-y-2">
+              <div>
+                <span class="font-medium text-gray-900">实际生成位置：</span>
+                <div class="mt-1 break-all">{{ exportBackendZipPath || '未生成' }}</div>
+              </div>
+              <div v-if="hasWebExportFolder">
+                <span class="font-medium text-gray-900">浏览器目录：</span>
+                <div class="mt-1 break-all">{{ exportFolder || '未选择' }}</div>
+              </div>
+              <div v-if="exportSaveState === 'saving'" class="text-sky-600 whitespace-pre-wrap">{{ exportSaveProgressText }}</div>
+              <div v-else-if="exportSaveMsg" class="text-green-600 whitespace-pre-wrap">{{ exportSaveMsg }}</div>
+              <div v-else-if="exportSaveError" class="text-red-600 whitespace-pre-wrap">{{ exportSaveError }}</div>
+              <div v-if="hasWebExportFolder" class="text-gray-500">
+                浏览器模式通常会在写入完成后才显示文件，且出于安全限制，这里只能显示目录名，不能显示完整磁盘路径。
+              </div>
+            </div>
+
+            <div v-if="exportJob.status === 'done' && !hasWebExportFolder" class="mt-3 flex items-center gap-2">
               <a
-                v-if="exportJob.status === 'done' && !hasWebExportFolder"
                 class="text-sm px-3 py-2 rounded-md bg-[#03C160] text-white hover:bg-[#02a650]"
                 :href="getExportDownloadUrl(exportJob.exportId)"
                 target="_blank"
               >
                 下载 ZIP
               </a>
-              <button
-                v-if="exportJob.status === 'running'"
-                class="text-sm px-3 py-2 rounded-md bg-white border border-gray-200 hover:bg-gray-50"
-                type="button"
-                @click="cancelCurrentExport"
-              >
-                取消任务
-              </button>
             </div>
-            <div v-if="exportSaveMsg" class="mt-2 text-xs text-green-600 whitespace-pre-wrap">{{ exportSaveMsg }}</div>
 
             <div v-if="exportJob.status === 'error'" class="mt-2 text-sm text-red-600 whitespace-pre-wrap">
               {{ exportJob.error || '导出失败' }}
@@ -1603,12 +1574,22 @@
             关闭
           </button>
           <button
+            v-if="!(exportJob && (exportJob.status === 'queued' || exportJob.status === 'running'))"
             class="text-sm px-3 py-2 rounded-md bg-[#03C160] text-white hover:bg-[#02a650] disabled:opacity-60"
             type="button"
             @click="startChatExport"
             :disabled="isExportCreating"
           >
             {{ isExportCreating ? '创建中...' : '开始导出' }}
+          </button>
+          <button
+            v-else
+            class="text-sm px-3 py-2 rounded-md bg-white border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-60"
+            type="button"
+            @click="cancelCurrentExport"
+            :disabled="exportCancelRequested"
+          >
+            {{ exportCancelRequested ? '取消中...' : '取消任务' }}
           </button>
         </div>
       </div>
