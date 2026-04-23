@@ -5,7 +5,7 @@
       <div class="p-3">
         <div class="flex items-center justify-between">
           <div class="text-sm font-semibold text-gray-700">朋友圈联系人</div>
-          <div class="text-xs text-gray-500">{{ snsUsers.length }}</div>
+          <div class="text-xs text-gray-500">{{ visibleSnsUsers.length }}</div>
         </div>
         <input
             v-model="snsUserQuery"
@@ -15,132 +15,14 @@
         />
 
         <div class="mt-3">
-          <div class="text-xs font-medium text-gray-700 mb-2">导出格式</div>
-          <div class="flex flex-wrap gap-2">
-            <label
-                v-for="item in exportFormatOptions"
-                :key="item.value"
-                class="px-2.5 py-1 text-xs rounded-md border cursor-pointer transition-colors"
-                :class="exportFormat === item.value ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
-            >
-              <input v-model="exportFormat" type="radio" :value="item.value" class="hidden" />
-              <span>{{ item.label }}</span>
-            </label>
-          </div>
-        </div>
-
-        <div class="mt-3 space-y-2">
-          <div class="flex items-center justify-between gap-2">
-            <div class="text-xs font-medium text-gray-700">&#23548;&#20986;&#30446;&#24405;</div>
-            <div class="text-[11px] text-gray-400">{{ exportFolderModeText }}</div>
-          </div>
-          <div class="px-2.5 py-2 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-600 break-all min-h-[40px] flex items-center">
-            {{ exportFolder || '&#26410;&#36873;&#25321;' }}
-          </div>
-          <div class="flex gap-2">
-            <button
-                type="button"
-                class="flex-1 px-3 py-2 rounded-md text-sm border border-gray-200 bg-white hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                :disabled="exportSaveBusy"
-                @click="chooseExportFolder"
-            >
-              &#36873;&#25321;&#25991;&#20214;&#22841;
-            </button>
-            <button
-                v-if="hasSelectedExportFolder"
-                type="button"
-                class="px-3 py-2 rounded-md text-sm border border-gray-200 bg-white hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                :disabled="exportSaveBusy"
-                @click="clearExportFolderSelection"
-            >
-              &#28165;&#38500;
-            </button>
-          </div>
-          <div v-if="exportFolderHint" class="text-[11px] text-gray-500 whitespace-pre-wrap">{{ exportFolderHint }}</div>
-          <div v-if="exportSaveProgressText" class="text-[11px] text-gray-500 whitespace-pre-wrap">{{ exportSaveProgressText }}</div>
-          <div v-else-if="exportSaveMsg" class="text-[11px] text-green-600 whitespace-pre-wrap">{{ exportSaveMsg }}</div>
-          <div v-else-if="exportSaveError" class="text-[11px] text-red-600 whitespace-pre-wrap">{{ exportSaveError }}</div>
-        </div>
-
-        <div class="mt-2 flex gap-2">
           <button
               type="button"
-              class="flex-1 px-3 py-2 rounded-md text-sm border border-gray-200 bg-white hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              @click="onExportAllClick"
-              :disabled="!selectedAccount || exportJob?.status === 'running' || exportJob?.status === 'queued'"
-              :title="`导出全部朋友圈（${exportFormatLabel} ZIP）`"
+              class="w-full px-3 py-2.5 rounded-md text-sm border border-gray-200 bg-white hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              :disabled="!selectedAccount"
+              @click="openExportModal"
           >
-            导出全部
+            导出朋友圈
           </button>
-          <button
-              type="button"
-              class="flex-1 px-3 py-2 rounded-md text-sm border border-gray-200 bg-white hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              @click="onExportCurrentClick"
-              :disabled="!selectedAccount || !selectedSnsUser || exportJob?.status === 'running' || exportJob?.status === 'queued'"
-              :title="`导出当前选中联系人（${exportFormatLabel} ZIP）`"
-          >
-            导出此人
-          </button>
-        </div>
-        <div v-if="exportError" class="mt-2 text-xs text-red-600 whitespace-pre-wrap">{{ exportError }}</div>
-        <div v-else-if="exportJob" class="mt-3 border border-gray-200 rounded-md bg-gray-50 p-3 text-xs text-gray-700 space-y-2">
-          <div class="flex items-center justify-between gap-2">
-            <div class="font-medium text-gray-900 truncate">任务：{{ exportJob.exportId }}</div>
-            <div class="text-gray-500">状态：{{ exportStatusText }}</div>
-          </div>
-
-          <div class="flex items-center justify-between">
-            <div>动态：{{ exportJob.progress?.postsExported || 0 }}/{{ exportJob.progress?.postsTotal || 0 }}</div>
-            <div class="text-gray-500">{{ exportOverallPercent }}%</div>
-          </div>
-          <div class="h-2 rounded-full bg-white border border-gray-200 overflow-hidden">
-            <div class="h-full bg-[#03C160] transition-all duration-300" :style="{ width: exportOverallPercent + '%' }"></div>
-          </div>
-
-          <div class="flex items-center justify-between text-gray-600">
-            <div>联系人：{{ exportJob.progress?.usersDone || 0 }}/{{ exportJob.progress?.usersTotal || 0 }}</div>
-            <div>格式：{{ exportActiveFormatLabel }}</div>
-          </div>
-
-          <div v-if="exportCurrentTargetLabel" class="space-y-1">
-            <div class="flex items-center justify-between gap-2">
-              <div class="truncate">
-                当前：{{ exportCurrentTargetLabel }}（{{ exportJob.progress?.currentUserPostsDone || 0 }}/{{ exportJob.progress?.currentUserPostsTotal || 0 }}）
-              </div>
-              <div class="text-gray-500">
-                <span v-if="exportCurrentPercent != null">{{ exportCurrentPercent }}%</span>
-                <span v-else>…</span>
-              </div>
-            </div>
-            <div class="h-2 rounded-full bg-white border border-gray-200 overflow-hidden">
-              <div
-                  v-if="exportCurrentPercent != null"
-                  class="h-full bg-sky-500 transition-all duration-300"
-                  :style="{ width: exportCurrentPercent + '%' }"
-              ></div>
-              <div v-else class="h-full bg-sky-500/60 animate-pulse" style="width: 30%"></div>
-            </div>
-          </div>
-
-          <div class="text-gray-500">
-            媒体：{{ exportJob.progress?.mediaCopied || 0 }}；缺失：{{ exportJob.progress?.mediaMissing || 0 }}
-          </div>
-
-          <div v-if="exportOutputPathText" class="text-green-600 break-all">
-            &#24050;&#23548;&#20986;&#21040;&#65306;{{ exportOutputPathText }}
-          </div>
-
-          <div v-if="exportJob.status === 'done'" class="flex flex-wrap gap-3">
-            <button
-                v-if="exportJob.exportId && hasWebExportFolder"
-                type="button"
-                class="text-xs text-[#576b95] hover:underline bg-transparent border-0 p-0 disabled:text-gray-400 disabled:no-underline disabled:cursor-not-allowed"
-                :disabled="exportSaveBusy"
-                @click="saveSnsExportToSelectedFolder()"
-            >
-              {{ exportSaveBusy ? '\u4fdd\u5b58\u4e2d\u2026' : exportSaveState === 'success' ? '\u91cd\u65b0\u4fdd\u5b58\u5230\u6587\u4ef6\u5939' : '\u4fdd\u5b58\u5230\u5df2\u9009\u6587\u4ef6\u5939' }}
-            </button>
-          </div>
         </div>
       </div>
 
@@ -163,11 +45,12 @@
         >
           <div class="w-8 h-8 rounded-md overflow-hidden bg-gray-300 flex-shrink-0" :class="{ 'privacy-blur': privacyMode }">
             <img
-                v-if="postAvatarUrl(u.username)"
+                v-if="postAvatarUrl(u.username) && !hasSnsAvatarError(u.username)"
                 :src="postAvatarUrl(u.username)"
                 :alt="u.displayName || u.username"
                 class="w-full h-full object-cover"
                 referrerpolicy="no-referrer"
+                @error="onSnsAvatarError(u.username)"
             />
             <div
                 v-else
@@ -683,7 +566,285 @@
       </button>
     </div>
 
-	    <!-- 图片预览弹窗 -->
+    <!-- SNS export modal -->
+    <div v-if="exportModalOpen" class="fixed inset-0 z-[12000] flex items-center justify-center">
+      <div class="absolute inset-0 bg-black/40" @click="closeExportModal"></div>
+      <div class="relative w-[880px] max-w-[95vw] bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden">
+        <div class="px-5 py-4 border-b border-gray-200 flex items-start gap-3">
+          <div class="min-w-0">
+            <div class="text-base font-medium text-gray-900">导出朋友圈（离线 ZIP）</div>
+            <div class="mt-1 text-xs text-gray-500 leading-5">
+              直接勾选要导出的联系人；支持搜索、批量勾选，以及自定义 ZIP 文件名和导出目录。
+            </div>
+          </div>
+          <button class="ml-auto text-gray-400 hover:text-gray-700" type="button" @click="closeExportModal">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="p-5 max-h-[75vh] overflow-y-auto space-y-5">
+          <div v-if="exportError" class="text-sm text-red-600 whitespace-pre-wrap">{{ exportError }}</div>
+
+          <div v-if="exportJob" class="border border-gray-200 rounded-lg bg-gray-50 p-4 space-y-3">
+            <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div class="min-w-0">
+                <div class="text-sm font-medium text-gray-900">&#24403;&#21069;&#23548;&#20986;&#20219;&#21153;</div>
+                <div class="mt-1 text-xs text-gray-500 break-all">ID&#65306;{{ exportJob.exportId || '-' }}</div>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="px-2.5 py-1 rounded-full text-xs border border-gray-200 bg-white text-gray-600">
+                  &#29366;&#24577;&#65306;{{ exportStatusText }}
+                </span>
+                <span class="px-2.5 py-1 rounded-full text-xs border border-gray-200 bg-white text-gray-600">
+                  {{ exportOverallPercent }}%
+                </span>
+                <button
+                    v-if="canCancelSnsExport"
+                    type="button"
+                    class="px-3 py-1.5 rounded-md text-xs border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    :disabled="isExportCancelling"
+                    @click="cancelSnsExportJob"
+                >
+                  {{ isExportCancelling ? '\u53d6\u6d88\u4e2d\u2026' : '\u53d6\u6d88\u5bfc\u51fa' }}
+                </button>
+                <button
+                    v-if="exportJob.status === 'done' && exportJob.exportId && hasWebExportFolder"
+                    type="button"
+                    class="px-3 py-1.5 rounded-md text-xs border border-[#03C160]/20 bg-[#03C160]/10 text-[#027a44] hover:bg-[#03C160]/15 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    :disabled="exportSaveBusy"
+                    @click="saveSnsExportToSelectedFolder()"
+                >
+                  {{ exportSaveBusy ? '\u4fdd\u5b58\u4e2d\u2026' : exportSaveState === 'success' ? '\u91cd\u65b0\u4fdd\u5b58\u5230\u6587\u4ef6\u5939' : '\u4fdd\u5b58\u5230\u5df2\u9009\u6587\u4ef6\u5939' }}
+                </button>
+              </div>
+            </div>
+
+            <div class="space-y-2">
+              <div class="flex items-center justify-between text-sm text-gray-700">
+                <div>&#21160;&#24577;&#65306;{{ exportJob.progress?.postsExported || 0 }}/{{ exportJob.progress?.postsTotal || 0 }}</div>
+                <div class="text-gray-500">{{ exportOverallPercent }}%</div>
+              </div>
+              <div class="h-2.5 rounded-full bg-white border border-gray-200 overflow-hidden">
+                <div class="h-full bg-[#03C160] transition-all duration-300" :style="{ width: exportOverallPercent + '%' }"></div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-gray-600">
+              <div class="rounded-md border border-gray-200 bg-white px-3 py-2">
+                &#32852;&#31995;&#20154;&#65306;{{ exportJob.progress?.usersDone || 0 }}/{{ exportJob.progress?.usersTotal || 0 }}
+              </div>
+              <div class="rounded-md border border-gray-200 bg-white px-3 py-2">
+                &#26684;&#24335;&#65306;{{ exportActiveFormatLabel }}
+              </div>
+              <div class="rounded-md border border-gray-200 bg-white px-3 py-2">
+                &#24050;&#22797;&#21046;&#23186;&#20307;&#65306;{{ exportJob.progress?.mediaCopied || 0 }}
+              </div>
+              <div class="rounded-md border border-gray-200 bg-white px-3 py-2">
+                &#32570;&#22833;&#23186;&#20307;&#65306;{{ exportJob.progress?.mediaMissing || 0 }}
+              </div>
+            </div>
+
+            <div v-if="exportCurrentTargetLabel" class="space-y-2">
+              <div class="flex items-center justify-between gap-2 text-sm text-gray-700">
+                <div class="truncate">
+                  &#24403;&#21069;&#32852;&#31995;&#20154;&#65306;{{ exportCurrentTargetLabel }}
+                  &#65288;{{ exportJob.progress?.currentUserPostsDone || 0 }}/{{ exportJob.progress?.currentUserPostsTotal || 0 }}&#65289;
+                </div>
+                <div class="text-gray-500">
+                  <span v-if="exportCurrentPercent != null">{{ exportCurrentPercent }}%</span>
+                  <span v-else>…</span>
+                </div>
+              </div>
+              <div class="h-2.5 rounded-full bg-white border border-gray-200 overflow-hidden">
+                <div
+                    v-if="exportCurrentPercent != null"
+                    class="h-full bg-sky-500 transition-all duration-300"
+                    :style="{ width: exportCurrentPercent + '%' }"
+                ></div>
+                <div v-else class="h-full bg-sky-500/60 animate-pulse" style="width: 30%"></div>
+              </div>
+            </div>
+
+            <div v-if="isExportCancelling && canCancelSnsExport" class="text-xs text-amber-700">
+              &#24050;&#21457;&#36865;&#21462;&#28040;&#35831;&#27714;&#65292;&#27491;&#22312;&#31561;&#24453;&#24403;&#21069;&#27493;&#39588;&#32467;&#26463;&#8230;
+            </div>
+            <div v-else-if="exportJob.status === 'cancelled'" class="text-xs text-amber-700">
+              &#23548;&#20986;&#24050;&#21462;&#28040;&#12290;
+            </div>
+            <div v-else-if="exportJob.status === 'error' && exportJob.error" class="text-xs text-red-600 whitespace-pre-wrap break-words">
+              {{ exportJob.error }}
+            </div>
+
+            <div v-if="exportOutputPathText" class="text-xs text-green-600 break-all">
+              &#24050;&#23548;&#20986;&#21040;&#65306;{{ exportOutputPathText }}
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-end gap-4 xl:flex-nowrap">
+            <div class="min-w-[180px]">
+              <div class="text-sm font-medium text-gray-900 mb-2">&#23548;&#20986;&#26684;&#24335;</div>
+              <div class="flex flex-wrap gap-2">
+                <label
+                    v-for="item in exportFormatOptions"
+                    :key="item.value"
+                    class="px-3 py-2 text-sm rounded-md border cursor-pointer transition-colors"
+                    :class="exportFormat === item.value ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
+                >
+                  <input v-model="exportFormat" type="radio" :value="item.value" class="hidden" />
+                  <span>{{ item.label }}</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="flex-1 min-w-[220px]">
+              <label class="block text-sm font-medium text-gray-900 mb-2">&#23548;&#20986;&#25991;&#20214;&#21517;&#65288;&#21487;&#36873;&#65289;</label>
+              <input
+                  v-model="exportFileName"
+                  type="text"
+                  placeholder="&#21487;&#36873;&#65292;&#19981;&#22635;&#21017;&#33258;&#21160;&#29983;&#25104; .zip &#25991;&#20214;&#21517;"
+                  class="w-full px-3 py-2 text-sm rounded-md border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#03C160]/30"
+              />
+            </div>
+
+            <div class="flex-[1.4] min-w-[300px]">
+              <div class="flex items-center justify-between gap-2 mb-2">
+                <div class="text-sm font-medium text-gray-900">&#23548;&#20986;&#30446;&#24405;</div>
+                <div class="text-[11px] text-gray-400">{{ exportFolderModeText }}</div>
+              </div>
+              <div class="flex items-center gap-2">
+                <div class="px-3 py-2 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-600 break-all min-h-[42px] flex items-center min-w-0 flex-1">
+                  {{ exportFolder || '未选择' }}
+                </div>
+                <button
+                    type="button"
+                    class="px-3 py-2 rounded-md text-sm border border-gray-200 bg-white hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                    :disabled="exportSaveBusy"
+                    @click="chooseExportFolder"
+                >
+                  &#36873;&#25321;&#25991;&#20214;&#22841;
+                </button>
+                <button
+                    v-if="hasSelectedExportFolder"
+                    type="button"
+                    class="px-3 py-2 rounded-md text-sm border border-gray-200 bg-white hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                    :disabled="exportSaveBusy"
+                    @click="clearExportFolderSelection"
+                >
+                  &#28165;&#38500;
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="text-[11px] text-gray-500 whitespace-pre-wrap">{{ exportFolderHint }}</div>
+
+          <div class="space-y-3">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div class="text-sm font-medium text-gray-900">&#36873;&#25321;&#32852;&#31995;&#20154;</div>
+              <div class="flex flex-wrap items-center gap-2">
+                <div class="text-xs text-gray-500">&#24050;&#36873; {{ exportSelectedCount }} &#20154;</div>
+                <button
+                    type="button"
+                    class="px-3 py-1.5 rounded-md text-xs border border-gray-200 bg-white hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                    :disabled="!exportFilteredSnsUsers.length"
+                    @click="toggleSelectAllFilteredExportUsers"
+                >
+                  {{ areAllFilteredExportUsersSelected ? '取消全选当前结果' : '全选当前结果' }}
+                </button>
+                <button
+                    type="button"
+                    class="px-3 py-1.5 rounded-md text-xs border border-gray-200 bg-white hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                    :disabled="!exportSelectedCount"
+                    @click="clearExportSelectedUsers"
+                >
+                  &#28165;&#31354;&#24050;&#36873;
+                </button>
+              </div>
+            </div>
+
+            <div class="flex flex-col sm:flex-row gap-2">
+              <input
+                  v-model="exportSearchQuery"
+                  type="text"
+                  placeholder="&#25628;&#32034;&#32852;&#31995;&#20154;&#65288;&#21517;&#31216; / username&#65289;"
+                  class="flex-1 px-3 py-2 text-sm rounded-md border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#03C160]/30"
+                  :class="{ 'privacy-blur': privacyMode }"
+              />
+            </div>
+            <div class="border border-gray-200 rounded-md max-h-72 overflow-y-auto">
+              <div v-if="!exportFilteredSnsUsers.length" class="px-3 py-8 text-sm text-gray-500 text-center">
+                &#26410;&#25214;&#21040;&#21487;&#23548;&#20986;&#30340;&#32852;&#31995;&#20154;
+              </div>
+              <label
+                  v-for="u in exportFilteredSnsUsers"
+                  :key="u.username"
+                  class="px-3 py-2 border-b border-gray-100 flex items-center gap-2 cursor-pointer transition-colors"
+                  :class="exportSelectedUsernameSet.has(u.username) ? 'bg-[#03C160]/5 hover:bg-[#03C160]/10' : 'hover:bg-gray-50'"
+              >
+                <input v-model="exportSelectedUsernames" type="checkbox" :value="u.username" class="cursor-pointer" />
+                <div class="w-9 h-9 rounded-md overflow-hidden bg-gray-300 flex-shrink-0" :class="{ 'privacy-blur': privacyMode }">
+                  <img
+                      v-if="postAvatarUrl(u.username) && !hasSnsAvatarError(u.username)"
+                      :src="postAvatarUrl(u.username)"
+                      :alt="u.displayName || u.username"
+                      class="w-full h-full object-cover"
+                      referrerpolicy="no-referrer"
+                      @error="onSnsAvatarError(u.username)"
+                  />
+                  <div
+                      v-else
+                      class="w-full h-full flex items-center justify-center text-white text-xs font-bold"
+                      style="background-color: #4B5563"
+                  >
+                    {{ (u.displayName || u.username || '友').charAt(0) }}
+                  </div>
+                </div>
+                <div class="min-w-0 flex-1" :class="{ 'privacy-blur': privacyMode }">
+                  <div class="text-sm text-gray-800 truncate">{{ u.displayName || u.username }}</div>
+                  <div class="text-[11px] text-gray-400 truncate">{{ u.username }} &#183; {{ u.postCount || 0 }} &#26465;</div>
+                </div>
+              </label>
+            </div>
+            <div class="text-[11px] text-gray-500">
+              默认按勾选联系人导出；如需全部导出，直接点“全选当前结果”即可。
+            </div>
+          </div>
+        </div>
+
+        <div class="px-5 py-4 border-t border-gray-200 flex items-center justify-between gap-3">
+          <div class="text-xs text-gray-500">&#24050;&#36873; {{ exportSelectedCount }} &#20154;</div>
+          <div class="flex gap-2">
+            <button
+                v-if="canCancelSnsExport"
+                type="button"
+                class="px-4 py-2 rounded-md text-sm border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                :disabled="isExportCancelling"
+                @click="cancelSnsExportJob"
+            >
+              {{ isExportCancelling ? '\u53d6\u6d88\u4e2d\u2026' : '\u53d6\u6d88\u5bfc\u51fa' }}
+            </button>
+            <button
+                type="button"
+                class="px-4 py-2 rounded-md text-sm border border-gray-200 bg-white hover:bg-gray-50 transition-colors"
+                @click="closeExportModal"
+            >
+              &#21462;&#28040;
+            </button>
+            <button
+                type="button"
+                class="px-4 py-2 rounded-md text-sm bg-[#03C160] text-white hover:bg-[#02ad56] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                :disabled="!selectedAccount || !exportSelectedCount || isSnsExportBusy"
+                @click="startSnsExportFromModal"
+            >
+              {{ isSnsExportBusy ? '导出中…' : '开始导出' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Image preview modal -->
 	    <div
 	      v-if="previewCtx"
 	      class="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center"
@@ -827,11 +988,42 @@ const snsUsers = ref([])
 const snsUserQuery = ref('')
 // 空字符串表示“全部”
 const selectedSnsUser = ref('')
+const snsAvatarErrors = ref({})
+
+const shouldHideSnsUser = (item) => {
+  const username = String(item?.username || '').trim()
+  const displayName = String(item?.displayName || '').trim()
+  const postCount = Number(item?.postCount || 0)
+  if (!username) return true
+  if (!Number.isFinite(postCount) || postCount <= 0) return true
+  return /^v3_/i.test(username) && /@stranger$/i.test(username) && (!displayName || displayName === username)
+}
+
+const visibleSnsUsers = computed(() => {
+  const list = Array.isArray(snsUsers.value) ? snsUsers.value : []
+  return list.filter((item) => !shouldHideSnsUser(item))
+})
+
+const snsAvatarErrorKey = (username) => String(username || '').trim()
+
+const hasSnsAvatarError = (username) => {
+  const key = snsAvatarErrorKey(username)
+  return key ? !!snsAvatarErrors.value[key] : false
+}
+
+const onSnsAvatarError = (username) => {
+  const key = snsAvatarErrorKey(username)
+  if (!key || snsAvatarErrors.value[key]) return
+  snsAvatarErrors.value = {
+    ...snsAvatarErrors.value,
+    [key]: true
+  }
+}
 
 const selectedSnsUserInfo = computed(() => {
   const uname = String(selectedSnsUser.value || '').trim()
   if (!uname) return null
-  const list = Array.isArray(snsUsers.value) ? snsUsers.value : []
+  const list = visibleSnsUsers.value
   return list.find((u) => String(u?.username || '').trim() === uname) || null
 })
 
@@ -845,7 +1037,7 @@ const showSnsCountMismatchHint = computed(() => {
 
 const filteredSnsUsers = computed(() => {
   const q = String(snsUserQuery.value || '').trim().toLowerCase()
-  const list = Array.isArray(snsUsers.value) ? snsUsers.value : []
+  const list = visibleSnsUsers.value
   if (!q) return list
   return list.filter((u) => {
     const uname = String(u?.username || '').toLowerCase()
@@ -876,6 +1068,11 @@ const exportSaveBytesTotal = ref(0)
 const exportAutoSavedFor = ref('')
 const exportJob = ref(null)
 const exportError = ref('')
+const exportModalOpen = ref(false)
+const exportFileName = ref('')
+const exportSearchQuery = ref('')
+const exportSelectedUsernames = ref([])
+const isExportCancelling = ref(false)
 let exportEventSource = null
 let exportPollTimer = null
 
@@ -978,6 +1175,102 @@ const exportCurrentTargetLabel = computed(() => {
   const progress = exportJob.value?.progress || {}
   return String(progress.currentDisplayName || progress.currentUsername || '').trim()
 })
+
+const isSnsExportBusy = computed(() => {
+  const status = String(exportJob.value?.status || '').trim()
+  return status === 'queued' || status === 'running'
+})
+
+const canCancelSnsExport = computed(() => {
+  if (!exportJob.value?.exportId) return false
+  const status = String(exportJob.value?.status || '').trim()
+  return status === 'queued' || status === 'running'
+})
+
+const normalizeExportSelectedUsernames = (list) => {
+  const validUsernames = new Set(
+    visibleSnsUsers.value
+      .map((item) => String(item?.username || '').trim())
+      .filter(Boolean)
+  )
+  const seen = new Set()
+  return (Array.isArray(list) ? list : []).reduce((acc, item) => {
+    const username = String(item || '').trim()
+    if (!username || seen.has(username)) return acc
+    if (validUsernames.size > 0 && !validUsernames.has(username)) return acc
+    seen.add(username)
+    acc.push(username)
+    return acc
+  }, [])
+}
+
+const exportSelectedUsernameSet = computed(() => {
+  return new Set(normalizeExportSelectedUsernames(exportSelectedUsernames.value))
+})
+
+const exportSelectedCount = computed(() => {
+  return exportSelectedUsernameSet.value.size
+})
+
+const exportFilteredSnsUsers = computed(() => {
+  const q = String(exportSearchQuery.value || '').trim().toLowerCase()
+  const list = visibleSnsUsers.value
+  if (!q) return list
+  return list.filter((item) => {
+    const username = String(item?.username || '').toLowerCase()
+    const displayName = String(item?.displayName || '').toLowerCase()
+    return username.includes(q) || displayName.includes(q)
+  })
+})
+
+const exportFilteredSnsUsernames = computed(() => {
+  return exportFilteredSnsUsers.value
+    .map((item) => String(item?.username || '').trim())
+    .filter(Boolean)
+})
+
+const areAllFilteredExportUsersSelected = computed(() => {
+  const usernames = exportFilteredSnsUsernames.value
+  if (!usernames.length) return false
+  return usernames.every((username) => exportSelectedUsernameSet.value.has(username))
+})
+
+const clearExportSelectedUsers = () => {
+  exportSelectedUsernames.value = []
+}
+
+const toggleSelectAllFilteredExportUsers = () => {
+  const usernames = exportFilteredSnsUsernames.value
+  if (!usernames.length) return
+
+  if (areAllFilteredExportUsersSelected.value) {
+    const removeSet = new Set(usernames)
+    exportSelectedUsernames.value = normalizeExportSelectedUsernames(exportSelectedUsernames.value)
+      .filter((username) => !removeSet.has(username))
+    return
+  }
+
+  exportSelectedUsernames.value = normalizeExportSelectedUsernames([
+    ...exportSelectedUsernames.value,
+    ...usernames
+  ])
+}
+
+const openExportModal = () => {
+  exportModalOpen.value = true
+  exportError.value = ''
+  exportSearchQuery.value = ''
+  exportFileName.value = ''
+  exportSelectedUsernames.value = selectedSnsUser.value
+    ? normalizeExportSelectedUsernames([selectedSnsUser.value])
+    : []
+}
+
+const closeExportModal = () => {
+  exportModalOpen.value = false
+  exportError.value = ''
+  exportSearchQuery.value = ''
+}
 
 const exportBackendZipPath = computed(() => {
   return String(exportJob.value?.zipPath || '').trim()
@@ -1225,39 +1518,73 @@ const ensureSnsExportFolderReady = () => {
   return false
 }
 
-const startSnsExport = async ({ scope, usernames }) => {
-  if (!selectedAccount.value) return
+const cancelSnsExportJob = async () => {
+  const exportId = String(exportJob.value?.exportId || '').trim()
+  if (!exportId || !canCancelSnsExport.value || isExportCancelling.value) return
   exportError.value = ''
+  isExportCancelling.value = true
+  try {
+    await api.cancelSnsExport(exportId)
+    try {
+      const resp = await api.getSnsExport(exportId)
+      exportJob.value = resp?.job || exportJob.value
+    } catch {
+      // ignore refresh errors, polling/SSE will continue updating the job
+    }
+  } catch (e) {
+    exportError.value = e?.message || '取消导出任务失败'
+    isExportCancelling.value = false
+  }
+}
+
+const startSnsExport = async ({ scope, usernames, fileName } = {}) => {
+  if (!selectedAccount.value) return false
+  exportError.value = ''
+  isExportCancelling.value = false
   resetExportSaveFeedback({ resetAutoSavedFor: true })
-  if (!ensureSnsExportFolderReady()) return
+  if (!ensureSnsExportFolderReady()) return false
+
+  const normalizedScope = String(scope || '').trim() === 'all' ? 'all' : 'selected'
+  const normalizedUsernames = normalizeExportSelectedUsernames(usernames)
+  if (normalizedScope === 'selected' && normalizedUsernames.length === 0) {
+    exportError.value = '请选择至少一个联系人'
+    return false
+  }
+
   try {
     const resp = await api.createSnsExport({
       account: selectedAccount.value,
-      scope,
-      usernames: Array.isArray(usernames) ? usernames : [],
+      scope: normalizedScope,
+      usernames: normalizedUsernames,
       format: exportFormat.value,
       use_cache: snsUseCache.value ? 1 : 0,
-      output_dir: hasDesktopExportFolder.value ? String(exportFolder.value || '').trim() : null
+      output_dir: hasDesktopExportFolder.value ? String(exportFolder.value || '').trim() : null,
+      file_name: String(fileName || '').trim() || null
     })
     exportJob.value = resp?.job || null
     const exportId = exportJob.value?.exportId
     if (exportId) startSnsExportPolling(exportId)
+    return true
   } catch (e) {
-    exportError.value = e?.message || '\u521b\u5efa\u5bfc\u51fa\u4efb\u52a1\u5931\u8d25'
+    exportError.value = e?.message || '创建导出任务失败'
+    return false
   }
 }
 
-const onExportAllClick = async () => {
-  await startSnsExport({ scope: 'all', usernames: [] })
-}
+const startSnsExportFromModal = async () => {
+  const usernames = normalizeExportSelectedUsernames(exportSelectedUsernames.value)
+  if (!usernames.length) {
+    exportError.value = '请选择至少一个联系人'
+    return
+  }
 
-const onExportCurrentClick = async () => {
-  if (!selectedAccount.value) return
-  const uname = String(selectedSnsUser.value || '').trim()
-  if (!uname) return
-  await startSnsExport({ scope: 'selected', usernames: [uname] })
+  const created = await startSnsExport({
+    scope: 'selected',
+    usernames,
+    fileName: exportFileName.value
+  })
+  if (created) exportError.value = ''
 }
-
 
 // Track failed images per-post, per-index to render placeholders instead of broken <img>.
 const mediaErrors = ref({})
@@ -2194,10 +2521,16 @@ watch(
         stopSnsExportPolling()
         exportJob.value = null
         exportError.value = ''
+        isExportCancelling.value = false
+        exportModalOpen.value = false
+        exportFileName.value = ''
+        exportSearchQuery.value = ''
+        exportSelectedUsernames.value = []
         resetExportSaveFeedback({ resetAutoSavedFor: true })
         snsUserQuery.value = ''
         selectedSnsUser.value = ''
         snsUsers.value = []
+        snsAvatarErrors.value = {}
         activeLivePhotoKey.value = ''
         livePhotoVideoErrors.value = {}
         if (previewCtx.value) closeImagePreview()
@@ -2223,6 +2556,26 @@ watch(
   }
 )
 
+watch(
+  () => ({
+    exportId: String(exportJob.value?.exportId || ''),
+    status: String(exportJob.value?.status || '')
+  }),
+  ({ exportId, status }, prev) => {
+    if (!exportId) {
+      isExportCancelling.value = false
+      return
+    }
+    if (exportId !== String(prev?.exportId || '')) {
+      isExportCancelling.value = false
+      return
+    }
+    if (status !== 'queued' && status !== 'running') {
+      isExportCancelling.value = false
+    }
+  }
+)
+
 
 
 onMounted(async () => {
@@ -2238,6 +2591,10 @@ const onGlobalClick = () => {
 const onGlobalKeyDown = (e) => {
   if (!process.client) return
   if (String(e?.key || '') === 'Escape') {
+    if (exportModalOpen.value) {
+      closeExportModal()
+      return
+    }
     if (previewCtx.value) closeImagePreview()
     if (contextMenu.value.visible) closeContextMenu()
   }
