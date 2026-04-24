@@ -144,6 +144,33 @@
         </div>
       </div>
 
+      <!-- Export -->
+      <div
+        v-if="showGlobalExportEntry"
+        class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
+        title="批量导出"
+        @click="openExportDialog"
+      >
+        <div class="sidebar-rail-plate w-[var(--sidebar-rail-btn)] h-[var(--sidebar-rail-btn)] rounded-md flex items-center justify-center transition-colors bg-transparent">
+          <div class="sidebar-rail-icon w-[var(--sidebar-rail-icon)] h-[var(--sidebar-rail-icon)]" :class="{ 'sidebar-rail-icon-active': exportDialogOpen }">
+            <svg
+              class="w-full h-full"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 3v11" />
+              <path d="M7.5 10.5L12 15l4.5-4.5" />
+              <path d="M4 19h16" />
+            </svg>
+          </div>
+        </div>
+      </div>
+
       <!-- Realtime -->
       <div
         class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center group"
@@ -333,6 +360,8 @@
       </div>
     </div>
   </div>
+
+  <GlobalExportDialog v-if="showGlobalExportEntry" :open="exportDialogOpen" @close="closeExportDialog" />
 </template>
 
 <script setup>
@@ -358,7 +387,9 @@ const { enabled: realtimeEnabled, available: realtimeAvailable, checking: realti
 const { open: settingsDialogOpen, openDialog: openSettingsDialog } = useSettingsDialog()
 const { getChatAccountInfo, deleteChatAccount } = useApi()
 
+const showGlobalExportEntry = false
 const accountDialogOpen = ref(false)
+const exportDialogOpen = ref(false)
 const accountInfoLoading = ref(false)
 const accountInfoError = ref('')
 const accountInfo = ref(null)
@@ -460,9 +491,17 @@ const openAccountDialog = async () => {
   await loadAccountInfo()
 }
 
+const openExportDialog = () => {
+  exportDialogOpen.value = true
+}
+
 const closeAccountDialog = () => {
   if (accountDeleteLoading.value) return
   accountDialogOpen.value = false
+}
+
+const closeExportDialog = () => {
+  exportDialogOpen.value = false
 }
 
 watch(selectedAccount, () => {
@@ -508,9 +547,13 @@ const goSettings = () => { openSettingsDialog() }
 
 const onWindowKeydown = (event) => {
   if (event?.key !== 'Escape') return
-  if (!accountDialogOpen.value) return
+  if (exportDialogOpen.value) {
+    return
+  }
   event.preventDefault()
-  closeAccountDialog()
+  if (accountDialogOpen.value) {
+    closeAccountDialog()
+  }
 }
 
 const deleteCurrentAccountData = async () => {
