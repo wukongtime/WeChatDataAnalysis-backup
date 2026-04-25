@@ -510,6 +510,30 @@ export const useApi = () => {
     })
   }
 
+  // Account archive export (databases + resource files)
+  const createAccountArchiveExport = async (payload = {}) => {
+    return await request('/account/archive_export', {
+      method: 'POST',
+      body: {
+        account: payload.account || null,
+        output_dir: payload.output_dir == null ? null : String(payload.output_dir || '').trim(),
+        include_databases: payload.include_databases == null ? true : !!payload.include_databases,
+        include_resources: payload.include_resources == null ? true : !!payload.include_resources,
+        file_name: payload.file_name || null
+      }
+    })
+  }
+
+  const getAccountArchiveExport = async (exportId) => {
+    if (!exportId) throw new Error('Missing exportId')
+    return await request(`/account/archive_export/${encodeURIComponent(String(exportId))}`)
+  }
+
+  const cancelAccountArchiveExport = async (exportId) => {
+    if (!exportId) throw new Error('Missing exportId')
+    return await request(`/account/archive_export/${encodeURIComponent(String(exportId))}`, { method: 'DELETE' })
+  }
+
   // WeChat Wrapped（年度总结）
   const getWrappedAnnual = async (params = {}) => {
     const query = new URLSearchParams()
@@ -662,6 +686,9 @@ export const useApi = () => {
     cancelSnsExport,
     listChatContacts,
     exportChatContacts,
+    createAccountArchiveExport,
+    getAccountArchiveExport,
+    cancelAccountArchiveExport,
     getWrappedAnnual,
     getWrappedAnnualMeta,
     getWrappedAnnualCard,

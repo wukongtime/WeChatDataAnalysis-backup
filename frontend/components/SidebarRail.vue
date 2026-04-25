@@ -148,7 +148,7 @@
       <div
         v-if="showGlobalExportEntry"
         class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
-        title="批量导出"
+        title="导出"
         @click="openExportDialog"
       >
         <div class="sidebar-rail-plate w-[var(--sidebar-rail-btn)] h-[var(--sidebar-rail-btn)] rounded-md flex items-center justify-center transition-colors bg-transparent">
@@ -387,7 +387,7 @@ const { enabled: realtimeEnabled, available: realtimeAvailable, checking: realti
 const { open: settingsDialogOpen, openDialog: openSettingsDialog } = useSettingsDialog()
 const { getChatAccountInfo, deleteChatAccount } = useApi()
 
-const showGlobalExportEntry = false
+const showGlobalExportEntry = true
 const accountDialogOpen = ref(false)
 const exportDialogOpen = ref(false)
 const accountInfoLoading = ref(false)
@@ -648,3 +648,4 @@ const toggleRealtime = async () => {
   color: var(--sidebar-rail-icon-active-color);
 }
 </style>
+

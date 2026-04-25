@@ -28,6 +28,7 @@ from .routers.decrypt import router as _decrypt_router
 from .routers.import_decrypted import router as _import_decrypted_router
 from .routers.health import router as _health_router
 from .routers.admin import router as _admin_router
+from .routers.account_archive_export import router as _account_archive_export_router
 from .routers.keys import router as _keys_router
 from .routers.media import router as _media_router
 from .routers.sns import router as _sns_router
@@ -65,6 +66,7 @@ async def _log_server_errors(request: Request, call_next):
 
 app.include_router(_health_router)
 app.include_router(_admin_router)
+app.include_router(_account_archive_export_router)
 app.include_router(_wechat_detection_router)
 app.include_router(_import_decrypted_router)
 app.include_router(_decrypt_router)
