@@ -1308,7 +1308,7 @@
                   <button
                     type="button"
                     class="px-2.5 py-1 text-xs rounded-md border transition-colors"
-                    :class="exportScope === 'selected' && exportListTab === 'all' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
+                    :class="exportScope === 'all' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
                     @click="onExportBatchScopeClick('all')"
                   >
                     全部 {{ exportContactCounts.total }}
@@ -1316,7 +1316,7 @@
                   <button
                     type="button"
                     class="px-2.5 py-1 text-xs rounded-md border transition-colors"
-                    :class="exportScope === 'selected' && exportListTab === 'groups' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
+                    :class="exportScope === 'groups' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
                     @click="onExportBatchScopeClick('groups')"
                   >
                     群聊 {{ exportContactCounts.groups }}
@@ -1324,10 +1324,18 @@
                   <button
                     type="button"
                     class="px-2.5 py-1 text-xs rounded-md border transition-colors"
-                    :class="exportScope === 'selected' && exportListTab === 'singles' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
+                    :class="exportScope === 'singles' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
                     @click="onExportBatchScopeClick('singles')"
                   >
                     单聊 {{ exportContactCounts.singles }}
+                  </button>
+                  <button
+                    type="button"
+                    class="px-2.5 py-1 text-xs rounded-md border transition-colors"
+                    :class="exportScope === 'selected' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
+                    @click="onExportCustomScopeClick"
+                  >
+                    自定义
                   </button>
                 </div>
               </div>
@@ -1395,7 +1403,7 @@
 
             <div v-if="exportScope === 'selected'" class="mt-3">
               <div class="mb-2 text-xs text-gray-500">
-                点击上方范围可筛选并默认全选当前结果，再次点击可取消全选；下方整行可点选会话
+                下方整行可点选会话；搜索只影响当前自定义列表
               </div>
               <div class="flex items-center gap-2 mb-2">
                 <input
