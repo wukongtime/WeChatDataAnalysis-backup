@@ -21,6 +21,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
 const net = require("net");
+const os = require("os");
 const path = require("path");
 const { Worker } = require("worker_threads");
 const {
@@ -99,6 +100,84 @@ function getBackendAccessHost() {
   const host = String(getBackendBindHost() || "").trim();
   if (host === "0.0.0.0" || host === "::") return "127.0.0.1";
   return host || "127.0.0.1";
+}
+
+function getInterfacePenalty(name) {
+  const lower = String(name || "").toLowerCase();
+  if (/(docker|hyper-v|loopback|npcap|tailscale|virtual|virtualbox|vmware|vethernet|wsl|zerotier)/i.test(lower)) {
+    return 30;
+  }
+  if (/(ethernet|wi-fi|wifi|wireless|wlan|以太|无线)/i.test(lower)) {
+    return 0;
+  }
+  return 10;
+}
+
+function isReachableClientIpv4(address) {
+  const text = String(address || "").trim();
+  const parts = text.split(".");
+  if (parts.length !== 4) return false;
+  const nums = parts.map((part) => Number(part));
+  if (!nums.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) return false;
+  if (nums[0] === 0 || nums[0] === 127 || nums[0] >= 224) return false;
+  if (nums[0] === 169 && nums[1] === 254) return false;
+  return true;
+}
+
+function isPrivateIpv4(address) {
+  const nums = String(address || "").trim().split(".").map((part) => Number(part));
+  if (nums.length !== 4 || !nums.every((n) => Number.isInteger(n))) return false;
+  return (
+    nums[0] === 10 ||
+    (nums[0] === 172 && nums[1] >= 16 && nums[1] <= 31) ||
+    (nums[0] === 192 && nums[1] === 168)
+  );
+}
+
+function getLanAccessHost(defaultHost = DEFAULT_BACKEND_HOST) {
+  const candidates = [];
+  const seen = new Set();
+  const addCandidate = (address, interfaceName = "", sourceOrder = 0) => {
+    const value = String(address || "").trim();
+    if (!isReachableClientIpv4(value) || seen.has(value)) return;
+    seen.add(value);
+    candidates.push([
+      isPrivateIpv4(value) ? 0 : 1,
+      getInterfacePenalty(interfaceName),
+      sourceOrder,
+      value,
+    ]);
+  };
+
+  try {
+    const interfaces = os.networkInterfaces();
+    for (const [name, addresses] of Object.entries(interfaces || {})) {
+      for (const item of addresses || []) {
+        if (!item || (item.family !== "IPv4" && item.family !== 4) || item.internal) continue;
+        addCandidate(item.address, name, 0);
+      }
+    }
+  } catch {}
+
+  candidates.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+  return candidates[0]?.[3] || defaultHost;
+}
+
+function getMcpAccessHost(bindHost = getBackendBindHost()) {
+  const host = String(bindHost || "").trim();
+  if (host === LAN_BACKEND_HOST || host === "::") return getLanAccessHost(DEFAULT_BACKEND_HOST);
+  return host || DEFAULT_BACKEND_HOST;
+}
+
+function getMcpAccessInfo(bindHost = getBackendBindHost(), port = getBackendPort()) {
+  const accessHost = getMcpAccessHost(bindHost);
+  const origin = `http://${formatHostForUrl(accessHost)}:${port}`;
+  return {
+    accessHost,
+    mcpEndpoint: `${origin}/mcp`,
+    skillBundleUrl: `${origin}/mcp/skill/bundle`,
+    skillMarkdownUrl: `${origin}/mcp/skill`,
+  };
 }
 
 function getBackendPort() {
@@ -2340,19 +2419,24 @@ function registerWindowIpc() {
 
   ipcMain.handle("backend:getMcpLanAccess", () => {
     try {
+      const host = getBackendBindHost();
+      const port = getBackendPort();
       return {
         enabled: getMcpLanAccessEnabled(),
-        host: getBackendBindHost(),
-        port: getBackendPort(),
+        host,
+        port,
         uiUrl: getDesktopUiUrl(),
+        ...getMcpAccessInfo(host, port),
       };
     } catch (err) {
       logMain(`[main] backend:getMcpLanAccess failed: ${err?.message || err}`);
+      const port = DEFAULT_BACKEND_PORT;
       return {
         enabled: false,
         host: DEFAULT_BACKEND_HOST,
-        port: DEFAULT_BACKEND_PORT,
+        port,
         uiUrl: getDesktopUiUrl(),
+        ...getMcpAccessInfo(DEFAULT_BACKEND_HOST, port),
       };
     }
   });
@@ -2363,13 +2447,16 @@ function registerWindowIpc() {
     const nextEnabled = !!enabled;
     const prevEnabled = getMcpLanAccessEnabled();
     if (nextEnabled === prevEnabled) {
+      const host = getBackendBindHost();
+      const port = getBackendPort();
       return {
         success: true,
         changed: false,
         enabled: prevEnabled,
-        host: getBackendBindHost(),
-        port: getBackendPort(),
+        host,
+        port,
         uiUrl: getDesktopUiUrl(),
+        ...getMcpAccessInfo(host, port),
       };
     }
 
@@ -2396,6 +2483,7 @@ function registerWindowIpc() {
         host: getBackendBindHost(),
         port: getBackendPort(),
         uiUrl,
+        ...getMcpAccessInfo(),
       };
     } finally {
       backendPortChangeInProgress = false;

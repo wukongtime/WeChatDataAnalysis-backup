@@ -14,6 +14,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from starlette.requests import Request
 
 from ..logging_config import get_log_file_path, get_logger
+from ..network_access import get_lan_access_host
 from ..path_fix import PathFixRoute
 from ..runtime_settings import (
     LAN_BACKEND_HOST,
@@ -54,6 +55,28 @@ def _get_backend_access_host() -> str:
     if host in {"0.0.0.0", "::"}:
         return "127.0.0.1"
     return host
+
+
+def _get_mcp_access_host(bind_host: str | None = None) -> str:
+    host = str(bind_host or _get_backend_bind_host() or "").strip()
+    if host in {LAN_BACKEND_HOST, "::"}:
+        return get_lan_access_host(default=LOOPBACK_BACKEND_HOST)
+    return host or LOOPBACK_BACKEND_HOST
+
+
+def _get_mcp_access_urls(port: int, bind_host: str | None = None) -> dict:
+    access_host = _get_mcp_access_host(bind_host)
+    origin = f"http://{_format_host_for_url(access_host)}:{int(port)}"
+    return {
+        "access_host": access_host,
+        "accessHost": access_host,
+        "mcp_endpoint": f"{origin}/mcp",
+        "mcpEndpoint": f"{origin}/mcp",
+        "skill_bundle_url": f"{origin}/mcp/skill/bundle",
+        "skillBundleUrl": f"{origin}/mcp/skill/bundle",
+        "skill_markdown_url": f"{origin}/mcp/skill",
+        "skillMarkdownUrl": f"{origin}/mcp/skill",
+    }
 
 
 def _is_loopback_client(request: Request) -> bool:
@@ -272,6 +295,7 @@ async def get_mcp_access() -> dict:
         "default_host": LOOPBACK_BACKEND_HOST,
         "lan_host": LAN_BACKEND_HOST,
         "restart_required": False,
+        **_get_mcp_access_urls(port, host),
     }
 
 
@@ -407,6 +431,7 @@ async def set_mcp_access(payload: dict, request: Request, background_tasks: Back
             "port": int(current_port),
             "ui_url": f"http://{_format_host_for_url(_get_backend_access_host())}:{int(current_port)}/",
             "env_file": str(env_file) if env_file else None,
+            **_get_mcp_access_urls(int(current_port), next_host),
         }
 
     _PORT_CHANGE_IN_PROGRESS = True
@@ -428,6 +453,7 @@ async def set_mcp_access(payload: dict, request: Request, background_tasks: Back
             "ui_url": f"http://{_format_host_for_url(LOOPBACK_BACKEND_HOST)}:{int(current_port)}/",
             "env_file": str(env_file) if env_file else None,
             "restart_scheduled": True,
+            **_get_mcp_access_urls(int(current_port), next_host),
         }
     finally:
         _PORT_CHANGE_IN_PROGRESS = False

@@ -269,6 +269,7 @@
                   <div class="min-w-0 flex-1">
                     <div class="text-[13px] font-medium text-[#222]">允许手机局域网接入 MCP</div>
                     <div class="mt-0.5 text-[11px] leading-relaxed text-[#909090]">开启后后端监听 0.0.0.0，手机可通过接入提示词中的地址接入。</div>
+                    <div class="mt-0.5 text-[11px] leading-relaxed text-[#909090] break-all">当前地址：{{ mcpEndpoint }}</div>
                     <div v-if="mcpLanAccessMessage" class="mt-1 text-[11px] leading-relaxed text-[#1b6b43]">{{ mcpLanAccessMessage }}</div>
                     <div v-if="mcpLanAccessError" class="mt-1 text-[11px] leading-relaxed text-red-600">{{ mcpLanAccessError }}</div>
                   </div>
@@ -608,6 +609,8 @@ const mcpSkillBundleText = ref('')
 const mcpSkillBundleLoading = ref(false)
 const mcpSkillBundleError = ref('')
 const mcpCopiedKey = ref('')
+const mcpAccessHost = ref('')
+const mcpAccessEndpoint = ref('')
 let mcpCopiedTimer = null
 
 const mcpPortText = computed(() => {
@@ -617,6 +620,10 @@ const mcpPortText = computed(() => {
 })
 
 const mcpEndpoint = computed(() => {
+  const reported = String(mcpAccessEndpoint.value || '').trim()
+  if (/^https?:\/\//i.test(reported)) return reported
+  const reportedHost = String(mcpAccessHost.value || '').trim()
+  if (reportedHost) return `http://${reportedHost}:${mcpPortText.value}/mcp`
   if (!process.client || typeof window === 'undefined') return `http://127.0.0.1:${mcpPortText.value}/mcp`
   const apiBase = useApiBase()
   if (/^https?:\/\//i.test(apiBase)) {
@@ -629,6 +636,14 @@ const mcpEndpoint = computed(() => {
   const host = String(window.location?.hostname || '127.0.0.1').trim() || '127.0.0.1'
   return `${protocol}//${host}:${mcpPortText.value}/mcp`
 })
+
+const applyMcpAccessInfo = (resp) => {
+  if (!resp || typeof resp !== 'object') return
+  const accessHost = String(resp.accessHost || resp.access_host || '').trim()
+  const endpoint = String(resp.mcpEndpoint || resp.mcp_endpoint || '').trim()
+  if (accessHost) mcpAccessHost.value = accessHost
+  if (/^https?:\/\//i.test(endpoint)) mcpAccessEndpoint.value = endpoint
+}
 
 const mcpSkillFallback = [
   '# WeChat MCP Copilot',
@@ -800,10 +815,12 @@ const refreshMcpLanAccess = async () => {
     if (window.wechatDesktop?.getMcpLanAccess) {
       const resp = await window.wechatDesktop.getMcpLanAccess()
       mcpLanAccessEnabled.value = !!resp?.enabled
+      applyMcpAccessInfo(resp)
       return
     }
     const resp = await fetchAdminEndpoint('/admin/mcp-access')
     mcpLanAccessEnabled.value = !!resp?.enabled
+    applyMcpAccessInfo(resp)
   } catch (e) {
     mcpLanAccessError.value = e?.message || '读取 MCP 接入状态失败'
   } finally {
@@ -881,7 +898,9 @@ const setMcpLanAccess = async (enabled) => {
     if (window.wechatDesktop?.setMcpLanAccess) {
       const resp = await window.wechatDesktop.setMcpLanAccess(!!enabled)
       mcpLanAccessEnabled.value = !!resp?.enabled
+      applyMcpAccessInfo(resp)
       mcpLanAccessMessage.value = resp?.changed ? 'MCP 局域网接入已更新，后端已重启。' : 'MCP 局域网接入状态未变化。'
+      await refreshMcpSkillBundle()
       return
     }
 
@@ -890,11 +909,14 @@ const setMcpLanAccess = async (enabled) => {
       body: { enabled: !!enabled },
     })
     mcpLanAccessEnabled.value = !!resp?.enabled
+    applyMcpAccessInfo(resp)
     mcpLanAccessMessage.value = resp?.changed ? 'MCP 局域网接入已更新，正在等待后端重启。' : 'MCP 局域网接入状态未变化。'
     if (resp?.changed) {
       await waitForBackendHealth(30_000)
+      await refreshMcpLanAccess()
       mcpLanAccessMessage.value = 'MCP 局域网接入已更新，后端已恢复。'
     }
+    await refreshMcpSkillBundle()
   } catch (e) {
     mcpLanAccessEnabled.value = previous
     mcpLanAccessError.value = e?.message || '设置 MCP 接入状态失败'
