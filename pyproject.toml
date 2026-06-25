@@ -21,6 +21,9 @@ dependencies = [
     "pypinyin>=0.53.0",
     "jieba>=0.42.1",
     "wx_key>=2.0.1",
+    "pefile>=2024.8.26; sys_platform == 'win32'",
+    "pymem>=1.14.0; sys_platform == 'win32'",
+    "yara-python>=4.5.2; sys_platform == 'win32'",
     "packaging",
     "httpx",
 ]

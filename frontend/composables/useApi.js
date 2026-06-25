@@ -584,6 +584,8 @@ export const useApi = () => {
   const getKeys = async (params = {}) => {
     const query = new URLSearchParams()
     if (params && params.wechat_install_path) query.set('wechat_install_path', params.wechat_install_path)
+    if (params && params.db_storage_path) query.set('db_storage_path', params.db_storage_path)
+    if (params && params.key_mode) query.set('key_mode', params.key_mode)
     const url = '/get_keys' + (query.toString() ? `?${query.toString()}` : '')
     return await request(url)
   }

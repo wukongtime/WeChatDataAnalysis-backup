@@ -71,7 +71,22 @@
                 <svg class="w-4 h-4 mr-1 text-[#10AEEF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
-                点击按钮将自动获取【数据库解密密钥】。您也可以手动输入已知的64位密钥。
+                点击按钮将优先使用 V4 内存扫描获取【数据库解密密钥】；失败时会询问您是否改用 Hook。您也可以手动输入已知的64位密钥。
+              </p>
+              <p class="mt-2 text-xs text-[#7F7F7F] flex items-start">
+                <svg class="w-4 h-4 mr-1 mt-0.5 text-[#10AEEF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <span>
+                  V4 内存扫描这部分参考了
+                  <a
+                    href="https://github.com/recarto404"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="text-[#576B95] underline decoration-[#576B95]/30 underline-offset-2 hover:text-[#07C160]"
+                  >recarto404</a>
+                  提供的扫内存技术方案。
+                </span>
               </p>
               <p v-if="formData.wechat_install_path" class="mt-2 text-xs text-[#7F7F7F] flex items-start">
                 <svg class="w-4 h-4 mr-1 mt-0.5 text-[#10AEEF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -110,6 +125,7 @@
                 </svg>
                 请输入数据库文件所在的绝对路径
               </p>
+
             </div>
             
             <!-- 提交按钮 -->
@@ -888,27 +904,74 @@ const handleGetDbKey = async () => {
 
   try {
     const wechatInstallPath = normalizeWechatInstallPath(formData.wechat_install_path || readStoredWechatInstallPath())
+    const dbStoragePath = String(formData.db_storage_path || '').trim()
     formData.wechat_install_path = wechatInstallPath
     const statusRes = await getWxStatus()
     const wxStatus = statusRes?.wx_status
 
-    if (wxStatus?.is_running) {
-      warning.value = '检测到微信正在运行，5秒后将终止进程并重启以获取数据库密钥！'
-      await new Promise(resolve => setTimeout(resolve, 5000))
-    }
-
-    warning.value = '正在启动微信，请确保微信未开启“自动登录”，并在弹窗中正常登录。'
-
-    const res = await getKeys({
-      wechat_install_path: wechatInstallPath
-    })
-
-    if (res && res.status === 0) {
+    const applySuccessResult = (res) => {
       if (res.data?.db_key) {
         formData.key = res.data.db_key
       }
-      warning.value = '数据库解密密钥已获取成功！'
+      if (res.data?.method === 'key_v4') {
+        warning.value = '数据库解密密钥已通过 V4 内存扫描获取成功！'
+      } else {
+        warning.value = '数据库解密密钥已通过 Hook 获取成功！'
+      }
       setTimeout(() => { if(warning.value.includes('获取成功')) warning.value = '' }, 3000)
+    }
+
+    const fetchByHook = async () => {
+      if (wxStatus?.is_running) {
+        warning.value = '即将改用 Hook 获取数据库密钥：5秒后会关闭并重启微信，请确保微信未开启“自动登录”，并在弹窗中正常登录。'
+        await new Promise(resolve => setTimeout(resolve, 5000))
+      } else {
+        warning.value = '正在使用 Hook 获取数据库密钥，请确保微信未开启“自动登录”，并在弹窗中正常登录。'
+      }
+
+      return await getKeys({
+        wechat_install_path: wechatInstallPath,
+        db_storage_path: dbStoragePath,
+        key_mode: 'hook'
+      })
+    }
+
+    let res = null
+    if (dbStoragePath) {
+      warning.value = '正在优先尝试 V4 内存扫描获取数据库密钥。'
+      res = await getKeys({
+        wechat_install_path: wechatInstallPath,
+        db_storage_path: dbStoragePath,
+        key_mode: 'key_v4'
+      })
+    } else {
+      const useHook = window.confirm('V4 内存扫描需要先填写数据库存储路径，用于校验候选密钥。是否跳过扫内存，改用 Hook 获取数据库密钥？')
+      if (!useHook) {
+        warning.value = ''
+        formErrors.db_storage_path = '请填写数据库存储路径后再使用 V4 内存扫描'
+        return
+      }
+      res = await fetchByHook()
+    }
+
+    if (res && res.status === 0) {
+      applySuccessResult(res)
+    } else if (res?.data?.can_fallback_to_hook) {
+      const detail = res?.data?.key_v4_error || res?.errmsg || '未知错误'
+      warning.value = ''
+      const useHook = window.confirm(`V4 内存扫描失败：${detail}\n\n是否改用 Hook 获取数据库密钥？Hook 会关闭并重启微信。`)
+      if (!useHook) {
+        error.value = 'V4 内存扫描失败，已取消 Hook 获取。'
+        return
+      }
+
+      res = await fetchByHook()
+      if (res && res.status === 0) {
+        applySuccessResult(res)
+      } else {
+        error.value = 'Hook 获取失败: ' + (res?.errmsg || '未知错误')
+        warning.value = ''
+      }
     } else {
       error.value = '获取失败: ' + (res?.errmsg || '未知错误')
       warning.value = ''

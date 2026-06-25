@@ -225,35 +225,65 @@ async def get_saved_keys(
     }
 
 
-@router.get("/api/get_keys", summary="自动获取微信数据库与图片密钥")
-async def get_wechat_db_key(wechat_install_path: Optional[str] = None):
+@router.get("/api/get_keys", summary="自动获取微信数据库密钥")
+async def get_wechat_db_key(
+    wechat_install_path: Optional[str] = None,
+    db_storage_path: Optional[str] = None,
+    key_mode: Optional[str] = None,
+):
     """
     自动流程：
-    1. 结束微信进程
-    2. 启动微信
-    3. 根据版本注入双 Hook
-    4. 抓取 DB 与 图片密钥(AES + XOR)并返回
+    1. 优先自动扫描 DLL 辅助 key，再使用 key_v4 从运行中的微信进程扫描并校验数据库密钥
+    2. key_v4 不可用或失败时回退到 wx_key Hook 流程
     """
     try:
         logger.info(
-            "[keys] get_wechat_db_key start: wechat_install_path=%s",
+            "[keys] get_wechat_db_key start: wechat_install_path=%s db_storage_path=%s key_mode=%s",
             str(wechat_install_path or "").strip(),
+            str(db_storage_path or "").strip(),
+            str(key_mode or "auto").strip(),
         )
-        keys_data = get_db_key_workflow(wechat_install_path=wechat_install_path)
+        keys_data = get_db_key_workflow(
+            wechat_install_path=wechat_install_path,
+            db_storage_path=db_storage_path,
+            key_mode=key_mode or "auto",
+        )
 
         return {
             "status": 0,
             "errmsg": "ok",
-            "data": keys_data # 现在完美包含了 db_key, aes_key, xor_key
+            "data": keys_data
         }
 
-    except TimeoutError:
+    except TimeoutError as e:
+        mode = str(key_mode or "auto").strip().lower()
+        if mode in {"v4", "key_v4", "memory", "memory_scan"}:
+            return {
+                "status": -2,
+                "errmsg": f"扫内存失败: {str(e)}",
+                "data": {
+                    "method": "key_v4",
+                    "can_fallback_to_hook": True,
+                    "key_v4_error": str(e),
+                }
+            }
         return {
             "status": -1,
-            "errmsg": "获取超时，请确保微信没有开启自动登录并且在弹窗中完成了登录",
+            "errmsg": str(e).strip() or "获取超时，请确保微信没有开启自动登录并且在弹窗中完成了登录",
             "data": {}
         }
     except Exception as e:
+        mode = str(key_mode or "auto").strip().lower()
+        if mode in {"v4", "key_v4", "memory", "memory_scan"}:
+            return {
+                "status": -2,
+                "errmsg": f"扫内存失败: {str(e)}",
+                "data": {
+                    "method": "key_v4",
+                    "can_fallback_to_hook": True,
+                    "key_v4_error": str(e),
+                }
+            }
         return {
             "status": -1,
             "errmsg": f"获取失败: {str(e)}",
