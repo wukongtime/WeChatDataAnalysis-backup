@@ -15,6 +15,7 @@
     <img src="https://img.shields.io/badge/Python-3776AB?logo=Python&logoColor=white" alt="Python" />
     <img src="https://img.shields.io/badge/Vue.js-4FC08D?logo=Vue.js&logoColor=white" alt="Vue.js" />
     <img src="https://img.shields.io/badge/SQLite-003B57?logo=SQLite&logoColor=white" alt="SQLite" />
+    <p><b>本项目推荐</b>：如果你需要 QQ 侧的数据解密、分析或年度总结类工具，欢迎体验 <a href="https://github.com/H3CoF6/WeQ">H3CoF6/WeQ</a>；WeQ 作者也是本项目开发成员之一，更方便大家信任和了解其维护背景。</p>
 </div>
 
 ## 年度总结
@@ -157,41 +158,10 @@ npm run dev
 - 前端界面: http://localhost:3000
 - API服务(默认): http://localhost:10392 （可通过环境变量 WECHAT_TOOL_PORT 修改）
 - API文档(默认): http://localhost:10392/docs
-- 也可在应用内“设置 -> 后端端口”修改（支持“恢复默认”一键回到 10392）：网页端会尝试重启本机后端到新端口并刷新（并写入 `output/runtime_settings.json`，开发模式下也会写入项目根目录 `.env` 供 `uv run` 下次启动使用）；桌面端会重启内置后端并刷新
 
 ## MCP 服务
 
-后端提供 MCP JSON-RPC over HTTP 服务，默认只监听 `127.0.0.1`。手机接入局域网时，在应用内打开 **设置 -> MCP 接入 -> 允许手机局域网接入 MCP**，后端会切换为监听 `0.0.0.0` 并重启；设置页展示和复制的接入地址会使用电脑实际局域网 IP，例如 `http://192.168.x.x:10392/mcp`，而不是不可被其他设备访问的 `127.0.0.1`。
-
-MCP 入口需要 token 鉴权。设置页提供 **MCP Token**、**AI 接入提示词** 和 **Skill Markdown** 三个独立复制区；token 可一键复制或重置，重置后旧 token 立即失效。手机端或外部 AI 客户端访问 `/mcp`、`/mcp/skill/bundle`、`/mcp/skill` 时，都应带上 `Authorization: Bearer <MCP_TOKEN>`。兼容客户端也可以使用 `X-MCP-Token` 请求头或 `?token=` 查询参数，但推荐使用 Bearer token。
-
-通用客户端可以通过 `GET /mcp/skill/bundle` 读取同一份 bundle，通过 `GET /mcp/skill` 读取 markdown 版本，这两个 skill 入口同样需要 MCP token。
-
-工具调用成功时，客户端优先读取 `result.structuredContent`，`content[0].text` 只是给通用 MCP 客户端展示的 JSON 文本副本。业务未就绪时仍可能返回 JSON-RPC success，但 `result.isError=true`；协议错误或参数错误则返回 JSON-RPC `error`。
-
-MCP 仅暴露读取数据与获取媒体资源 URL/参数的能力；系统设置、索引与缓存构建、数据准备、导出、实时同步、本地修订、数据删除等操作类能力不通过 MCP 暴露，请在桌面/网页应用内使用。
-
-工具按包分层：
-
-- `wechat.core`: 状态、工具目录、账号列表、账号信息
-- `wechat.mobile`: 面向手机和外部代理的聚合入口，默认返回小结果和下一步建议
-- `wechat.contacts`: 联系人列表、模糊解析
-- `wechat.chat`: 会话、消息、搜索、发送者筛选、上下文、锚点、合并转发/AppMsg 解析、统计
-- `wechat.moments`: 朋友圈时间线、用户、图片/视频/文章封面 URL
-- `wechat.media`: 聊天/朋友圈图片、视频、表情、头像、语音文件 URL、远程图片代理与资源辅助；只返回 URL 或资源参数，不提供下载缓存或打开本机目录操作
-- `wechat.biz`: 公众号/服务号与微信支付记录
-- `wechat.analytics`: 年度总结与聚合分析读取；年度总结只读取应用内已生成的缓存，未生成时请先在应用内打开年度总结
-
-会话列表、联系人和头像相关接口均采用 best-effort 读取策略。即使 `contact.db` 中某些头像字段损坏或无法按 UTF-8 解码，也会继续返回昵称、会话摘要和其他可用内容，头像则自动降级为空或占位，不会阻塞整页数据加载。
-
-媒体和视频不会直接塞进 MCP JSON 响应；相关工具返回可访问 URL 或资源参数。
-
-配套 skill 可通过 HTTP 加载，访问时需要带 MCP token：
-
-- JSON bundle: `http://<电脑局域网IP>:10392/mcp/skill/bundle`
-- Markdown bundle: `http://<电脑局域网IP>:10392/mcp/skill`
-
-手机端或外部 AI 客户端应先拉取 skill bundle，将 `bundleText` 注入模型上下文，再按 `initialize`、`tools/list`、`tools/call` 使用 MCP。设置页中的“AI 接入提示词”会包含 endpoint 和 Bearer token，可直接复制给客户端作为接入指令。
+设置页中的“AI 接入提示词”会包含 endpoint 和 Bearer token，可直接复制给客户端作为接入指令。
 
 ## 打包为 EXE（Windows 桌面端）
 
@@ -207,16 +177,6 @@ npm run dist
 ```
 
 输出位置：`desktop/dist/WeChatDataAnalysis Setup <version>.exe`
-
-## 使用指南
-
-### 获取解密密钥
-
-在使用本工具之前，您需要先获取微信数据库的解密密钥。推荐使用以下工具：
-
-**wx_key** (推荐)
-   - 项目地址: https://github.com/ycccccccy/wx_key
-   - 支持获取微信 4.x 数据库密钥
 
 ## 安全说明
 
@@ -237,6 +197,7 @@ npm run dist
 6. **[vue3-wechat-tool](https://github.com/Ele-Cat/vue3-wechat-tool)** 
 7. **[wx-dat](https://github.com/waaaaashi/wx-dat)**
 8. **[Ritsu](https://xhslink.com/m/7YJUsd1sgyF)**
+9. **[recarto404](https://github.com/recarto404)**
 
 ## Star History
 
