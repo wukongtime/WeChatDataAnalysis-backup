@@ -14,16 +14,18 @@ export const useApi = () => {
           if (response.status === 400) {
             throw new Error(response._data?.detail || '请求参数错误')
           } else if (response.status >= 500) {
+            const backendDetail = String(response._data?.detail || '').trim()
+            const message = backendDetail || '服务器错误，请稍后重试'
             await reportServerError({
               status: response.status,
               method: options?.method || 'GET',
               requestUrl: url,
-              message: '服务器错误，请稍后重试',
-              backendDetail: response._data?.detail || '',
+              message,
+              backendDetail,
               source: 'useApi',
               apiBase: baseURL,
             })
-            throw new Error('服务器错误，请稍后重试')
+            throw new Error(message)
           }
         }
       })
@@ -279,6 +281,7 @@ export const useApi = () => {
     const url = '/chat/search-index/build' + (query.toString() ? `?${query.toString()}` : '')
     return await request(url, { method: 'POST' })
   }
+
 
   const getChatMessagesAround = async (params = {}) => {
     const query = new URLSearchParams()
@@ -605,6 +608,7 @@ export const useApi = () => {
   const listBizAccounts = async (params = {}) => {
     const query = new URLSearchParams()
     if (params && params.account) query.set('account', params.account)
+    if (params && params.source) query.set('source', params.source)
     const url = '/biz/list' + (query.toString() ? `?${query.toString()}` : '')
     return await request(url)
   }
@@ -616,6 +620,7 @@ export const useApi = () => {
     if (params && params.username) query.set('username', params.username)
     if (params && params.limit != null) query.set('limit', String(params.limit))
     if (params && params.offset != null) query.set('offset', String(params.offset))
+    if (params && params.source) query.set('source', params.source)
     const url = '/biz/messages' + (query.toString() ? `?${query.toString()}` : '')
     return await request(url)
   }
@@ -626,6 +631,7 @@ export const useApi = () => {
     if (params && params.account) query.set('account', params.account)
     if (params && params.limit != null) query.set('limit', String(params.limit))
     if (params && params.offset != null) query.set('offset', String(params.offset))
+    if (params && params.source) query.set('source', params.source)
     const url = '/biz/pay_records' + (query.toString() ? `?${query.toString()}` : '')
     return await request(url)
   }
@@ -657,6 +663,7 @@ export const useApi = () => {
       body: { enabled: !!enabled }
     })
   }
+
 
   return {
     pickSystemDirectory,

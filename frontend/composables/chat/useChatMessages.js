@@ -8,14 +8,14 @@ import {
 import { createPerfTrace } from '~/lib/chat/perf-logger'
 import { createMessageNormalizer, dedupeMessagesById } from '~/lib/chat/message-normalizer'
 
+const DEFAULT_CHAT_SOURCE = 'auto'
+
 export const useChatMessages = ({
   api,
   apiBase,
   selectedAccount,
   selectedContact,
-  realtimeStore,
   realtimeEnabled,
-  desktopAutoRealtime,
   privacyMode,
   searchContext
 }) => {
@@ -62,9 +62,21 @@ export const useChatMessages = ({
   }
 
   const previewImageUrl = ref(null)
+  const previewImageItems = ref([])
+  const previewImageIndex = ref(-1)
   const previewVideoUrl = ref(null)
   const previewVideoPosterUrl = ref('')
   const previewVideoError = ref('')
+
+  const resourceSidebarOpen = ref(false)
+  const resourceTimeGroup = ref('day')
+  const resourceItems = ref([])
+  const resourceLoading = ref(false)
+  const resourceError = ref('')
+  const resourceHasMore = ref(true)
+  const resourceOffset = ref(0)
+  const resourcePageSize = 32
+  let resourceScrollCheckScheduled = false
 
   const voiceRefs = new Map()
   const currentPlayingVoice = ref(null)
@@ -154,24 +166,18 @@ export const useChatMessages = ({
     return 'wechatda:reverse_message_sides:global'
   })
 
-  const loadReverseMessageSides = () => {
+  const clearReverseMessageSides = () => {
+    reverseMessageSides.value = false
     if (!process.client) return
     try {
-      const value = localStorage.getItem(reverseSidesStorageKey.value)
-      reverseMessageSides.value = value === '1'
+      localStorage.removeItem(reverseSidesStorageKey.value)
     } catch {}
   }
 
-  watch(reverseSidesStorageKey, () => loadReverseMessageSides(), { immediate: true })
-  watch(reverseMessageSides, (value) => {
-    if (!process.client) return
-    try {
-      localStorage.setItem(reverseSidesStorageKey.value, value ? '1' : '0')
-    } catch {}
-  })
+  watch(reverseSidesStorageKey, () => clearReverseMessageSides(), { immediate: true })
 
   const toggleReverseMessageSides = () => {
-    reverseMessageSides.value = !reverseMessageSides.value
+    clearReverseMessageSides()
   }
 
   const renderMessages = computed(() => {
@@ -247,12 +253,291 @@ export const useChatMessages = ({
     return true
   }
 
-  const openImagePreview = (url) => {
-    previewImageUrl.value = String(url || '').trim() || null
+  const toImagePreviewItem = (url, source = {}) => {
+    const u = String(url || '').trim()
+    if (!u) return null
+    return {
+      url: u,
+      id: String(source?.id || source?.messageId || u),
+      createTime: Number(source?.createTime || 0),
+      label: String(source?.label || source?.content || '').trim()
+    }
+  }
+
+  const buildPreviewGalleryFromLoadedMessages = () => {
+    const list = Array.isArray(messages.value) ? messages.value : []
+    const out = []
+    const seen = new Set()
+    const push = (url, source = {}) => {
+      const item = toImagePreviewItem(url, source)
+      if (!item || seen.has(item.url)) return
+      seen.add(item.url)
+      out.push(item)
+    }
+    for (const message of list) {
+      if (message?.renderType === 'image') {
+        push(message.imageUrl, message)
+      }
+      if (message?.quoteImageUrl) {
+        push(message.quoteImageUrl, { ...message, id: `${message.id || ''}:quote-image` })
+      }
+      if (message?.quoteThumbUrl) {
+        push(message.quoteThumbUrl, { ...message, id: `${message.id || ''}:quote-thumb` })
+      }
+    }
+    return out
+  }
+
+  const openImagePreview = (url, gallery = null) => {
+    const target = String(url || '').trim()
+    previewImageUrl.value = target || null
+    const source = Array.isArray(gallery) && gallery.length ? gallery : buildPreviewGalleryFromLoadedMessages()
+    const normalized = []
+    const seen = new Set()
+    for (const item of source) {
+      const next = typeof item === 'string' ? toImagePreviewItem(item) : toImagePreviewItem(item?.url || item?.imageUrl || item?.thumbUrl, item)
+      if (!next || seen.has(next.url)) continue
+      seen.add(next.url)
+      normalized.push(next)
+    }
+    if (target && !seen.has(target)) {
+      normalized.push(toImagePreviewItem(target))
+    }
+    previewImageItems.value = normalized.filter(Boolean)
+    previewImageIndex.value = previewImageItems.value.findIndex((item) => String(item?.url || '') === target)
+    if (previewImageIndex.value < 0 && previewImageItems.value.length) {
+      previewImageIndex.value = 0
+      previewImageUrl.value = previewImageItems.value[0].url
+    }
   }
 
   const closeImagePreview = () => {
     previewImageUrl.value = null
+    previewImageItems.value = []
+    previewImageIndex.value = -1
+  }
+
+  const previewImageCount = computed(() => previewImageItems.value.length)
+  const canSwitchPreviewImage = computed(() => previewImageItems.value.length > 1)
+
+  const switchPreviewImage = (direction) => {
+    const list = previewImageItems.value
+    if (!Array.isArray(list) || list.length <= 1) return
+    const current = Number(previewImageIndex.value || 0)
+    const step = Number(direction || 0) < 0 ? -1 : 1
+    const next = (current + step + list.length) % list.length
+    previewImageIndex.value = next
+    previewImageUrl.value = String(list[next]?.url || '') || null
+  }
+
+  const showPrevPreviewImage = () => switchPreviewImage(-1)
+  const showNextPreviewImage = () => switchPreviewImage(1)
+
+  const previewImageCounterText = computed(() => {
+    const total = previewImageItems.value.length
+    if (total <= 1) return ''
+    const current = Math.max(0, Number(previewImageIndex.value || 0)) + 1
+    return `${current} / ${total}`
+  })
+
+  const getResourceImageVariant = (message) => {
+    const text = [
+      message?.imageUrl,
+      message?.imageFileId,
+      message?.imageMd5
+    ].map((v) => String(v || '').toLowerCase()).join(' ')
+    if (text.includes('thumb') || text.includes('cdnthumb') || /(^|[_/-])t(\.|_|-|$)/.test(text)) {
+      return '缩略图'
+    }
+    if (String(message?.imageMd5 || '').trim()) return '大图'
+    return '缩略图'
+  }
+
+  const toResourceItem = (message) => {
+    const renderType = String(message?.renderType || '').trim()
+    if (renderType === 'image' && message?.imageUrl) {
+      const variant = getResourceImageVariant(message)
+      return {
+        id: String(message?.id || `image:${message?.localId || ''}:${message?.imageUrl || ''}`),
+        kind: 'image',
+        url: String(message.imageUrl || ''),
+        thumbUrl: String(message.imageUrl || ''),
+        createTime: Number(message?.createTime || 0),
+        message,
+        variant,
+        variantShort: variant === '大图' ? '大' : '缩'
+      }
+    }
+    if (renderType === 'video' && (message?.videoThumbUrl || message?.videoUrl)) {
+      return {
+        id: String(message?.id || `video:${message?.localId || ''}:${message?.videoUrl || message?.videoThumbUrl || ''}`),
+        kind: 'video',
+        url: String(message?.videoUrl || ''),
+        thumbUrl: String(message?.videoThumbUrl || message?.videoUrl || ''),
+        createTime: Number(message?.createTime || 0),
+        message,
+        variant: '视频',
+        variantShort: '视'
+      }
+    }
+    return null
+  }
+
+  const resetResourceState = () => {
+    resourceItems.value = []
+    resourceOffset.value = 0
+    resourceHasMore.value = true
+    resourceError.value = ''
+  }
+
+  const loadResourceItems = async ({ reset = false } = {}) => {
+    if (!selectedAccount.value || !selectedContact.value?.username) return
+    if (resourceLoading.value) return
+    if (!reset && !resourceHasMore.value) return
+    if (reset) resetResourceState()
+
+    resourceLoading.value = true
+    resourceError.value = ''
+    try {
+      const response = await api.listChatMessages({
+        account: selectedAccount.value,
+        username: selectedContact.value.username,
+        limit: resourcePageSize,
+        offset: reset ? 0 : resourceOffset.value,
+        order: 'desc',
+        render_types: 'image,video',
+        source: DEFAULT_CHAT_SOURCE
+      })
+      const raw = Array.isArray(response?.messages) ? response.messages : []
+      const mapped = raw.map(normalizeMessage).map(toResourceItem).filter(Boolean)
+      const seen = new Set((reset ? [] : resourceItems.value).map((item) => String(item?.id || '')))
+      const deduped = mapped.filter((item) => {
+        const id = String(item?.id || '')
+        if (!id || seen.has(id)) return false
+        seen.add(id)
+        return true
+      })
+      resourceItems.value = reset ? deduped : [...resourceItems.value, ...deduped]
+      resourceOffset.value = (reset ? 0 : resourceOffset.value) + raw.length
+      resourceHasMore.value = !!response?.hasMore
+    } catch (error) {
+      resourceError.value = error?.message || '加载资源失败'
+    } finally {
+      resourceLoading.value = false
+    }
+  }
+
+  const openResourceSidebar = async () => {
+    resourceSidebarOpen.value = true
+    if (!resourceItems.value.length) {
+      await loadResourceItems({ reset: true })
+    }
+  }
+
+  const closeResourceSidebar = () => {
+    resourceSidebarOpen.value = false
+  }
+
+  const toggleResourceSidebar = async () => {
+    if (resourceSidebarOpen.value) {
+      closeResourceSidebar()
+      return
+    }
+    await openResourceSidebar()
+  }
+
+  const onResourceSidebarScroll = (event) => {
+    const el = event?.target
+    if (!el || resourceScrollCheckScheduled) return
+    resourceScrollCheckScheduled = true
+
+    const run = () => {
+      resourceScrollCheckScheduled = false
+      if (resourceLoading.value || !resourceHasMore.value) return
+      const distance = Number(el.scrollHeight || 0) - Number(el.scrollTop || 0) - Number(el.clientHeight || 0)
+      if (distance < 520) {
+        void loadResourceItems()
+      }
+    }
+
+    if (process.client && typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(run)
+    } else {
+      setTimeout(run, 16)
+    }
+  }
+
+  const resourceGroupOptions = [
+    { value: 'day', label: '按天' },
+    { value: 'week', label: '按周' },
+    { value: 'month', label: '按月' },
+    { value: 'year', label: '按年' }
+  ]
+
+  const formatResourceGroupKey = (ts, mode) => {
+    const d = new Date(Number(ts || 0) * 1000)
+    if (!Number.isFinite(d.getTime())) return '未知时间'
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    if (mode === 'year') return `${y}年`
+    if (mode === 'month') return `${y}年${m}月`
+    if (mode === 'week') {
+      const tmp = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
+      const weekDay = tmp.getUTCDay() || 7
+      tmp.setUTCDate(tmp.getUTCDate() + 4 - weekDay)
+      const weekYear = tmp.getUTCFullYear()
+      const yearStart = new Date(Date.UTC(weekYear, 0, 1))
+      const week = Math.ceil((((tmp - yearStart) / 86400000) + 1) / 7)
+      return `${weekYear}年第${String(week).padStart(2, '0')}周`
+    }
+    return `${y}-${m}-${day}`
+  }
+
+  const groupedResourceItems = computed(() => {
+    const groups = []
+    let lastKey = ''
+    for (const item of resourceItems.value) {
+      const key = formatResourceGroupKey(item?.createTime, resourceTimeGroup.value)
+      if (key !== lastKey) {
+        groups.push({ type: 'divider', key: `divider:${key}`, label: key })
+        lastKey = key
+      }
+      groups.push({ type: 'item', key: `item:${item.id}`, item })
+    }
+    return groups
+  })
+
+  const resourceGridColumnCount = computed(() => {
+    const mode = String(resourceTimeGroup.value || 'day')
+    if (mode === 'year') return 10
+    if (mode === 'month') return 8
+    if (mode === 'week') return 4
+    return 3
+  })
+
+  const resourceGridGap = computed(() => {
+    const mode = String(resourceTimeGroup.value || 'day')
+    if (mode === 'year') return 4
+    if (mode === 'month') return 6
+    return 8
+  })
+
+  const resourceGridStyle = computed(() => ({
+    gridTemplateColumns: `repeat(${resourceGridColumnCount.value}, minmax(0, 1fr))`,
+    gap: `${resourceGridGap.value}px`
+  }))
+
+  const openResourcePreview = (resource) => {
+    if (!resource) return
+    if (resource.kind === 'video') {
+      openVideoPreview(resource.url, resource.thumbUrl)
+      return
+    }
+    const gallery = resourceItems.value
+      .filter((item) => item.kind === 'image' && item.url)
+      .map((item) => ({ url: item.url, id: item.id, createTime: item.createTime, label: item.variant }))
+    openImagePreview(resource.url, gallery)
   }
 
   const openVideoPreview = (url, poster) => {
@@ -442,17 +727,17 @@ export const useChatMessages = ({
       if (messageTypeFilter.value && messageTypeFilter.value !== 'all') {
         params.render_types = messageTypeFilter.value
       }
-      if (realtimeEnabled.value) {
-        params.source = 'realtime'
-      }
+      params.source = DEFAULT_CHAT_SOURCE
       trace.log('loadMessages:request:start', {
         offset,
         existingCount: existing.length,
         renderTypeFilter: messageTypeFilter.value,
+        source: DEFAULT_CHAT_SOURCE,
         realtime: !!realtimeEnabled.value
       })
       const response = await api.listChatMessages(params)
       trace.log('loadMessages:request:end', {
+        source: response?.source || DEFAULT_CHAT_SOURCE,
         rawCount: Array.isArray(response?.messages) ? response.messages.length : 0,
         total: Number(response?.total || 0),
         hasMore: response?.hasMore
@@ -602,7 +887,7 @@ export const useChatMessages = ({
       limit: 30,
       offset: 0,
       order: 'asc',
-      source: 'realtime'
+      source: DEFAULT_CHAT_SOURCE
     }
     if (messageTypeFilter.value && messageTypeFilter.value !== 'all') {
       params.render_types = messageTypeFilter.value
@@ -660,14 +945,6 @@ export const useChatMessages = ({
     })
   }
 
-  const tryEnableRealtimeAuto = async () => {
-    if (!process.client || typeof window === 'undefined') return
-    if (!desktopAutoRealtime.value || realtimeEnabled.value || !selectedAccount.value) return
-    try {
-      await realtimeStore.enable({ silent: true })
-    } catch {}
-  }
-
   const clearVoicePlaybackState = () => {
     try {
       currentPlayingVoice.value?.pause?.()
@@ -685,6 +962,10 @@ export const useChatMessages = ({
     messagesError.value = ''
     highlightMessageId.value = ''
     highlightServerIdStr.value = ''
+    closeImagePreview()
+    closeVideoPreview()
+    resetResourceState()
+    resourceSidebarOpen.value = false
   }
 
   const contactProfileCardOpen = ref(false)
@@ -871,6 +1152,10 @@ export const useChatMessages = ({
       closeContactProfileCard()
       contactProfileError.value = ''
       contactProfileData.value = null
+      resetResourceState()
+      if (resourceSidebarOpen.value) {
+        void loadResourceItems({ reset: true })
+      }
     }
   )
 
@@ -881,6 +1166,7 @@ export const useChatMessages = ({
       closeContactProfileCard()
       contactProfileError.value = ''
       contactProfileData.value = null
+      resetResourceState()
     }
   )
 
@@ -906,9 +1192,23 @@ export const useChatMessages = ({
     messageTypeFilterOptions,
     reverseMessageSides,
     previewImageUrl,
+    previewImageItems,
+    previewImageIndex,
+    previewImageCount,
+    previewImageCounterText,
+    canSwitchPreviewImage,
     previewVideoUrl,
     previewVideoPosterUrl,
     previewVideoError,
+    resourceSidebarOpen,
+    resourceTimeGroup,
+    resourceItems,
+    groupedResourceItems,
+    resourceGroupOptions,
+    resourceGridStyle,
+    resourceLoading,
+    resourceError,
+    resourceHasMore,
     voiceRefs,
     currentPlayingVoice,
     playingVoiceId,
@@ -937,9 +1237,17 @@ export const useChatMessages = ({
     scrollToMessageId,
     openImagePreview,
     closeImagePreview,
+    showPrevPreviewImage,
+    showNextPreviewImage,
     openVideoPreview,
     closeVideoPreview,
     onPreviewVideoError,
+    openResourceSidebar,
+    closeResourceSidebar,
+    toggleResourceSidebar,
+    loadResourceItems,
+    onResourceSidebarScroll,
+    openResourcePreview,
     setVoiceRef,
     playVoice,
     playQuoteVoice,
@@ -963,7 +1271,6 @@ export const useChatMessages = ({
     refreshCurrentMessageMedia,
     refreshRealtimeIncremental,
     queueRealtimeRefresh,
-    tryEnableRealtimeAuto,
     resetMessageState,
     fetchContactProfile,
     clearContactProfileHoverHideTimer,

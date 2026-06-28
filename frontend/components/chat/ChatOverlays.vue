@@ -507,9 +507,111 @@
 
     <!-- 图片预览弹窗 (全局固定定位) -->
     <div v-if="previewImageUrl" 
-      class="fixed inset-0 z-[13000] bg-black/90 flex items-center justify-center cursor-zoom-out"
-      @click="closeImagePreview">
-      <img :src="previewImageUrl" alt="预览" class="max-w-[90vw] max-h-[90vh] object-contain" @click.stop>
+      class="fixed inset-0 z-[13000] bg-black/90 flex items-center justify-center cursor-zoom-out overflow-hidden"
+      title="滚轮缩放图片，双击重置"
+      @click="closeImagePreview"
+      @wheel.prevent.stop="onPreviewImageWheel"
+    >
+      <div
+        class="relative max-w-[96vw] max-h-[96vh] flex items-center justify-center cursor-default"
+        @click.stop
+      >
+        <img
+          :src="previewImageUrl"
+          alt="预览"
+          class="max-w-[90vw] max-h-[90vh] object-contain select-none transition-transform duration-100 ease-out"
+          :style="previewImageTransformStyle"
+          draggable="false"
+          @dblclick.stop="resetPreviewImageTransform"
+        >
+      </div>
+
+      <button
+        v-if="canSwitchPreviewImage"
+        type="button"
+        class="absolute left-4 top-1/2 flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full bg-black/35 text-white/85 shadow-lg transition hover:bg-black/55 hover:text-white"
+        title="上一张"
+        @click.stop="showPrevPreviewImage"
+      >
+        <svg class="h-7 w-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+        </svg>
+      </button>
+
+      <button
+        v-if="canSwitchPreviewImage"
+        type="button"
+        class="absolute right-4 top-1/2 flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full bg-black/35 text-white/85 shadow-lg transition hover:bg-black/55 hover:text-white"
+        title="下一张"
+        @click.stop="showNextPreviewImage"
+      >
+        <svg class="h-7 w-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
+
+      <div
+        class="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-full bg-black/45 px-2 py-1.5 text-white/90 shadow-lg backdrop-blur"
+        @click.stop
+      >
+        <span
+          v-if="previewImageCounterText"
+          class="min-w-[48px] px-2 text-center text-[12px] tabular-nums text-white/80"
+        >
+          {{ previewImageCounterText }}
+        </span>
+        <div v-if="previewImageCounterText" class="mx-1 h-5 w-px bg-white/20"></div>
+        <button
+          type="button"
+          class="rounded-full px-2.5 py-1 text-[13px] hover:bg-white/15 transition-colors disabled:opacity-40"
+          :disabled="previewImageScale <= 0.201"
+          title="缩小（也可向下滚轮）"
+          @click="zoomPreviewImageOut"
+        >
+          -
+        </button>
+        <button
+          type="button"
+          class="min-w-[56px] rounded-full px-2.5 py-1 text-[12px] tabular-nums hover:bg-white/15 transition-colors"
+          title="重置缩放和旋转（也可双击图片）"
+          @click="resetPreviewImageTransform"
+        >
+          {{ previewImageScaleText }}
+        </button>
+        <button
+          type="button"
+          class="rounded-full px-2.5 py-1 text-[13px] hover:bg-white/15 transition-colors disabled:opacity-40"
+          :disabled="previewImageScale >= 7.999"
+          title="放大（也可向上滚轮）"
+          @click="zoomPreviewImageIn"
+        >
+          +
+        </button>
+        <div class="mx-1 h-5 w-px bg-white/20"></div>
+        <button
+          type="button"
+          class="rounded-full p-1.5 hover:bg-white/15 transition-colors"
+          title="逆时针旋转"
+          @click="rotatePreviewImageLeft"
+        >
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 7v6h6" />
+            <path d="M5.6 13A7 7 0 1 0 8 5.1" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="rounded-full p-1.5 hover:bg-white/15 transition-colors"
+          title="顺时针旋转"
+          @click="rotatePreviewImageRight"
+        >
+          <svg class="w-4 h-4 scale-x-[-1]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 7v6h6" />
+            <path d="M5.6 13A7 7 0 1 0 8 5.1" />
+          </svg>
+        </button>
+      </div>
+
       <button 
         class="absolute top-4 right-4 text-white/80 hover:text-white p-2 rounded-full bg-black/30 hover:bg-black/50 transition-colors"
         @click="closeImagePreview">
@@ -1608,7 +1710,22 @@
 </template>
 
 <script>
-import { defineComponent } from 'vue'
+import { computed, defineComponent, ref, watch } from 'vue'
+
+const PREVIEW_IMAGE_MIN_SCALE = 0.2
+const PREVIEW_IMAGE_MAX_SCALE = 8
+const PREVIEW_IMAGE_WHEEL_STEP = 1.12
+
+const clampPreviewImageScale = (value) => {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 1
+  return Math.min(PREVIEW_IMAGE_MAX_SCALE, Math.max(PREVIEW_IMAGE_MIN_SCALE, n))
+}
+
+const readMaybeRef = (value) => {
+  if (value && typeof value === 'object' && 'value' in value) return value.value
+  return value
+}
 
 export default defineComponent({
   name: 'ChatOverlays',
@@ -1616,7 +1733,74 @@ export default defineComponent({
     state: { type: Object, required: true }
   },
   setup(props) {
-    return { ...props.state }
+    const previewImageScale = ref(1)
+    const previewImageRotation = ref(0)
+
+    const resetPreviewImageTransform = () => {
+      previewImageScale.value = 1
+      previewImageRotation.value = 0
+    }
+
+    const setPreviewImageScale = (value) => {
+      previewImageScale.value = Number(clampPreviewImageScale(value).toFixed(3))
+    }
+
+    const zoomPreviewImageBy = (factor) => {
+      setPreviewImageScale(previewImageScale.value * Number(factor || 1))
+    }
+
+    const zoomPreviewImageIn = () => {
+      zoomPreviewImageBy(PREVIEW_IMAGE_WHEEL_STEP)
+    }
+
+    const zoomPreviewImageOut = () => {
+      zoomPreviewImageBy(1 / PREVIEW_IMAGE_WHEEL_STEP)
+    }
+
+    const onPreviewImageWheel = (event) => {
+      const deltaY = Number(event?.deltaY || 0)
+      if (!deltaY) return
+
+      const direction = deltaY < 0 ? 1 : -1
+      const steps = Math.min(4, Math.max(1, Math.abs(deltaY) / 120))
+      zoomPreviewImageBy(Math.pow(PREVIEW_IMAGE_WHEEL_STEP, direction * steps))
+    }
+
+    const rotatePreviewImageLeft = () => {
+      previewImageRotation.value = (previewImageRotation.value - 90) % 360
+    }
+
+    const rotatePreviewImageRight = () => {
+      previewImageRotation.value = (previewImageRotation.value + 90) % 360
+    }
+
+    const previewImageTransformStyle = computed(() => ({
+      transform: `rotate(${previewImageRotation.value}deg) scale(${previewImageScale.value})`,
+      transformOrigin: 'center center'
+    }))
+
+    const previewImageScaleText = computed(() => `${Math.round(previewImageScale.value * 100)}%`)
+
+    watch(
+      () => readMaybeRef(props.state.previewImageUrl),
+      () => {
+        resetPreviewImageTransform()
+      }
+    )
+
+    return {
+      ...props.state,
+      previewImageScale,
+      previewImageRotation,
+      previewImageTransformStyle,
+      previewImageScaleText,
+      resetPreviewImageTransform,
+      zoomPreviewImageIn,
+      zoomPreviewImageOut,
+      onPreviewImageWheel,
+      rotatePreviewImageLeft,
+      rotatePreviewImageRight,
+    }
   }
 })
 </script>

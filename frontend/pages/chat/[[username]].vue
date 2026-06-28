@@ -8,6 +8,7 @@
       </div>
     </div>
 
+    <ResourceSidebar :state="chatState" />
     <ChatOverlays :state="chatState" />
   </div>
 </template>
@@ -16,6 +17,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 
+import ResourceSidebar from '~/components/chat/ResourceSidebar.vue'
 import { useApi } from '~/composables/useApi'
 import { createEmptySearchContext, useChatSearch } from '~/composables/chat/useChatSearch'
 import { useChatSessions } from '~/composables/chat/useChatSessions'
@@ -23,7 +25,6 @@ import { useChatMessages } from '~/composables/chat/useChatMessages'
 import { useChatExport } from '~/composables/chat/useChatExport'
 import { useChatEditing } from '~/composables/chat/useChatEditing'
 import { useChatHistoryWindows } from '~/composables/chat/useChatHistoryWindows'
-import { DESKTOP_SETTING_AUTO_REALTIME_KEY, readLocalBoolSetting } from '~/lib/desktop-settings'
 import {
   formatCount as formatSearchCount,
   formatMessageFullTime,
@@ -155,11 +156,6 @@ const {
   changeSeq: realtimeChangeSeq
 } = storeToRefs(realtimeStore)
 
-const desktopAutoRealtime = ref(false)
-if (process.client) {
-  desktopAutoRealtime.value = readLocalBoolSetting(DESKTOP_SETTING_AUTO_REALTIME_KEY, false)
-}
-
 const searchContext = ref(createEmptySearchContext())
 
 const sessionState = useChatSessions({
@@ -193,9 +189,7 @@ const messageState = useChatMessages({
   apiBase,
   selectedAccount,
   selectedContact,
-  realtimeStore,
   realtimeEnabled,
-  desktopAutoRealtime,
   privacyMode,
   searchContext
 })
@@ -235,7 +229,6 @@ const {
   refreshSelectedMessages,
   refreshCurrentMessageMedia,
   queueRealtimeRefresh,
-  tryEnableRealtimeAuto,
   resetMessageState,
   onAvatarError,
   contactProfileCardOpen,
@@ -528,7 +521,7 @@ const queueRealtimeSessionsRefresh = () => {
     return
   }
 
-  realtimeSessionsRefreshFuture = refreshSessionsForSelectedAccount({ sourceOverride: 'realtime' }).finally(() => {
+  realtimeSessionsRefreshFuture = refreshSessionsForSelectedAccount({ sourceOverride: 'auto' }).finally(() => {
     realtimeSessionsRefreshFuture = null
     if (realtimeSessionsRefreshQueued) {
       realtimeSessionsRefreshQueued = false
@@ -541,6 +534,7 @@ const onAccountChange = async () => {
   logChatBootstrap('accountChange:start', {
     selectedAccount: selectedAccount.value
   })
+  await realtimeStore.enable({ silent: true })
   try {
     isLoadingContacts.value = true
     contactsError.value = ''
@@ -675,6 +669,8 @@ onMounted(async () => {
   logChatBootstrap('loadContacts:start', {
     selectedAccount: selectedAccount.value
   })
+  await chatAccounts.ensureLoaded()
+  await realtimeStore.enable({ silent: true })
   await loadContacts()
   logChatBootstrap('loadContacts:end', {
     selectedAccount: selectedAccount.value,
@@ -701,14 +697,6 @@ onMounted(async () => {
     requestedUsername: routeUsername.value
   })
 
-  logChatBootstrap('tryEnableRealtimeAuto:start', {
-    selectedAccount: selectedAccount.value,
-    realtimeEnabled: realtimeEnabled.value
-  })
-  await tryEnableRealtimeAuto()
-  logChatBootstrap('tryEnableRealtimeAuto:end', {
-    realtimeEnabled: realtimeEnabled.value
-  })
 })
 
 onUnmounted(() => {
@@ -726,6 +714,7 @@ onUnmounted(() => {
 
   if (locateServerIdTimer) clearTimeout(locateServerIdTimer)
   locateServerIdTimer = null
+  void realtimeStore.disable({ silent: true })
   stopSessionListResize()
   stopExportPolling()
 })
@@ -738,7 +727,7 @@ watch(realtimeChangeSeq, () => {
 watch(realtimeToggleSeq, async () => {
   const action = String(realtimeLastToggleAction.value || '')
   if (action === 'enabled') {
-    await refreshSessionsForSelectedAccount({ sourceOverride: 'realtime' })
+    await refreshSessionsForSelectedAccount({ sourceOverride: 'auto' })
     if (selectedContact.value?.username) {
       await refreshSelectedMessages()
     }
@@ -746,7 +735,7 @@ watch(realtimeToggleSeq, async () => {
   }
 
   if (action === 'disabled') {
-    await refreshSessionsForSelectedAccount({ sourceOverride: '' })
+    await refreshSessionsForSelectedAccount({ sourceOverride: 'auto' })
     if (selectedContact.value?.username) {
       await refreshSelectedMessages()
     }

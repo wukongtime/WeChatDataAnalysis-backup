@@ -171,30 +171,6 @@
         </div>
       </div>
 
-      <!-- Realtime -->
-      <div
-        class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center group"
-        :class="realtimeBusy ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'"
-        :title="realtimeTitle"
-        @click="toggleRealtime"
-      >
-        <div class="sidebar-rail-plate w-[var(--sidebar-rail-btn)] h-[var(--sidebar-rail-btn)] rounded-md flex items-center justify-center transition-colors bg-transparent">
-          <svg
-            class="sidebar-rail-icon w-[var(--sidebar-rail-icon)] h-[var(--sidebar-rail-icon)]"
-            :class="{ 'sidebar-rail-icon-active': realtimeEnabled }"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.7"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M13 2L4 14h7l-1 8 9-12h-7z" />
-          </svg>
-        </div>
-      </div>
-
       <!-- ImgHelper (Auto download large images) -->
       <div
         class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center group"
@@ -394,7 +370,6 @@
 <script setup>
 import { storeToRefs } from 'pinia'
 import { useChatAccountsStore } from '~/stores/chatAccounts'
-import { useChatRealtimeStore } from '~/stores/chatRealtime'
 import { useImgHelperStore } from '~/stores/imgHelper'
 import { usePrivacyStore } from '~/stores/privacy'
 import { useThemeStore } from '~/stores/theme'
@@ -409,9 +384,6 @@ const { privacyMode } = storeToRefs(privacyStore)
 
 const themeStore = useThemeStore()
 themeStore.init()
-
-const realtimeStore = useChatRealtimeStore()
-const { enabled: realtimeEnabled, available: realtimeAvailable, checking: realtimeChecking, statusError: realtimeStatusError, toggling: realtimeToggling } = storeToRefs(realtimeStore)
 
 const imgHelperStore = useImgHelperStore()
 const { enabled: imgHelperEnabled, checking: imgHelperChecking, toggling: imgHelperToggling, error: imgHelperError } = storeToRefs(imgHelperStore)
@@ -638,19 +610,6 @@ const deleteCurrentAccountData = async () => {
   } finally {
     accountDeleteLoading.value = false
   }
-}
-
-const realtimeBusy = computed(() => !!realtimeChecking.value || !!realtimeToggling.value)
-
-const realtimeTitle = computed(() => {
-  if (realtimeEnabled.value) return '关闭实时更新（全局）'
-  if (realtimeAvailable.value) return '开启实时更新（全局）'
-  return realtimeStatusError.value || '实时模式不可用'
-})
-
-const toggleRealtime = async () => {
-  if (realtimeBusy.value) return
-  await realtimeStore.toggle({ silent: false })
 }
 
 const imgHelperBusy = computed(() => !!imgHelperChecking.value || !!imgHelperToggling.value)
