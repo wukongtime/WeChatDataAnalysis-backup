@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hmac
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +17,63 @@ from ..runtime_settings import ensure_mcp_token
 
 router = APIRouter(route_class=PathFixRoute)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-SKILL_ROOT = PROJECT_ROOT / "skills" / "wechat-mcp-copilot"
+SKILL_NAME = "wechat-mcp-copilot"
+ENV_SKILL_ROOT = "WECHAT_TOOL_SKILL_ROOT"
+
+
+def _candidate_skill_roots() -> list[Path]:
+    """Return possible locations for the MCP skill in source and packaged builds.
+
+    Development runs can read from the repository root. PyInstaller onefile builds
+    extract ``--add-data`` payloads under ``sys._MEIPASS``, so relying on
+    ``Path(__file__).parents[3]`` alone points at the wrong temporary parent.
+    """
+
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add(candidate: Path | str | None) -> None:
+        if candidate is None:
+            return
+        try:
+            path = Path(candidate).expanduser()
+        except Exception:
+            return
+        key = str(path).lower()
+        if not key or key in seen:
+            return
+        seen.add(key)
+        candidates.append(path)
+
+    env_root = str(os.environ.get(ENV_SKILL_ROOT, "") or "").strip()
+    if env_root:
+        env_path = Path(env_root)
+        add(env_path)
+        if env_path.name != SKILL_NAME:
+            add(env_path / SKILL_NAME)
+
+    pyinstaller_root = getattr(sys, "_MEIPASS", None)
+    if pyinstaller_root:
+        add(Path(pyinstaller_root) / "skills" / SKILL_NAME)
+
+    if getattr(sys, "frozen", False):
+        try:
+            add(Path(sys.executable).resolve().parent / "skills" / SKILL_NAME)
+        except Exception:
+            pass
+
+    module_path = Path(__file__).resolve()
+    for parent in module_path.parents:
+        add(parent / "skills" / SKILL_NAME)
+
+    return candidates
+
+
+def _find_skill_root() -> Path | None:
+    for candidate in _candidate_skill_roots():
+        if (candidate / "SKILL.md").is_file():
+            return candidate
+    return None
 
 
 def _extract_mcp_token(request: Request) -> str:
@@ -48,7 +105,18 @@ def _verify_mcp_token(request: Request) -> bool:
 
 
 def _read_skill_bundle() -> dict[str, Any]:
-    entry_path = SKILL_ROOT / "SKILL.md"
+    skill_root = _find_skill_root()
+    if skill_root is None:
+        candidates = [str(path) for path in _candidate_skill_roots()]
+        entry_path = Path(candidates[0]) / "SKILL.md" if candidates else Path("skills") / SKILL_NAME / "SKILL.md"
+        return {
+            "status": "error",
+            "message": "Skill not found.",
+            "path": str(entry_path),
+            "candidates": candidates,
+        }
+
+    entry_path = skill_root / "SKILL.md"
     if not entry_path.is_file():
         return {
             "status": "error",
@@ -58,11 +126,11 @@ def _read_skill_bundle() -> dict[str, Any]:
 
     references = []
     bundle_parts = [entry_path.read_text(encoding="utf-8")]
-    references_dir = SKILL_ROOT / "references"
+    references_dir = skill_root / "references"
     if references_dir.is_dir():
         for ref_path in sorted(references_dir.glob("*.md")):
             content = ref_path.read_text(encoding="utf-8")
-            rel_path = ref_path.relative_to(SKILL_ROOT).as_posix()
+            rel_path = ref_path.relative_to(skill_root).as_posix()
             references.append({"path": rel_path, "content": content})
             bundle_parts.append(f"\n\n---\n# {rel_path}\n\n{content}")
 
@@ -71,6 +139,7 @@ def _read_skill_bundle() -> dict[str, Any]:
         "name": "wechat-mcp-copilot",
         "version": "1.0.0",
         "entry": "SKILL.md",
+        "root": str(skill_root),
         "entryContent": bundle_parts[0],
         "references": references,
         "bundleText": "".join(bundle_parts),

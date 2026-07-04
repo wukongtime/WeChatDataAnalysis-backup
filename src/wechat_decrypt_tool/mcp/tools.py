@@ -15,7 +15,9 @@ from ..chat_helpers import (
     _resolve_account_dir,
     _resolve_msg_table_name,
 )
+from ..chat_accounts import resolve_chat_account_context
 from ..database_filters import list_countable_database_names
+from ..wcdb_realtime import WCDB_REALTIME
 from .registry import (
     McpTool,
     McpToolContext,
@@ -29,6 +31,13 @@ from .registry import (
 
 
 MCP_REGISTRY = McpToolRegistry()
+DEFAULT_CHAT_SOURCE = "auto"
+CHAT_SOURCE_VALUES = ["auto", "realtime", "decrypted"]
+SNAPSHOT_SEARCH_FRESHNESS = {
+    "kind": "snapshot",
+    "latestRealtimeIncluded": False,
+    "message": "Chat search uses the explicit legacy decrypted FTS snapshot.",
+}
 
 
 def _chat_router():
@@ -103,6 +112,10 @@ def _str(args: dict[str, Any], key: str, default: str = "") -> str:
 def _opt_str(args: dict[str, Any], key: str) -> Optional[str]:
     value = _str(args, key)
     return value or None
+
+
+def _chat_source(args: dict[str, Any]) -> str:
+    return _opt_str(args, "source") or DEFAULT_CHAT_SOURCE
 
 
 def _int(args: dict[str, Any], key: str, default: int = 0, *, minimum: int | None = None, maximum: int | None = None) -> int:
@@ -210,7 +223,7 @@ def _status(_: dict[str, Any], __: McpToolContext) -> dict[str, Any]:
     accounts = _list_decrypted_accounts()
     warnings: list[str] = []
     if not accounts:
-        warnings.append("No decrypted accounts found.")
+        warnings.append("No chat accounts found. Save a db key/db_storage path or import a legacy decrypted account.")
     return {
         "status": "success",
         "version": APP_VERSION,
@@ -229,17 +242,29 @@ def _list_accounts(_: dict[str, Any], __: McpToolContext) -> dict[str, Any]:
         "status": "success" if accounts else "error",
         "accounts": accounts,
         "defaultAccount": accounts[0] if accounts else None,
-        "message": "" if accounts else "No decrypted databases found. Please decrypt first.",
+        "message": "" if accounts else "No chat accounts found. Save a db key/db_storage path or import a legacy decrypted account.",
     }
 
 
 def _get_account_info(args: dict[str, Any], _: McpToolContext) -> dict[str, Any]:
-    account_dir = _resolve_account_dir(_account_arg(args))
+    ctx = resolve_chat_account_context(_account_arg(args))
+    account_dir = ctx.account_dir
     db_files = list_countable_database_names(account_dir)
+    try:
+        realtime = WCDB_REALTIME.get_status(account_dir)
+    except Exception as e:
+        realtime = {"error": str(e)}
     return {
         "status": "success",
         "account": account_dir.name,
         "path": str(account_dir),
+        "mode": ctx.mode,
+        "defaultSource": "realtime",
+        "hasDecryptedDbs": bool(ctx.has_decrypted_dbs),
+        "dbStoragePath": ctx.db_storage_path,
+        "wxidDir": ctx.wxid_dir,
+        "dbKeyPresent": bool(ctx.db_key_present),
+        "realtime": realtime,
         "databaseCount": len(db_files),
         "databases": db_files,
         "hasSnsDb": (account_dir / "sns.db").exists(),
@@ -251,6 +276,7 @@ def _list_contacts(args: dict[str, Any], ctx: McpToolContext) -> dict[str, Any]:
     result = _contacts_router().list_chat_contacts(
         _request(ctx),
         account=_account_arg(args),
+        source=_chat_source(args),
         keyword=_opt_str(args, "keyword") or _opt_str(args, "query"),
         include_friends=_bool(args, "include_friends", True),
         include_groups=_bool(args, "include_groups", True),
@@ -292,7 +318,7 @@ def _list_sessions(args: dict[str, Any], ctx: McpToolContext) -> dict[str, Any]:
         include_hidden=_bool(args, "include_hidden", False),
         include_official=_bool(args, "include_official", False),
         preview=_str(args, "preview", "latest") or "latest",
-        source=_opt_str(args, "source"),
+        source=_chat_source(args),
     )
     items = list(result.get("sessions") or result.get("items") or [])
     query = (_opt_str(args, "query") or _opt_str(args, "keyword") or "").lower()
@@ -337,7 +363,7 @@ def _list_messages(args: dict[str, Any], ctx: McpToolContext) -> dict[str, Any]:
         offset=_int(args, "offset", 0, minimum=0),
         order=_str(args, "order", "asc") or "asc",
         render_types=_opt_str(args, "render_types"),
-        source=_opt_str(args, "source"),
+        source=_chat_source(args),
     )
     return _clip_deep(result, max_items=120)
 
@@ -360,7 +386,12 @@ async def _search_messages(args: dict[str, Any], ctx: McpToolContext) -> dict[st
         render_types=_opt_str(args, "render_types"),
         include_hidden=_bool(args, "include_hidden", False),
         include_official=_bool(args, "include_official", False),
+        source=_chat_source(args),
     )
+    if isinstance(result, dict):
+        result.setdefault("source", "realtime_index" if _chat_source(args) in {"auto", "realtime"} else "decrypted_index")
+        if str(result.get("source") or "") == "decrypted_index":
+            result.setdefault("freshness", dict(SNAPSHOT_SEARCH_FRESHNESS))
     return _clip_deep(result, max_items=80)
 
 
@@ -377,7 +408,12 @@ async def _search_index_senders(args: dict[str, Any], _: McpToolContext) -> dict
         render_types=_opt_str(args, "render_types"),
         include_hidden=_bool(args, "include_hidden", False),
         include_official=_bool(args, "include_official", False),
+        source=_chat_source(args),
     )
+    if isinstance(result, dict):
+        result.setdefault("source", "realtime_index" if _chat_source(args) in {"auto", "realtime"} else "decrypted_index")
+        if str(result.get("source") or "") == "decrypted_index":
+            result.setdefault("freshness", dict(SNAPSHOT_SEARCH_FRESHNESS))
     return _clip_deep(result, max_items=120)
 
 
@@ -393,6 +429,7 @@ async def _messages_around(args: dict[str, Any], ctx: McpToolContext) -> dict[st
         account=_account_arg(args),
         before=_int(args, "before", 10, minimum=0, maximum=50),
         after=_int(args, "after", 10, minimum=0, maximum=50),
+        source=_chat_source(args),
     )
 
 
@@ -402,6 +439,7 @@ def _message_anchor(args: dict[str, Any], _: McpToolContext) -> dict[str, Any]:
         kind=_str(args, "kind", "day"),
         account=_account_arg(args),
         date=_opt_str(args, "date"),
+        source=_chat_source(args),
     )
 
 
@@ -411,6 +449,7 @@ def _message_daily_counts(args: dict[str, Any], _: McpToolContext) -> dict[str, 
         year=_int(args, "year"),
         month=_int(args, "month"),
         account=_account_arg(args),
+        source=_chat_source(args),
     )
 
 
@@ -793,6 +832,7 @@ async def _mobile_home_snapshot(args: dict[str, Any], ctx: McpToolContext) -> di
                 "include_hidden": include_hidden,
                 "include_official": include_official,
                 "preview": _str(args, "preview", "latest") or "latest",
+                "source": _chat_source(args),
             },
             ctx,
         ),
@@ -817,6 +857,7 @@ async def _mobile_search_context(args: dict[str, Any], ctx: McpToolContext) -> d
     if not query:
         raise ValueError("query is required.")
     account = _account_arg(args)
+    chat_source = _chat_source(args)
     limit = _int(args, "limit", 10, minimum=1, maximum=50)
     include_moments = _bool(args, "include_moments", True)
     include_contacts = _bool(args, "include_contacts", True)
@@ -833,7 +874,7 @@ async def _mobile_search_context(args: dict[str, Any], ctx: McpToolContext) -> d
 
     messages = _safe_call("messages", lambda: None)
     try:
-        messages["data"] = await _search_messages({"account": account, "query": query, "limit": limit, "offset": _int(args, "offset", 0, minimum=0)}, ctx)
+        messages["data"] = await _search_messages({"account": account, "query": query, "limit": limit, "offset": _int(args, "offset", 0, minimum=0), "source": chat_source}, ctx)
         messages["ok"] = True
     except Exception as exc:
         messages = {"ok": False, "error": str(exc), "section": "messages"}
@@ -842,7 +883,7 @@ async def _mobile_search_context(args: dict[str, Any], ctx: McpToolContext) -> d
     else:
         payload["warnings"].append(messages)
 
-    sessions = _safe_call("sessions", lambda: _resolve_session({"account": account, "query": query, "limit": limit}, ctx))
+    sessions = _safe_call("sessions", lambda: _resolve_session({"account": account, "query": query, "limit": limit, "source": chat_source}, ctx))
     if sessions["ok"]:
         payload["sessions"] = sessions["data"]
     else:
@@ -870,6 +911,7 @@ async def _mobile_session_bundle(args: dict[str, Any], ctx: McpToolContext) -> d
     if not username:
         raise ValueError("username is required.")
     account = _account_arg(args)
+    chat_source = _chat_source(args)
     limit = _int(args, "limit", 30, minimum=1, maximum=100)
     offset = _int(args, "offset", 0, minimum=0)
 
@@ -883,7 +925,7 @@ async def _mobile_session_bundle(args: dict[str, Any], ctx: McpToolContext) -> d
         "warnings": [],
     }
 
-    session = _safe_call("session", lambda: _resolve_session({"account": account, "query": username, "limit": 5}, ctx))
+    session = _safe_call("session", lambda: _resolve_session({"account": account, "query": username, "limit": 5, "source": chat_source}, ctx))
     if session["ok"]:
         payload["session"] = session["data"]
     else:
@@ -899,6 +941,7 @@ async def _mobile_session_bundle(args: dict[str, Any], ctx: McpToolContext) -> d
                 "offset": offset,
                 "order": _str(args, "order", "desc") or "desc",
                 "render_types": _opt_str(args, "render_types"),
+                "source": chat_source,
             },
             ctx,
         ),
@@ -912,7 +955,7 @@ async def _mobile_session_bundle(args: dict[str, Any], ctx: McpToolContext) -> d
         daily = _safe_call(
             "dailyCounts",
             lambda: _message_daily_counts(
-                {"account": account, "username": username, "year": _int(args, "year"), "month": _int(args, "month")},
+                {"account": account, "username": username, "year": _int(args, "year"), "month": _int(args, "month"), "source": chat_source},
                 ctx,
             ),
         )
@@ -1034,6 +1077,7 @@ def _mobile_resolve_target(args: dict[str, Any], ctx: McpToolContext) -> dict[st
     if not query:
         raise ValueError("query is required.")
     account = _account_arg(args)
+    chat_source = _chat_source(args)
     target_type = (_str(args, "target_type", "auto") or "auto").lower()
     limit = _int(args, "limit", 8, minimum=1, maximum=20)
     candidates: list[dict[str, Any]] = []
@@ -1062,7 +1106,7 @@ def _mobile_resolve_target(args: dict[str, Any], ctx: McpToolContext) -> dict[st
     if target_type in {"auto", "contact"}:
         tasks.append(("contact", lambda: _resolve_contact({"account": account, "query": query, "limit": limit}, ctx)))
     if target_type in {"auto", "session"}:
-        tasks.append(("session", lambda: _resolve_session({"account": account, "query": query, "limit": limit}, ctx)))
+        tasks.append(("session", lambda: _resolve_session({"account": account, "query": query, "limit": limit, "source": chat_source}, ctx)))
     if target_type in {"auto", "moments_user"}:
         tasks.append(("moments_user", lambda: _sns_users({"account": account, "keyword": query, "limit": limit}, ctx)))
     if target_type in {"auto", "biz"}:
@@ -1112,6 +1156,7 @@ async def _mobile_search_chat(args: dict[str, Any], ctx: McpToolContext) -> dict
             "include_official": _bool(args, "include_official", False),
             "limit": limit,
             "offset": offset,
+            "source": _chat_source(args),
         },
         ctx,
     )
@@ -1138,6 +1183,7 @@ async def _mobile_search_chat(args: dict[str, Any], ctx: McpToolContext) -> dict
                             "anchor_id": anchor_id,
                             "before": _int(args, "before", 3, minimum=0, maximum=5),
                             "after": _int(args, "after", 3, minimum=0, maximum=5),
+                            "source": _chat_source(args),
                         },
                         ctx,
                     )
@@ -1166,8 +1212,9 @@ async def _mobile_search_chat(args: dict[str, Any], ctx: McpToolContext) -> dict
 async def _mobile_get_chat_context(args: dict[str, Any], ctx: McpToolContext) -> dict[str, Any]:
     username = _str(args, "username") or _str(args, "session_id")
     target = _str(args, "target")
+    chat_source = _chat_source(args)
     if not username and target:
-        resolved = _mobile_resolve_target({"account": _account_arg(args), "query": target, "target_type": "session", "limit": 1}, ctx)
+        resolved = _mobile_resolve_target({"account": _account_arg(args), "query": target, "target_type": "session", "limit": 1, "source": chat_source}, ctx)
         best = resolved.get("best") or {}
         username = str(best.get("username") or best.get("id") or "").strip()
     if not username:
@@ -1184,14 +1231,15 @@ async def _mobile_get_chat_context(args: dict[str, Any], ctx: McpToolContext) ->
                 "anchor_id": _str(args, "anchor_id") or _str(args, "message_id"),
                 "before": _int(args, "before", 8, minimum=0, maximum=30),
                 "after": _int(args, "after", 8, minimum=0, maximum=30),
+                "source": chat_source,
             },
             ctx,
         )
     elif mode == "day":
-        anchor = _message_anchor({"account": account, "username": username, "kind": "day", "date": _str(args, "date")}, ctx)
-        anchor_id = str(anchor.get("anchor_id") or anchor.get("message_id") or anchor.get("id") or "").strip()
+        anchor = _message_anchor({"account": account, "username": username, "kind": "day", "date": _str(args, "date"), "source": chat_source}, ctx)
+        anchor_id = str(anchor.get("anchorId") or anchor.get("anchor_id") or anchor.get("message_id") or anchor.get("id") or "").strip()
         if anchor_id:
-            messages = await _messages_around({"account": account, "username": username, "anchor_id": anchor_id, "before": 0, "after": _int(args, "limit", 30, minimum=1, maximum=60)}, ctx)
+            messages = await _messages_around({"account": account, "username": username, "anchor_id": anchor_id, "before": 0, "after": _int(args, "limit", 30, minimum=1, maximum=60), "source": chat_source}, ctx)
         else:
             messages = {"status": "success", "messages": []}
     else:
@@ -1203,6 +1251,7 @@ async def _mobile_get_chat_context(args: dict[str, Any], ctx: McpToolContext) ->
                 "offset": _int(args, "offset", 0, minimum=0),
                 "order": _str(args, "order", "desc") or "desc",
                 "render_types": _opt_str(args, "render_types"),
+                "source": chat_source,
             },
             ctx,
         )
@@ -1213,7 +1262,7 @@ async def _mobile_get_chat_context(args: dict[str, Any], ctx: McpToolContext) ->
             "account": account,
             "username": username,
             "mode": mode,
-            "session": _resolve_session({"account": account, "query": username, "limit": 1}, ctx),
+            "session": _resolve_session({"account": account, "query": username, "limit": 1, "source": chat_source}, ctx),
             "anchor": anchor,
             "messages": messages,
         },
@@ -1339,7 +1388,14 @@ def _tools_catalog(args: dict[str, Any], _: McpToolContext) -> dict[str, Any]:
     return payload
 
 
-COMMON_ACCOUNT = {"account": string_schema("Optional decrypted account directory name.")}
+COMMON_ACCOUNT = {"account": string_schema("Optional chat account name.")}
+CHAT_SOURCE = {
+    "source": string_schema(
+        "Chat data source. Defaults to auto: direct realtime WCDB. Use decrypted only for legacy output snapshots.",
+        enum=CHAT_SOURCE_VALUES,
+        default=DEFAULT_CHAT_SOURCE,
+    )
+}
 PAGING = {
     "limit": int_schema("Maximum records to return.", minimum=1, maximum=200),
     "offset": int_schema("Pagination offset.", minimum=0),
@@ -1349,20 +1405,20 @@ PAGING = {
 def _install_tools() -> None:
     _register("wechat.core.get_status", "Return MCP service readiness, account availability, and package list.", object_schema(), _status, package="wechat.core")
     _register("wechat.core.list_tools", "List WeChat MCP tools, optionally filtered by package.", object_schema({"package": string_schema("Optional package name."), "cursor": string_schema("Optional numeric cursor."), "limit": int_schema("Maximum tools to return.", minimum=1, maximum=100)}), _tools_catalog, package="wechat.core")
-    _register("wechat.core.list_accounts", "List decrypted WeChat accounts available to WeChatDataAnalysis.", object_schema(), _list_accounts, package="wechat.core")
-    _register("wechat.core.get_account_info", "Return database and account metadata for one decrypted account.", object_schema(COMMON_ACCOUNT), _get_account_info, package="wechat.core")
+    _register("wechat.core.list_accounts", "List WeChat chat accounts available to WeChatDataAnalysis.", object_schema(), _list_accounts, package="wechat.core")
+    _register("wechat.core.get_account_info", "Return database and account metadata for one chat account.", object_schema(COMMON_ACCOUNT), _get_account_info, package="wechat.core")
 
-    _register("wechat.contacts.list_contacts", "List contacts, groups, and official accounts with optional fuzzy keyword filtering.", object_schema({**COMMON_ACCOUNT, **PAGING, "keyword": string_schema("Optional fuzzy keyword."), "include_friends": bool_schema("Include friends.", default=True), "include_groups": bool_schema("Include groups.", default=True), "include_officials": bool_schema("Include official accounts.", default=True)}), _list_contacts, package="wechat.contacts")
+    _register("wechat.contacts.list_contacts", "List contacts, groups, and official accounts with optional fuzzy keyword filtering. Defaults to direct realtime WCDB.", object_schema({**COMMON_ACCOUNT, **PAGING, **CHAT_SOURCE, "keyword": string_schema("Optional fuzzy keyword."), "include_friends": bool_schema("Include friends.", default=True), "include_groups": bool_schema("Include groups.", default=True), "include_officials": bool_schema("Include official accounts.", default=True)}), _list_contacts, package="wechat.contacts")
     _register("wechat.contacts.resolve_contact", "Resolve a fuzzy person/group/official-account clue to contact candidates.", object_schema({**COMMON_ACCOUNT, "query": string_schema("Fuzzy contact clue."), "limit": int_schema("Maximum candidates.", minimum=1, maximum=50)}, required=["query"]), _resolve_contact, package="wechat.contacts")
 
-    _register("wechat.chat.list_sessions", "List chat sessions with preview and optional fuzzy filtering.", object_schema({**COMMON_ACCOUNT, **PAGING, "query": string_schema("Optional fuzzy session keyword."), "include_hidden": bool_schema("Include hidden sessions.", default=False), "include_official": bool_schema("Include official account sessions.", default=False), "preview": string_schema("Preview mode.")}), _list_sessions, package="wechat.chat")
-    _register("wechat.chat.resolve_session", "Resolve a fuzzy clue to chat session candidates.", object_schema({**COMMON_ACCOUNT, "query": string_schema("Fuzzy session clue."), "limit": int_schema("Maximum candidates.", minimum=1, maximum=50)}, required=["query"]), _resolve_session, package="wechat.chat")
-    _register("wechat.chat.get_messages", "Read one chat session page.", object_schema({**COMMON_ACCOUNT, **PAGING, "username": string_schema("Session username."), "order": string_schema("asc or desc."), "render_types": string_schema("Optional comma-separated render type filter.")}, required=["username"]), _list_messages, package="wechat.chat")
-    _register("wechat.chat.search_messages", "Search messages globally or within one session. Uses the search index when available.", object_schema({**COMMON_ACCOUNT, **PAGING, "query": string_schema("Message keyword query."), "username": string_schema("Optional session username."), "sender": string_schema("Optional sender username."), "session_type": string_schema("group or single."), "start_time": int_schema("Optional Unix seconds start.", minimum=0), "end_time": int_schema("Optional Unix seconds end.", minimum=0), "render_types": string_schema("Optional comma-separated render type filter.")}, required=["query"]), _search_messages, package="wechat.chat")
-    _register("wechat.chat.list_search_senders", "List sender facets from the chat search index for a global or session query.", object_schema({**COMMON_ACCOUNT, "username": string_schema("Optional session username."), "session_type": string_schema("group or single."), "message_q": string_schema("Optional message keyword filter."), "sender_q": string_schema("Optional sender keyword filter."), "limit": int_schema("Maximum senders.", minimum=1, maximum=2000), "start_time": int_schema("Optional Unix seconds start.", minimum=0), "end_time": int_schema("Optional Unix seconds end.", minimum=0), "render_types": string_schema("Optional comma-separated render type filter."), "include_hidden": bool_schema("Include hidden sessions.", default=False), "include_official": bool_schema("Include official sessions.", default=False)}), _search_index_senders, package="wechat.chat")
-    _register("wechat.chat.get_message_around", "Return context around a message anchor id.", object_schema({**COMMON_ACCOUNT, "username": string_schema("Session username."), "anchor_id": string_schema("Message anchor id."), "before": int_schema("Messages before anchor.", minimum=0, maximum=50), "after": int_schema("Messages after anchor.", minimum=0, maximum=50)}, required=["username", "anchor_id"]), _messages_around, package="wechat.chat")
-    _register("wechat.chat.get_message_anchor", "Get a session anchor for a day or first message.", object_schema({**COMMON_ACCOUNT, "username": string_schema("Session username."), "kind": string_schema("day or first."), "date": string_schema("YYYY-MM-DD when kind=day.")}, required=["username", "kind"]), _message_anchor, package="wechat.chat")
-    _register("wechat.chat.get_daily_message_counts", "Return daily message counts for one session month.", object_schema({**COMMON_ACCOUNT, "username": string_schema("Session username."), "year": int_schema("Year."), "month": int_schema("Month.", minimum=1, maximum=12)}, required=["username", "year", "month"]), _message_daily_counts, package="wechat.chat")
+    _register("wechat.chat.list_sessions", "List chat sessions with preview and optional fuzzy filtering. Defaults to live WeChat data when available.", object_schema({**COMMON_ACCOUNT, **PAGING, **CHAT_SOURCE, "query": string_schema("Optional fuzzy session keyword."), "include_hidden": bool_schema("Include hidden sessions.", default=False), "include_official": bool_schema("Include official account sessions.", default=False), "preview": string_schema("Preview mode.")}), _list_sessions, package="wechat.chat")
+    _register("wechat.chat.resolve_session", "Resolve a fuzzy clue to chat session candidates. Defaults to live WeChat data when available.", object_schema({**COMMON_ACCOUNT, **CHAT_SOURCE, "query": string_schema("Fuzzy session clue."), "limit": int_schema("Maximum candidates.", minimum=1, maximum=50)}, required=["query"]), _resolve_session, package="wechat.chat")
+    _register("wechat.chat.get_messages", "Read one chat session page. Defaults to live WeChat data when available.", object_schema({**COMMON_ACCOUNT, **PAGING, **CHAT_SOURCE, "username": string_schema("Session username."), "order": string_schema("asc or desc."), "render_types": string_schema("Optional comma-separated render type filter.")}, required=["username"]), _list_messages, package="wechat.chat")
+    _register("wechat.chat.search_messages", "Search messages globally or within one session. Defaults to the WCDB-derived realtime FTS index; source=decrypted uses the legacy output snapshot.", object_schema({**COMMON_ACCOUNT, **PAGING, **CHAT_SOURCE, "query": string_schema("Message keyword query."), "username": string_schema("Optional session username."), "sender": string_schema("Optional sender username."), "session_type": string_schema("group or single."), "start_time": int_schema("Optional Unix seconds start.", minimum=0), "end_time": int_schema("Optional Unix seconds end.", minimum=0), "render_types": string_schema("Optional comma-separated render type filter.")}, required=["query"]), _search_messages, package="wechat.chat")
+    _register("wechat.chat.list_search_senders", "List sender facets from the chat search index. Defaults to the WCDB-derived realtime index.", object_schema({**COMMON_ACCOUNT, **CHAT_SOURCE, "username": string_schema("Optional session username."), "session_type": string_schema("group or single."), "message_q": string_schema("Optional message keyword filter."), "sender_q": string_schema("Optional sender keyword filter."), "limit": int_schema("Maximum senders.", minimum=1, maximum=2000), "start_time": int_schema("Optional Unix seconds start.", minimum=0), "end_time": int_schema("Optional Unix seconds end.", minimum=0), "render_types": string_schema("Optional comma-separated render type filter."), "include_hidden": bool_schema("Include hidden sessions.", default=False), "include_official": bool_schema("Include official sessions.", default=False)}), _search_index_senders, package="wechat.chat")
+    _register("wechat.chat.get_message_around", "Return context around a message anchor id. Defaults to live WeChat data when available.", object_schema({**COMMON_ACCOUNT, **CHAT_SOURCE, "username": string_schema("Session username."), "anchor_id": string_schema("Message anchor id."), "before": int_schema("Messages before anchor.", minimum=0, maximum=50), "after": int_schema("Messages after anchor.", minimum=0, maximum=50)}, required=["username", "anchor_id"]), _messages_around, package="wechat.chat")
+    _register("wechat.chat.get_message_anchor", "Get a session anchor for a day or first message. Defaults to live WeChat data when available.", object_schema({**COMMON_ACCOUNT, **CHAT_SOURCE, "username": string_schema("Session username."), "kind": string_schema("day or first."), "date": string_schema("YYYY-MM-DD when kind=day.")}, required=["username", "kind"]), _message_anchor, package="wechat.chat")
+    _register("wechat.chat.get_daily_message_counts", "Return daily message counts for one session month. Defaults to live WeChat data when available.", object_schema({**COMMON_ACCOUNT, **CHAT_SOURCE, "username": string_schema("Session username."), "year": int_schema("Year."), "month": int_schema("Month.", minimum=1, maximum=12)}, required=["username", "year", "month"]), _message_daily_counts, package="wechat.chat")
     _register("wechat.chat.get_message_raw", "Return raw decrypted fields for one message. Use only for debugging or missing structured fields.", object_schema({**COMMON_ACCOUNT, "username": string_schema("Session username."), "message_id": string_schema("Message id.")}, required=["username", "message_id"]), _message_raw, package="wechat.chat")
     _register("wechat.chat.resolve_chat_history", "Resolve a merged-forward chat history AppMsg by server_id.", object_schema({**COMMON_ACCOUNT, "server_id": int_schema("Message server id.", minimum=1)}, required=["server_id"]), _resolve_chat_history, package="wechat.chat")
     _register("wechat.chat.resolve_app_message", "Resolve an AppMsg/card/miniprogram message by server_id.", object_schema({**COMMON_ACCOUNT, "server_id": int_schema("Message server id.", minimum=1)}, required=["server_id"]), _resolve_app_message, package="wechat.chat")
@@ -1395,17 +1451,17 @@ def _install_tools() -> None:
     _register("wechat.media.get_favicon_url", "Build a backend URL for a web page favicon.", object_schema({"url": string_schema("Page URL.")}, required=["url"]), _chat_favicon_url, package="wechat.media")
     _register("wechat.biz.get_proxy_image_url", "Build a backend proxy URL for an official-account image.", object_schema({"url": string_schema("Remote image URL.")}, required=["url"]), _biz_proxy_image_url, package="wechat.biz")
 
-    _register("wechat.mobile.get_overview", "Return a compact mobile overview and suggested next tools.", object_schema({**COMMON_ACCOUNT, "session_limit": int_schema("Session count.", minimum=1, maximum=30), "moments_limit": int_schema("Moments count.", minimum=0, maximum=10), "include_moments": bool_schema("Include Moments preview.", default=False)}), _mobile_overview, package="wechat.mobile")
-    _register("wechat.mobile.get_home_snapshot", "Return a mobile-friendly account/session/Moments readiness snapshot.", object_schema({**COMMON_ACCOUNT, "session_limit": int_schema("Session count.", minimum=1, maximum=80), "moments_limit": int_schema("Moments count.", minimum=0, maximum=30), "include_moments": bool_schema("Include Moments preview.", default=True), "include_hidden": bool_schema("Include hidden sessions.", default=False), "include_official": bool_schema("Include official sessions.", default=False), "preview": string_schema("Session preview mode.")}), _mobile_home_snapshot, package="wechat.mobile")
-    _register("wechat.mobile.resolve_target", "Resolve a fuzzy target to contacts, sessions, Moments users, or official accounts.", object_schema({**COMMON_ACCOUNT, "query": string_schema("Target clue."), "target_type": string_schema("auto, contact, session, moments_user, or biz."), "limit": int_schema("Maximum candidates.", minimum=1, maximum=20)}, required=["query"]), _mobile_resolve_target, package="wechat.mobile")
-    _register("wechat.mobile.search_context", "Search messages plus lightweight session/contact/Moments context for mobile UI.", object_schema({**COMMON_ACCOUNT, "query": string_schema("Search text."), "limit": int_schema("Per-section result count.", minimum=1, maximum=50), "offset": int_schema("Message result offset.", minimum=0), "include_moments": bool_schema("Include Moments matches.", default=True), "include_contacts": bool_schema("Include contact matches.", default=True)}, required=["query"]), _mobile_search_context, package="wechat.mobile")
-    _register("wechat.mobile.search_chat", "Search chat messages with optional small context windows.", object_schema({**COMMON_ACCOUNT, "query": string_schema("Search text."), "username": string_schema("Optional session username."), "sender": string_schema("Optional sender username."), "session_type": string_schema("group or single."), "start_time": int_schema("Optional Unix seconds start.", minimum=0), "end_time": int_schema("Optional Unix seconds end.", minimum=0), "render_types": string_schema("Optional render types."), "limit": int_schema("Hit count.", minimum=1, maximum=50), "offset": int_schema("Offset cursor.", minimum=0), "context_mode": string_schema("none, top_hits, or selected."), "before": int_schema("Context messages before.", minimum=0, maximum=5), "after": int_schema("Context messages after.", minimum=0, maximum=5), "anchor_id": string_schema("Selected anchor id.")}, required=["query"]), _mobile_search_chat, package="wechat.mobile")
-    _register("wechat.mobile.get_chat_context", "Return a compact chat context by recent page, anchor, or day.", object_schema({**COMMON_ACCOUNT, "username": string_schema("Session username."), "target": string_schema("Optional fuzzy session clue."), "mode": string_schema("recent, around, or day."), "anchor_id": string_schema("Message anchor id."), "message_id": string_schema("Alias for anchor_id."), "date": string_schema("YYYY-MM-DD for day mode."), "limit": int_schema("Message count.", minimum=1, maximum=100), "offset": int_schema("Message offset.", minimum=0), "order": string_schema("asc or desc."), "render_types": string_schema("Optional render type filter."), "before": int_schema("Messages before anchor.", minimum=0, maximum=30), "after": int_schema("Messages after anchor.", minimum=0, maximum=30)}), _mobile_get_chat_context, package="wechat.mobile")
-    _register("wechat.mobile.get_session_bundle", "Return one session's metadata, messages, and optional calendar counts for mobile UI.", object_schema({**COMMON_ACCOUNT, "username": string_schema("Session username."), "limit": int_schema("Message count.", minimum=1, maximum=100), "offset": int_schema("Message offset.", minimum=0), "order": string_schema("asc or desc."), "render_types": string_schema("Optional render type filter."), "year": int_schema("Optional year for daily counts."), "month": int_schema("Optional month for daily counts.", minimum=1, maximum=12)}, required=["username"]), _mobile_session_bundle, package="wechat.mobile")
+    _register("wechat.mobile.get_overview", "Return a compact mobile overview and suggested next tools.", object_schema({**COMMON_ACCOUNT, **CHAT_SOURCE, "session_limit": int_schema("Session count.", minimum=1, maximum=30), "moments_limit": int_schema("Moments count.", minimum=0, maximum=10), "include_moments": bool_schema("Include Moments preview.", default=False)}), _mobile_overview, package="wechat.mobile")
+    _register("wechat.mobile.get_home_snapshot", "Return a mobile-friendly account/session/Moments readiness snapshot. Chat sessions default to live WeChat data when available.", object_schema({**COMMON_ACCOUNT, **CHAT_SOURCE, "session_limit": int_schema("Session count.", minimum=1, maximum=80), "moments_limit": int_schema("Moments count.", minimum=0, maximum=30), "include_moments": bool_schema("Include Moments preview.", default=True), "include_hidden": bool_schema("Include hidden sessions.", default=False), "include_official": bool_schema("Include official sessions.", default=False), "preview": string_schema("Session preview mode.")}), _mobile_home_snapshot, package="wechat.mobile")
+    _register("wechat.mobile.resolve_target", "Resolve a fuzzy target to contacts, sessions, Moments users, or official accounts. Session lookup defaults to live WeChat data when available.", object_schema({**COMMON_ACCOUNT, **CHAT_SOURCE, "query": string_schema("Target clue."), "target_type": string_schema("auto, contact, session, moments_user, or biz."), "limit": int_schema("Maximum candidates.", minimum=1, maximum=20)}, required=["query"]), _mobile_resolve_target, package="wechat.mobile")
+    _register("wechat.mobile.search_context", "Search messages plus lightweight session/contact/Moments context for mobile UI. Message search defaults to the WCDB-derived realtime FTS index.", object_schema({**COMMON_ACCOUNT, **CHAT_SOURCE, "query": string_schema("Search text."), "limit": int_schema("Per-section result count.", minimum=1, maximum=50), "offset": int_schema("Message result offset.", minimum=0), "include_moments": bool_schema("Include Moments matches.", default=True), "include_contacts": bool_schema("Include contact matches.", default=True)}, required=["query"]), _mobile_search_context, package="wechat.mobile")
+    _register("wechat.mobile.search_chat", "Search chat messages with optional small context windows. Defaults to the WCDB-derived realtime FTS index.", object_schema({**COMMON_ACCOUNT, **CHAT_SOURCE, "query": string_schema("Search text."), "username": string_schema("Optional session username."), "sender": string_schema("Optional sender username."), "session_type": string_schema("group or single."), "start_time": int_schema("Optional Unix seconds start.", minimum=0), "end_time": int_schema("Optional Unix seconds end.", minimum=0), "render_types": string_schema("Optional render types."), "limit": int_schema("Hit count.", minimum=1, maximum=50), "offset": int_schema("Offset cursor.", minimum=0), "context_mode": string_schema("none, top_hits, or selected."), "before": int_schema("Context messages before.", minimum=0, maximum=5), "after": int_schema("Context messages after.", minimum=0, maximum=5), "anchor_id": string_schema("Selected anchor id.")}, required=["query"]), _mobile_search_chat, package="wechat.mobile")
+    _register("wechat.mobile.get_chat_context", "Return a compact chat context by recent page, anchor, or day. Recent mode defaults to live WeChat data when available.", object_schema({**COMMON_ACCOUNT, **CHAT_SOURCE, "username": string_schema("Session username."), "target": string_schema("Optional fuzzy session clue."), "mode": string_schema("recent, around, or day."), "anchor_id": string_schema("Message anchor id."), "message_id": string_schema("Alias for anchor_id."), "date": string_schema("YYYY-MM-DD for day mode."), "limit": int_schema("Message count.", minimum=1, maximum=100), "offset": int_schema("Message offset.", minimum=0), "order": string_schema("asc or desc."), "render_types": string_schema("Optional render type filter."), "before": int_schema("Messages before anchor.", minimum=0, maximum=30), "after": int_schema("Messages after anchor.", minimum=0, maximum=30)}), _mobile_get_chat_context, package="wechat.mobile")
+    _register("wechat.mobile.get_session_bundle", "Return one session's metadata, messages, and optional calendar counts for mobile UI. Messages default to live WeChat data when available.", object_schema({**COMMON_ACCOUNT, **CHAT_SOURCE, "username": string_schema("Session username."), "limit": int_schema("Message count.", minimum=1, maximum=100), "offset": int_schema("Message offset.", minimum=0), "order": string_schema("asc or desc."), "render_types": string_schema("Optional render type filter."), "year": int_schema("Optional year for daily counts."), "month": int_schema("Optional month for daily counts.", minimum=1, maximum=12)}, required=["username"]), _mobile_session_bundle, package="wechat.mobile")
     _register("wechat.mobile.search_moments", "Search Moments posts with compact media references.", object_schema({**COMMON_ACCOUNT, "query": string_schema("Content keyword."), "poster": string_schema("Optional poster clue."), "usernames": array_schema("Poster usernames.", string_schema("Username.")), "limit": int_schema("Post count.", minimum=1, maximum=30), "offset": int_schema("Offset cursor.", minimum=0)}), _mobile_search_moments, package="wechat.mobile")
     _register("wechat.mobile.get_media_links", "Return URL resources for chat, Moments, avatar, link, or emoji media.", object_schema(additional_properties=True), _mobile_get_media_links, package="wechat.mobile")
     _register("wechat.mobile.get_message_media_bundle", "Return likely media URLs for a message or link without fetching binary content.", object_schema(additional_properties=True), _mobile_message_media_bundle, package="wechat.mobile")
-    _register("wechat.mobile.get_analytics", "Return compact analytics data by metric without loading full annual payloads.", object_schema(additional_properties=True), _mobile_get_analytics, package="wechat.mobile")
+    _register("wechat.mobile.get_analytics", "Return compact analytics data by metric without loading full annual payloads. Chat daily-count analytics default to live WeChat data when available.", object_schema({**CHAT_SOURCE}, additional_properties=True), _mobile_get_analytics, package="wechat.mobile")
 
 
 _install_tools()

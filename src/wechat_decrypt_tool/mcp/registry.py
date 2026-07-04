@@ -131,10 +131,12 @@ def object_schema(
     return schema
 
 
-def string_schema(description: str, *, enum: list[str] | None = None) -> dict[str, Any]:
+def string_schema(description: str, *, enum: list[str] | None = None, default: str | None = None) -> dict[str, Any]:
     out: dict[str, Any] = {"type": "string", "description": description}
     if enum:
         out["enum"] = enum
+    if default is not None:
+        out["default"] = default
     return out
 
 
