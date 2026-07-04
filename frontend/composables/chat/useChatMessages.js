@@ -1032,15 +1032,12 @@ export const useChatMessages = ({
     contactProfileLoading.value = true
     contactProfileError.value = ''
     try {
-      const response = await api.listChatContacts({
+      const response = await api.getChatContactProfile({
         account,
         source: DEFAULT_CHAT_SOURCE,
-        include_friends: true,
-        include_groups: true,
-        include_officials: true
+        username
       })
-      const list = Array.isArray(response?.contacts) ? response.contacts : []
-      const matched = list.find((item) => String(item?.username || '').trim() === username)
+      const matched = response?.contact && typeof response.contact === 'object' ? response.contact : null
       if (matched) {
         const normalized = { ...matched, username }
         if (!String(normalized.displayName || '').trim() && displayNameFallback) {

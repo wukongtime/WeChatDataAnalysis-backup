@@ -514,6 +514,15 @@ export const useApi = () => {
     return await request(url)
   }
 
+  const getChatContactProfile = async (params = {}) => {
+    const query = new URLSearchParams()
+    if (params && params.account) query.set('account', params.account)
+    if (params && params.source) query.set('source', params.source)
+    if (params && params.username) query.set('username', params.username)
+    const url = '/chat/contacts/profile' + (query.toString() ? `?${query.toString()}` : '')
+    return await request(url)
+  }
+
   const exportChatContacts = async (payload = {}) => {
     return await request('/chat/contacts/export', {
       method: 'POST',
@@ -728,6 +737,7 @@ export const useApi = () => {
     getSnsExport,
     cancelSnsExport,
     listChatContacts,
+    getChatContactProfile,
     exportChatContacts,
     createAccountArchiveExport,
     getAccountArchiveExport,
