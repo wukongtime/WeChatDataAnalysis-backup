@@ -63,6 +63,27 @@ def _summarize_key_payload(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _image_key_account_match_variants(value: Any) -> set[str]:
+    """Return account names that should be considered equivalent for image key matching.
+
+    Windows WeChat 4.x stores account data under a folder such as
+    ``wxid_o6wp2aat9mu312_8d63`` while wx_key may report the account as
+    ``wxid_o6wp2aat9mu312``.  The trailing four-hex folder suffix is not part
+    of the logical account id, so both names must match.  Do not strip
+    arbitrary suffixes: names like ``wxid_demo_extra`` may be a distinct
+    account in tests or legacy data.
+    """
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return set()
+
+    variants = {raw}
+    suffix_match = re.match(r"^(wxid_[^_\s]+)_[0-9a-f]{4}$", raw, flags=re.IGNORECASE)
+    if suffix_match:
+        variants.add(suffix_match.group(1).lower())
+    return variants
+
+
 def _resolve_wxid_dir_for_image_key(
         account: Optional[str] = None,
         *,
@@ -779,23 +800,43 @@ async def get_image_key_integrated_workflow(
     if local_keys:
         # 如果指定了账号，尝试在本地结果中找匹配的
         if target_account_wxid:
+            target_account_variants = _image_key_account_match_variants(target_account_wxid)
             for k in local_keys:
                 local_wxid = str(k.get("wxid") or "").strip().lower()
-                if local_wxid and local_wxid == target_account_wxid:
+                local_account_variants = _image_key_account_match_variants(local_wxid)
+                if local_account_variants and (local_account_variants & target_account_variants):
                     logger.info(
-                        "[image_key] 本地算法精确匹配成功：target_wxid=%s payload=%s",
+                        "[image_key] 本地算法账号匹配成功：target_wxid=%s target_variants=%s local_variants=%s payload=%s",
                         target_account_wxid,
+                        sorted(target_account_variants),
+                        sorted(local_account_variants),
                         _summarize_key_payload(k),
                     )
-                    upsert_account_keys_in_store(
-                        account=str(k.get("wxid") or "").strip(),
-                        image_xor_key=k['xor_key'],
-                        image_aes_key=k['aes_key']
-                    )
+                    if local_wxid != target_account_wxid:
+                        aliases = []
+                        for alias in [local_wxid, str(account or "").strip()]:
+                            if alias and alias not in aliases:
+                                aliases.append(alias)
+                        upsert_account_keys_in_store(
+                            account=target_account_wxid,
+                            image_xor_key=k['xor_key'],
+                            image_aes_key=k['aes_key'],
+                            aliases=aliases,
+                        )
+                    else:
+                        upsert_account_keys_in_store(
+                            account=str(k.get("wxid") or "").strip(),
+                            image_xor_key=k['xor_key'],
+                            image_aes_key=k['aes_key']
+                        )
+                    k = dict(k)
+                    k.setdefault("matched_wxid", target_account_wxid)
+                    k.setdefault("match_variants", sorted(local_account_variants | target_account_variants))
                     return k
             logger.info(
-                "[image_key] 本地算法未匹配到目标账号：target_wxid=%s local_wxids=%s",
+                "[image_key] 本地算法未匹配到目标账号：target_wxid=%s target_variants=%s local_wxids=%s",
                 target_account_wxid,
+                sorted(target_account_variants),
                 [str(item.get("wxid") or "").strip() for item in local_keys],
             )
         else:

@@ -287,6 +287,42 @@ class TestKeyServiceImageKeyAccountMatch(unittest.TestCase):
             image_aes_key="BBBBBBBBBBBBBBBB",
         )
 
+    def test_local_image_keys_match_xwechat_folder_suffix(self) -> None:
+        with mock.patch.object(
+            key_service,
+            "try_get_local_image_keys",
+            return_value=[
+                {"wxid": "wxid_demo", "xor_key": "0x2C", "aes_key": "AAAAAAAAAAAAAAAA"},
+            ],
+        ), mock.patch.object(
+            key_service,
+            "_resolve_account_dir",
+            return_value=Path("D:/tmp/output/databases/wxid_demo"),
+        ), mock.patch.object(
+            key_service,
+            "_resolve_account_wxid_dir",
+            return_value=Path("D:/tmp/xwechat_files/wxid_demo_8d63"),
+        ), mock.patch.object(
+            key_service,
+            "upsert_account_keys_in_store",
+        ) as upsert_mock, mock.patch.object(
+            key_service,
+            "fetch_and_save_remote_keys",
+            new=mock.AsyncMock(side_effect=AssertionError("remote should not be called")),
+        ):
+            result = asyncio.run(key_service.get_image_key_integrated_workflow("wxid_demo"))
+
+        self.assertEqual(result["wxid"], "wxid_demo")
+        self.assertEqual(result["matched_wxid"], "wxid_demo_8d63")
+        self.assertEqual(result["xor_key"], "0x2C")
+        self.assertEqual(result["aes_key"], "AAAAAAAAAAAAAAAA")
+        upsert_mock.assert_called_once_with(
+            account="wxid_demo_8d63",
+            image_xor_key="0x2C",
+            image_aes_key="AAAAAAAAAAAAAAAA",
+            aliases=["wxid_demo"],
+        )
+
     def test_fetch_remote_keys_can_use_db_storage_path_without_decrypted_output(self) -> None:
         with TemporaryDirectory() as temp_dir:
             wxid_dir = Path(temp_dir) / "xwechat_files" / "wxid_v4mbduwqtzpt22"
