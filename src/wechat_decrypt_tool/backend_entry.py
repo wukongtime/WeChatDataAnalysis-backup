@@ -4,7 +4,15 @@ This avoids dynamic import strings like "pkg.module:app" which some bundlers
 cannot detect reliably.
 """
 
+import multiprocessing
 import os
+
+# PyInstaller/frozen Windows builds re-launch this executable for
+# multiprocessing workers.  The memory/DLL key scanners use process pools; if
+# we import and start the FastAPI app before freeze_support() has a chance to
+# divert worker processes, every worker tries to bind the backend port again.
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
 
 import uvicorn
 

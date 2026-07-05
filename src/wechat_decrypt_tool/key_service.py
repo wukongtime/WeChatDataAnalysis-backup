@@ -18,6 +18,7 @@ import re
 import random
 import logging
 import asyncio
+import importlib
 import httpx
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -440,7 +441,7 @@ def _get_db_key_with_v4(
         candidate_plan.extend((candidate, "scan.py") for candidate in scan_candidates)
 
     try:
-        from . import key_v4 as key_v4_module
+        key_v4_module = importlib.import_module(".key_v4", __package__)
     except Exception as e:
         raise RuntimeError(f"包内 key_v4.py 加载失败: {e}") from e
 

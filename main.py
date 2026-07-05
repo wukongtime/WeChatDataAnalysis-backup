@@ -8,9 +8,15 @@
 默认在10392端口启动API服务
 """
 
-import uvicorn
+import multiprocessing
 import os
 from pathlib import Path
+
+# Keep standalone/frozen launches safe when scanner code uses multiprocessing.
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+
+import uvicorn
 from wechat_decrypt_tool.network_access import get_lan_access_host
 from wechat_decrypt_tool.runtime_settings import read_effective_backend_host, read_effective_backend_port
 
