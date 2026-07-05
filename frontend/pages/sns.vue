@@ -534,6 +534,27 @@
                             <img v-else :src="seg.emojiSrc" :alt="seg.content" class="inline-block w-[1.25em] h-[1.25em] align-text-bottom mx-px" />
                           </span>
                         </span>
+                        <span v-if="getCommentImages(c).length > 0" class="inline-flex flex-wrap align-middle gap-1 ml-1">
+                          <button
+                            v-for="(img, iidx) in getCommentImages(c)"
+                            :key="commentImageKey(post, c, iidx)"
+                            type="button"
+                            class="inline-flex w-10 h-10 rounded-[6px] overflow-hidden bg-gray-200 border border-gray-200 items-center justify-center align-middle cursor-pointer hover:opacity-90"
+                            title="查看评论图片"
+                            @click.stop="openCommentImagePreview(post, img, iidx)"
+                          >
+                            <img
+                              v-if="!hasCommentImageError(post, c, iidx) && getCommentImageThumbSrc(post, img, iidx)"
+                              :src="getCommentImageThumbSrc(post, img, iidx)"
+                              alt="评论图片"
+                              class="w-full h-full object-cover"
+                              loading="lazy"
+                              referrerpolicy="no-referrer"
+                              @error="onCommentImageError(post, c, iidx)"
+                            />
+                            <span v-else class="text-[10px] text-gray-500">图片</span>
+                          </button>
+                        </span>
 	                    </div>
 	                  </div>
 	                </div>
@@ -822,8 +843,10 @@
     <!-- Image preview modal -->
 	    <div
 	      v-if="previewCtx"
-	      class="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center"
+	      class="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center overflow-hidden"
 	      @click="closeImagePreview"
+        @wheel.prevent="onPreviewWheel"
+        @dblclick.stop="resetPreviewImageTransform"
 	    >
 	      <div class="relative max-w-[92vw] max-h-[92vh] flex flex-col items-center" @click.stop>
 	        <video
@@ -844,13 +867,23 @@
 	          :src="previewLivePhotoVideoSrc"
 	          :poster="previewSrc"
 	          class="max-w-[90vw] max-h-[70vh] object-contain"
+            :style="previewImageTransformStyle"
 	          autoplay
 	          loop
 	          :muted="previewLivePhotoMuted"
 	          playsinline
 	          @error="onPreviewLivePhotoVideoError"
 	        ></video>
-	        <img v-else :src="previewSrc" alt="预览" class="max-w-[90vw] max-h-[70vh] object-contain" />
+	        <img
+            v-else
+            :src="previewSrc"
+            alt="预览"
+            class="max-w-[90vw] max-h-[70vh] object-contain select-none"
+            :style="previewImageTransformStyle"
+            draggable="false"
+            @error="onPreviewImageError"
+            @dblclick.stop="resetPreviewImageTransform"
+          />
 
 	        <div
 	          v-if="previewIsVideo && previewVideoError"
@@ -860,6 +893,32 @@
 	        </div>
 
 	      </div>
+
+        <div
+          v-if="!previewIsVideo"
+          class="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-black/35 border border-white/15 px-3 py-2 text-white backdrop-blur"
+          @click.stop
+          @dblclick.stop
+        >
+          <button
+            type="button"
+            class="w-8 h-8 rounded-full hover:bg-white/15 flex items-center justify-center text-lg leading-none"
+            title="缩小"
+            @click.stop="zoomPreviewImageOut"
+          >−</button>
+          <button
+            type="button"
+            class="min-w-[54px] h-8 px-2 rounded-full hover:bg-white/15 text-xs"
+            title="重置缩放"
+            @click.stop="resetPreviewImageTransform"
+          >{{ previewImagePercent }}%</button>
+          <button
+            type="button"
+            class="w-8 h-8 rounded-full hover:bg-white/15 flex items-center justify-center text-lg leading-none"
+            title="放大"
+            @click.stop="zoomPreviewImageIn"
+          >+</button>
+        </div>
 
 	      <button
 	        v-if="previewLivePhotoVideoSrc && !previewHasLivePhotoVideoError"
@@ -2038,10 +2097,20 @@ const getSnsMediaUrl = (post, m, idx, rawUrl) => {
         const mediaType = String(m?.type || '2').trim()
         if (mediaType) parts.set('media_type', mediaType)
 
-        const token = String(m?.token || m?.urlAttrs?.token || m?.thumbAttrs?.token || '').trim()
+        const thumbCandidate = String(m?.thumb || m?.thumbUrl || '').trim()
+        const isThumbRequest = !!thumbCandidate && raw === upgradeTencentHttps(thumbCandidate)
+        const token = String(
+          isThumbRequest
+            ? (m?.thumbToken || m?.thumbUrlToken || m?.thumbAttrs?.token || m?.token || m?.urlAttrs?.token || '')
+            : (m?.token || m?.urlAttrs?.token || m?.thumbToken || m?.thumbUrlToken || m?.thumbAttrs?.token || '')
+        ).trim()
         if (token) parts.set('token', token)
 
-        const key = String(m?.key || m?.urlAttrs?.key || m?.thumbAttrs?.key || '').trim()
+        const key = String(
+          isThumbRequest
+            ? (m?.thumbKey || m?.thumbAttrs?.key || m?.key || m?.urlAttrs?.key || '')
+            : (m?.key || m?.urlAttrs?.key || m?.thumbKey || m?.thumbAttrs?.key || '')
+        ).trim()
         if (key) parts.set('key', key)
 
         parts.set('use_cache', snsUseCache.value ? '1' : '0')
@@ -2064,9 +2133,95 @@ const getMediaThumbSrc = (post, m, idx = 0) => {
 }
 
 const getMediaPreviewSrc = (post, m, idx = 0) => {
-  // Align with WeFlow: preview reuses the same prepared image source as the grid
-  // instead of issuing a second "original image" request on click.
-  return getMediaThumbSrc(post, m, idx)
+  return getSnsMediaUrl(post, m, idx, m?.url || m?.thumb || m?.thumbUrl)
+}
+
+const commentImageErrors = ref({})
+
+const commentImageKey = (post, comment, idx = 0) => {
+  const postId = String(post?.id || post?.tid || '').trim()
+  const commentId = String(comment?.id || comment?.commentId || comment?.cmtid || '').trim()
+  const img = Array.isArray(comment?.images) ? comment.images[idx] : null
+  const imageId = String(img?.id || img?.mediaId || img?.media_id || img?.md5 || img?.url || img?.thumbUrl || '').trim()
+  return `${postId}:${commentId}:${imageId}:${Number(idx) || 0}`
+}
+
+const getCommentImages = (comment) => {
+  const list = Array.isArray(comment?.images) ? comment.images : []
+  return list.filter((img) => {
+    if (!img || typeof img !== 'object') return false
+    return !!String(img.url || img.thumb || img.thumbUrl || img.thumb_url || '').trim()
+  })
+}
+
+const toCommentImageMedia = (img) => {
+  if (!img || typeof img !== 'object') return null
+  const thumb = String(img.thumb || img.thumbUrl || img.thumb_url || img.url || '').trim()
+  const url = String(img.url || img.originUrl || img.origin_url || thumb || '').trim()
+  const mediaId = String(img.id || img.mediaId || img.media_id || '').trim()
+  const md5 = String(img.md5 || '').trim()
+  const token = String(img.token || img.urlToken || img.url_token || '').trim()
+  const key = String(img.key || '').trim()
+  const thumbToken = String(img.thumbToken || img.thumbUrlToken || img.thumb_url_token || token || '').trim()
+  const thumbKey = String(img.thumbKey || img.thumb_key || key || '').trim()
+  const width = Number(img.width || img.size?.width || 0) || 0
+  const height = Number(img.height || img.size?.height || 0) || 0
+  const totalSize = Number(img.fileSize || img.file_size || img.size?.totalSize || img.size?.total_size || 0) || 0
+
+  return {
+    type: Number(img.type || 2) || 2,
+    id: mediaId,
+    mediaId,
+    url,
+    thumb,
+    token,
+    key,
+    thumbToken,
+    thumbUrlToken: thumbToken,
+    thumbKey,
+    md5,
+    urlAttrs: {
+      ...(img.urlAttrs || {}),
+      token: token || img.urlAttrs?.token || '',
+      key: key || img.urlAttrs?.key || '',
+      md5: md5 || img.urlAttrs?.md5 || ''
+    },
+    thumbAttrs: {
+      ...(img.thumbAttrs || {}),
+      token: thumbToken || img.thumbAttrs?.token || '',
+      key: thumbKey || img.thumbAttrs?.key || '',
+      md5: md5 || img.thumbAttrs?.md5 || ''
+    },
+    size: {
+      ...(img.size || {}),
+      width: width || img.size?.width,
+      height: height || img.size?.height,
+      totalSize: totalSize || img.size?.totalSize || img.size?.total_size
+    }
+  }
+}
+
+const getCommentImageThumbSrc = (post, img, idx = 0) => {
+  const m = toCommentImageMedia(img)
+  if (!m) return ''
+  return getSnsMediaUrl(post, m, idx, m.thumb || m.url)
+}
+
+const hasCommentImageError = (post, comment, idx = 0) => {
+  return !!commentImageErrors.value[commentImageKey(post, comment, idx)]
+}
+
+const onCommentImageError = (post, comment, idx = 0) => {
+  commentImageErrors.value = {
+    ...commentImageErrors.value,
+    [commentImageKey(post, comment, idx)]: true
+  }
+}
+
+const openCommentImagePreview = (post, img, idx = 0) => {
+  const m = toCommentImageMedia(img)
+  if (!m) return
+  openImagePreview(post, m, idx)
 }
 
 
@@ -2216,12 +2371,61 @@ const getLivePhotoVideoSrc = (post, m, idx = 0) => {
 
 // 图片预览
 const previewCtx = ref(null) // { post, media, idx }
+const PREVIEW_IMAGE_MIN_SCALE = 0.25
+const PREVIEW_IMAGE_MAX_SCALE = 8
+const PREVIEW_IMAGE_WHEEL_STEP = 1.18
+const previewImageScale = ref(1)
+const previewImageUseThumbFallback = ref(false)
 
 const previewSrc = computed(() => {
   const ctx = previewCtx.value
   if (!ctx) return ''
+  if (previewImageUseThumbFallback.value) return getMediaThumbSrc(ctx.post, ctx.media, ctx.idx)
   return getMediaPreviewSrc(ctx.post, ctx.media, ctx.idx)
 })
+
+const previewImagePercent = computed(() => Math.round(previewImageScale.value * 100))
+
+const previewImageTransformStyle = computed(() => ({
+  transform: `scale(${previewImageScale.value})`,
+  transformOrigin: 'center center',
+  transition: 'transform 120ms ease-out',
+  cursor: previewImageScale.value > 1 ? 'zoom-out' : 'zoom-in'
+}))
+
+const setPreviewImageScale = (value) => {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return
+  previewImageScale.value = Math.min(PREVIEW_IMAGE_MAX_SCALE, Math.max(PREVIEW_IMAGE_MIN_SCALE, n))
+}
+
+const resetPreviewImageTransform = () => {
+  previewImageScale.value = 1
+}
+
+const zoomPreviewImageBy = (factor) => {
+  setPreviewImageScale(previewImageScale.value * Number(factor || 1))
+}
+
+const zoomPreviewImageIn = () => {
+  zoomPreviewImageBy(PREVIEW_IMAGE_WHEEL_STEP)
+}
+
+const zoomPreviewImageOut = () => {
+  zoomPreviewImageBy(1 / PREVIEW_IMAGE_WHEEL_STEP)
+}
+
+const onPreviewWheel = (e) => {
+  if (previewIsVideo.value) return
+  const direction = Number(e?.deltaY || 0) > 0 ? -1 : 1
+  const steps = Math.max(1, Math.min(6, Math.ceil(Math.abs(Number(e?.deltaY || 0)) / 120)))
+  zoomPreviewImageBy(Math.pow(PREVIEW_IMAGE_WHEEL_STEP, direction * steps))
+}
+
+const onPreviewImageError = () => {
+  if (previewImageUseThumbFallback.value) return
+  previewImageUseThumbFallback.value = true
+}
 
 const previewVideoEl = ref(null)
 const previewVideoMode = ref('') // 'local' | 'remote' | 'raw'
@@ -2341,6 +2545,8 @@ watch(
 const openImagePreview = (post, m, idx = 0) => {
   if (!process.client) return
   resetPreviewVideo()
+  resetPreviewImageTransform()
+  previewImageUseThumbFallback.value = false
   // Stop any background hover-playing live photo when opening the preview.
   activeLivePhotoKey.value = ''
   // Preview is an intentional action; allow retry even if hover playback failed once.
@@ -2359,6 +2565,8 @@ const openImagePreview = (post, m, idx = 0) => {
 const openVideoPreview = (post, m, idx = 0) => {
   if (!process.client) return
   resetPreviewVideo()
+  resetPreviewImageTransform()
+  previewImageUseThumbFallback.value = false
   activeLivePhotoKey.value = ''
 
   const local = getSnsVideoUrl(post?.id, m?.id)
@@ -2404,6 +2612,8 @@ const closeImagePreview = () => {
   if (!process.client) return
   previewCtx.value = null
   resetPreviewVideo()
+  resetPreviewImageTransform()
+  previewImageUseThumbFallback.value = false
   document.body.style.overflow = ''
 }
 
