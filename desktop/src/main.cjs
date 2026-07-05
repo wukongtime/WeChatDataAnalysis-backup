@@ -2109,8 +2109,9 @@ function registerDebugShortcuts() {
   };
 
   // When we remove the app menu, Electron no longer provides the default DevTools accelerators.
-  globalShortcut.register("CommandOrControl+Shift+I", toggleDevTools);
-  globalShortcut.register("F12", toggleDevTools);
+  const devToolsShortcutOk = globalShortcut.register("CommandOrControl+Shift+I", toggleDevTools);
+  const f12ShortcutOk = globalShortcut.register("F12", toggleDevTools);
+  logMain(`[main] shortcut registration devTools=${devToolsShortcutOk} f12=${f12ShortcutOk}`);
 }
 
 function getRendererConsoleLogPath() {
