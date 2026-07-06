@@ -346,6 +346,7 @@ const selectContact = async (contact, options = {}) => {
 const applyRouteSelection = async (options = {}) => {
   const selectionReason = String(options.reason || 'route-selection').trim() || 'route-selection'
   const requested = routeUsername.value || ''
+  const fallbackToFirstWhenMissing = !!options.fallbackToFirstWhenMissing
   if ((!contacts.value || contacts.value.length === 0) && requested) {
     if (selectedContact.value?.username === requested) {
       return
@@ -375,6 +376,15 @@ const applyRouteSelection = async (options = {}) => {
           reason: `${selectionReason}:matched-route`
         })
       }
+      return
+    }
+    if (fallbackToFirstWhenMissing) {
+      await selectContact(contacts.value[0], {
+        syncRoute: true,
+        replaceRoute: true,
+        deferLoadMessages: !!options.deferLoadMessages,
+        reason: `${selectionReason}:route-missing-fallback-first-contact`
+      })
       return
     }
     await selectContact(buildTransientContact({ username: requested }), {
@@ -502,7 +512,11 @@ const {
 
 const { stopExportPolling } = exportState
 
+let accountBootstrapInProgress = false
+let accountChangeInProgress = false
+
 const resetAccountScopedState = () => {
+  selectedContact.value = null
   resetMessageState()
   searchState.resetSearchState()
   closeContextMenu()
@@ -531,33 +545,40 @@ const queueRealtimeSessionsRefresh = () => {
 }
 
 const onAccountChange = async () => {
-  logChatBootstrap('accountChange:start', {
-    selectedAccount: selectedAccount.value
-  })
-  await realtimeStore.enable({ silent: true })
+  if (accountChangeInProgress) return
+  accountChangeInProgress = true
   try {
-    isLoadingContacts.value = true
-    contactsError.value = ''
-    await loadSessionsForSelectedAccount()
-  } catch (error) {
-    contactsError.value = error?.message || '加载会话失败'
-  } finally {
-    isLoadingContacts.value = false
-  }
+    logChatBootstrap('accountChange:start', {
+      selectedAccount: selectedAccount.value
+    })
+    resetAccountScopedState()
+    try {
+      await realtimeStore.enable({ silent: true })
+      isLoadingContacts.value = true
+      contactsError.value = ''
+      await loadSessionsForSelectedAccount()
+    } catch (error) {
+      contactsError.value = error?.message || '加载会话失败'
+    } finally {
+      isLoadingContacts.value = false
+    }
 
-  resetAccountScopedState()
-  logChatBootstrap('accountChange:applyRouteSelection:start', {
-    selectedAccount: selectedAccount.value,
-    contactCount: contacts.value.length
-  })
-  await applyRouteSelection({
-    reason: 'account-change'
-  })
-  logChatBootstrap('accountChange:end', {
-    selectedAccount: selectedAccount.value,
-    selectedUsername: selectedContact.value?.username || '',
-    contactCount: contacts.value.length
-  })
+    logChatBootstrap('accountChange:applyRouteSelection:start', {
+      selectedAccount: selectedAccount.value,
+      contactCount: contacts.value.length
+    })
+    await applyRouteSelection({
+      reason: 'account-change',
+      fallbackToFirstWhenMissing: true
+    })
+    logChatBootstrap('accountChange:end', {
+      selectedAccount: selectedAccount.value,
+      selectedUsername: selectedContact.value?.username || '',
+      contactCount: contacts.value.length
+    })
+  } finally {
+    accountChangeInProgress = false
+  }
 }
 
 const onGlobalClick = (event) => {
@@ -669,9 +690,14 @@ onMounted(async () => {
   logChatBootstrap('loadContacts:start', {
     selectedAccount: selectedAccount.value
   })
-  await chatAccounts.ensureLoaded()
-  await realtimeStore.enable({ silent: true })
-  await loadContacts()
+  accountBootstrapInProgress = true
+  try {
+    await chatAccounts.ensureLoaded()
+    await realtimeStore.enable({ silent: true })
+    await loadContacts()
+  } finally {
+    accountBootstrapInProgress = false
+  }
   logChatBootstrap('loadContacts:end', {
     selectedAccount: selectedAccount.value,
     contactCount: contacts.value.length
@@ -754,6 +780,16 @@ watch(messageTypeFilter, async (next, prev) => {
   if (!selectedContact.value?.username) return
   await refreshSelectedMessages()
 })
+
+watch(
+  selectedAccount,
+  async (next, prev) => {
+    if (!process.client) return
+    if (accountBootstrapInProgress) return
+    if (String(next || '') === String(prev || '')) return
+    await onAccountChange()
+  }
+)
 
 watch(
   routeUsername,

@@ -1,0 +1,97 @@
+import importlib
+import os
+import sys
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+
+class TestChatAccountsKeyReady(unittest.TestCase):
+    def _with_temp_data_dir(self):
+        return TemporaryDirectory()
+
+    def test_key_ready_accounts_require_db_key_and_image_key(self) -> None:
+        with self._with_temp_data_dir() as td:
+            root = Path(td)
+            prev_data_dir = os.environ.get("WECHAT_TOOL_DATA_DIR")
+            try:
+                os.environ["WECHAT_TOOL_DATA_DIR"] = str(root)
+
+                import wechat_decrypt_tool.app_paths as app_paths
+                import wechat_decrypt_tool.key_store as key_store
+                import wechat_decrypt_tool.chat_accounts as chat_accounts
+
+                importlib.reload(app_paths)
+                importlib.reload(key_store)
+                importlib.reload(chat_accounts)
+
+                key_store.upsert_account_keys_in_store(
+                    "wxid_ready",
+                    db_key="A" * 64,
+                    image_xor_key="0x8A",
+                    image_aes_key="1234567890abcdef",
+                )
+                key_store.upsert_account_keys_in_store("wxid_db_only", db_key="B" * 64)
+                key_store.upsert_account_keys_in_store(
+                    "wxid_img_only",
+                    image_xor_key="0x2C",
+                    image_aes_key="fedcba0987654321",
+                )
+
+                by_name = {ctx.name: ctx for ctx in chat_accounts.list_chat_account_contexts()}
+
+                self.assertIn("wxid_ready", by_name)
+                self.assertIn("wxid_db_only", by_name)
+                self.assertNotIn("wxid_img_only", by_name)
+                self.assertTrue(by_name["wxid_ready"].keys_ready)
+                self.assertTrue(by_name["wxid_ready"].db_key_present)
+                self.assertTrue(by_name["wxid_ready"].image_key_present)
+                self.assertFalse(by_name["wxid_db_only"].keys_ready)
+                self.assertTrue(by_name["wxid_db_only"].db_key_present)
+                self.assertFalse(by_name["wxid_db_only"].image_key_present)
+            finally:
+                if prev_data_dir is None:
+                    os.environ.pop("WECHAT_TOOL_DATA_DIR", None)
+                else:
+                    os.environ["WECHAT_TOOL_DATA_DIR"] = prev_data_dir
+
+    def test_media_keys_file_counts_as_image_key_for_switching(self) -> None:
+        with self._with_temp_data_dir() as td:
+            root = Path(td)
+            prev_data_dir = os.environ.get("WECHAT_TOOL_DATA_DIR")
+            try:
+                os.environ["WECHAT_TOOL_DATA_DIR"] = str(root)
+
+                import wechat_decrypt_tool.app_paths as app_paths
+                import wechat_decrypt_tool.key_store as key_store
+                import wechat_decrypt_tool.chat_accounts as chat_accounts
+
+                importlib.reload(app_paths)
+                importlib.reload(key_store)
+                importlib.reload(chat_accounts)
+
+                key_store.upsert_account_keys_in_store("wxid_media_fallback", db_key="C" * 64)
+                account_dir = root / "output" / "databases" / "wxid_media_fallback"
+                account_dir.mkdir(parents=True, exist_ok=True)
+                (account_dir / "_media_keys.json").write_text('{"xor": 138, "aes": ""}', encoding="utf-8")
+
+                ctx = chat_accounts.resolve_chat_account_context("wxid_media_fallback")
+
+                self.assertTrue(ctx.db_key_present)
+                self.assertTrue(ctx.image_key_present)
+                self.assertTrue(ctx.image_xor_key_present)
+                self.assertFalse(ctx.image_aes_key_present)
+                self.assertTrue(ctx.keys_ready)
+            finally:
+                if prev_data_dir is None:
+                    os.environ.pop("WECHAT_TOOL_DATA_DIR", None)
+                else:
+                    os.environ["WECHAT_TOOL_DATA_DIR"] = prev_data_dir
+
+
+if __name__ == "__main__":
+    unittest.main()

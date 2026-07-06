@@ -4114,13 +4114,24 @@ async def list_chat_accounts():
     contexts = list_chat_account_contexts()
     accounts = [ctx.name for ctx in contexts]
     account_infos = [_chat_account_context_public(ctx) for ctx in contexts]
+    switchable_accounts = [ctx.name for ctx in contexts if bool(getattr(ctx, "keys_ready", False))]
+    switchable_account_set = set(switchable_accounts)
+    switchable_account_infos = [
+        info for info in account_infos if str(info.get("account") or "").strip() in switchable_account_set
+    ]
     if not contexts:
         return {
             "status": "error",
             "accounts": [],
             "default_account": None,
+            "switchable_accounts": [],
+            "switchableAccounts": [],
+            "keyReadyAccounts": [],
+            "default_switchable_account": None,
+            "defaultSwitchableAccount": None,
             "accountInfos": [],
             "items": [],
+            "switchableAccountInfos": [],
             "message": "No chat accounts found. Please save a db key/db_storage path or decrypt first.",
         }
 
@@ -4128,8 +4139,14 @@ async def list_chat_accounts():
         "status": "success",
         "accounts": accounts,
         "default_account": accounts[0],
+        "switchable_accounts": switchable_accounts,
+        "switchableAccounts": switchable_accounts,
+        "keyReadyAccounts": switchable_accounts,
+        "default_switchable_account": switchable_accounts[0] if switchable_accounts else None,
+        "defaultSwitchableAccount": switchable_accounts[0] if switchable_accounts else None,
         "accountInfos": account_infos,
         "items": account_infos,
+        "switchableAccountInfos": switchable_account_infos,
     }
 
 
@@ -4168,6 +4185,13 @@ def _chat_account_context_public(ctx: Any) -> dict[str, Any]:
         "database_count": len(db_files),
         "databases": db_files,
         "dbKeyPresent": bool(getattr(ctx, "db_key_present", False) or realtime_status.get("key_present")),
+        "imageKeyPresent": bool(getattr(ctx, "image_key_present", False)),
+        "imageXorKeyPresent": bool(getattr(ctx, "image_xor_key_present", False)),
+        "imageAesKeyPresent": bool(getattr(ctx, "image_aes_key_present", False)),
+        "keysReady": bool(getattr(ctx, "keys_ready", False)),
+        "keyReady": bool(getattr(ctx, "keys_ready", False)),
+        "switchable": bool(getattr(ctx, "keys_ready", False)),
+        "keysUpdatedAt": str(getattr(ctx, "keys_updated_at", "") or ""),
         "realtimeAvailable": bool(realtime_available),
         "realtime": {
             "available": bool(realtime_available),

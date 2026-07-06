@@ -8,7 +8,7 @@
         <button
           type="button"
           class="group relative w-[40px] h-[40px] rounded-md overflow-hidden bg-gray-300 flex-shrink-0 ring-1 ring-transparent transition hover:ring-[#07b75b]/40"
-          title="账号信息"
+          :title="avatarButtonTitle"
           @click="openAccountDialog"
         >
           <img v-if="selfAvatarUrl" :src="selfAvatarUrl" alt="avatar" class="w-full h-full object-cover" />
@@ -292,9 +292,9 @@
     class="account-info-dialog fixed inset-0 z-[130] flex items-center justify-center bg-black/35 px-4"
     @click.self="closeAccountDialog"
   >
-    <div class="account-info-dialog-panel w-full max-w-[440px] overflow-hidden rounded-[12px] border border-[#e7e7e7] bg-white shadow-2xl">
+    <div class="account-info-dialog-panel w-full max-w-[520px] overflow-hidden rounded-[12px] border border-[#e7e7e7] bg-white shadow-2xl">
       <div class="flex items-center justify-between border-b border-[#efefef] px-4 py-3">
-        <div class="text-[14px] font-semibold text-[#222]">当前账号信息</div>
+        <div class="text-[14px] font-semibold text-[#222]">账号切换</div>
         <button
           type="button"
           class="flex h-7 w-7 items-center justify-center rounded-md text-[#888] transition hover:bg-[#f2f2f2] hover:text-[#222]"
@@ -309,6 +309,67 @@
       </div>
 
       <div class="space-y-3 px-4 py-4">
+        <div class="rounded-[10px] border border-[#ededed] bg-[#fafafa] p-2">
+          <div class="mb-2 flex items-center justify-between px-1">
+            <div class="text-[12px] font-medium text-[#444]">可切换账号</div>
+            <button
+              type="button"
+              class="text-[11px] text-[#07b75b] hover:text-[#04994c] disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="chatAccounts.loading"
+              @click="refreshSwitchableAccounts"
+            >
+              {{ chatAccounts.loading ? '刷新中...' : '刷新' }}
+            </button>
+          </div>
+
+          <div v-if="chatAccounts.loading && !switchableAccountItems.length" class="px-1 py-2 text-[12px] text-[#7a7a7a]">
+            正在加载可切换账号...
+          </div>
+          <div v-else-if="!switchableAccountItems.length" class="space-y-1 px-1 py-2">
+            <div class="text-[12px] text-[#666]">暂无可切换账号</div>
+            <div class="text-[11px] leading-relaxed text-[#8a8a8a]">
+              只有已经获取并保存“数据库密钥 + 图片密钥”的账号会出现在这里。
+            </div>
+            <div v-if="chatAccounts.error" class="text-[11px] text-red-600">{{ chatAccounts.error }}</div>
+          </div>
+          <div v-else class="max-h-[260px] space-y-1 overflow-y-auto pr-1">
+            <button
+              v-for="item in switchableAccountItems"
+              :key="item.account"
+              type="button"
+              class="flex w-full items-center gap-3 rounded-[8px] border px-2.5 py-2 text-left transition"
+              :class="item.active ? 'border-[#07b75b]/45 bg-[#ecfff5]' : 'border-transparent bg-white hover:border-[#e4e4e4] hover:bg-[#f7f7f7]'"
+              :disabled="accountDeleteLoading"
+              @click="selectAccountFromDialog(item.account)"
+            >
+              <div class="h-[38px] w-[38px] shrink-0 overflow-hidden rounded-md bg-gray-300">
+                <img
+                  v-if="item.avatarUrl && !accountAvatarBroken[item.account]"
+                  :src="item.avatarUrl"
+                  alt="avatar"
+                  class="h-full w-full object-cover"
+                  loading="lazy"
+                  @error="markAccountAvatarBroken(item.account)"
+                />
+                <div
+                  v-else
+                  class="flex h-full w-full items-center justify-center text-xs font-bold text-white"
+                  :style="{ backgroundColor: '#4B5563' }"
+                >
+                  {{ accountFallbackText(item.account) }}
+                </div>
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="truncate text-[13px] font-semibold text-[#222]">{{ item.account }}</div>
+              </div>
+              <div class="flex shrink-0 items-center gap-1">
+                <span class="rounded-full bg-[#eefbf4] px-1.5 py-0.5 text-[10px] font-medium text-[#07964c]">DB</span>
+                <span class="rounded-full bg-[#eefbf4] px-1.5 py-0.5 text-[10px] font-medium text-[#07964c]">图片</span>
+              </div>
+            </button>
+          </div>
+        </div>
+
         <div v-if="accountInfoLoading" class="text-[12px] text-[#7a7a7a]">正在加载账号信息...</div>
         <template v-else>
           <div class="flex items-center gap-3">
@@ -329,10 +390,6 @@
           </div>
 
             <div class="rounded-[8px] border border-[#ededed] bg-[#fafafa] px-3 py-2 text-[12px] text-[#5f5f5f] space-y-1.5">
-            <div class="flex items-start justify-between gap-3">
-              <span class="text-[#8a8a8a] shrink-0">读取模式</span>
-              <span class="font-medium text-[#333]">{{ accountModeText }}</span>
-            </div>
             <div class="flex items-start justify-between gap-3">
               <span class="text-[#8a8a8a] shrink-0">本地解密库数量</span>
               <span class="font-medium text-[#333]">{{ accountInfo?.database_count ?? '—' }}</span>
@@ -381,7 +438,10 @@ import { useThemeStore } from '~/stores/theme'
 const route = useRoute()
 
 const chatAccounts = useChatAccountsStore()
-const { selectedAccount } = storeToRefs(chatAccounts)
+const {
+  selectedAccount,
+  switchableAccounts,
+} = storeToRefs(chatAccounts)
 
 const privacyStore = usePrivacyStore()
 const { privacyMode } = storeToRefs(privacyStore)
@@ -405,14 +465,9 @@ const accountDeleteLoading = ref(false)
 const accountDeleteError = ref('')
 const accountInfoApiUnsupported = ref(false)
 const deleteAccountApiUnsupported = ref(false)
+const accountAvatarBroken = ref({})
 
-const accountModeText = computed(() => {
-  const mode = String(accountInfo.value?.mode || '').trim()
-  const realtimeAvailable = !!accountInfo.value?.realtimeAvailable || !!accountInfo.value?.realtime?.available
-  if (mode === 'direct' || realtimeAvailable) return '原始 WCDB 实时读取'
-  if (mode === 'decrypted' || accountInfo.value?.hasDecryptedDbs) return '旧本地解密库'
-  return '—'
-})
+const normalizeAccountName = (value) => String(value || '').trim()
 
 const accountDataPath = computed(() => {
   const info = accountInfo.value || {}
@@ -424,6 +479,44 @@ const accountDataPath = computed(() => {
     || (selectedAccount.value ? `output/databases/${selectedAccount.value}` : '—')
   )
 })
+
+const avatarButtonTitle = computed(() => {
+  const count = Array.isArray(switchableAccounts.value) ? switchableAccounts.value.length : 0
+  if (count > 1) return '切换账号'
+  return '账号信息'
+})
+
+const accountAvatarUrl = (account) => {
+  const acc = normalizeAccountName(account)
+  if (!acc) return ''
+  return `${apiBase}/chat/avatar?account=${encodeURIComponent(acc)}&username=${encodeURIComponent(acc)}`
+}
+
+const accountFallbackText = (account) => {
+  const value = normalizeAccountName(account)
+  if (!value) return '我'
+  return value.slice(0, 1).toUpperCase()
+}
+
+const switchableAccountItems = computed(() => {
+  const list = Array.isArray(switchableAccounts.value) ? switchableAccounts.value : []
+  return list
+    .map((account) => normalizeAccountName(account))
+    .filter(Boolean)
+    .map((account) => {
+      return {
+        account,
+        active: account === normalizeAccountName(selectedAccount.value),
+        avatarUrl: accountAvatarUrl(account),
+      }
+    })
+})
+
+const markAccountAvatarBroken = (account) => {
+  const acc = normalizeAccountName(account)
+  if (!acc) return
+  accountAvatarBroken.value = { ...accountAvatarBroken.value, [acc]: true }
+}
 
 const sessionUpdatedAtText = computed(() => {
   const ts = Number(accountInfo.value?.session_updated_at || 0)
@@ -553,8 +646,23 @@ const apiBase = useApiBase()
 const selfAvatarUrl = computed(() => {
   const acc = String(selectedAccount.value || '').trim()
   if (!acc) return ''
-  return `${apiBase}/chat/avatar?account=${encodeURIComponent(acc)}&username=${encodeURIComponent(acc)}`
+  return accountAvatarUrl(acc)
 })
+
+const refreshSwitchableAccounts = async () => {
+  await chatAccounts.ensureLoaded({ force: true })
+}
+
+const selectAccountFromDialog = async (account) => {
+  const next = normalizeAccountName(account)
+  if (!next || accountDeleteLoading.value) return
+  if (next === normalizeAccountName(selectedAccount.value)) return
+
+  accountInfoError.value = ''
+  accountDeleteError.value = ''
+  accountInfo.value = null
+  chatAccounts.setSelectedAccount(next)
+}
 
 const isChatRoute = computed(() => route.path?.startsWith('/chat'))
 const isEditsRoute = computed(() => route.path?.startsWith('/edits'))
