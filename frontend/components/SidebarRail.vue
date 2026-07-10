@@ -116,6 +116,53 @@
         </div>
       </div>
 
+      <!-- Mini Programs -->
+      <div
+        class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
+        title="小程序"
+        @click="goMiniPrograms"
+      >
+        <div class="sidebar-rail-plate w-[var(--sidebar-rail-btn)] h-[var(--sidebar-rail-btn)] rounded-md flex items-center justify-center transition-colors bg-transparent">
+          <div class="sidebar-rail-icon sidebar-rail-icon-mini-program w-[20px] h-[20px]" :class="{ 'sidebar-rail-icon-active': isMiniProgramsRoute }">
+            <svg class="w-full h-full" viewBox="0 0 1025 1024" fill="currentColor" aria-hidden="true">
+              <path d="M740.672 37.504c156.352 0 283.52 115.584 283.52 258.496 0 44.416-13.056 87.872-36.608 127.04-35.648 57.216-92.672 99.584-161.664 119.744a161.408 161.408 0 0 1-45.184 7.36 52.8 52.8 0 0 1-53.76-52.928c0-29.76 23.68-52.864 53.76-52.864 2.112 0 6.528 0 11.904-2.048 46.336-12.8 82.944-39.168 103.424-74.24 13.952-22.144 20.48-46.72 20.48-72.064 0-83.84-78.72-152.512-174.72-152.512a197.76 197.76 0 0 0-94.72 24.32c-50.816 28.544-80.896 76.16-80.896 128.192v443.904c0 89.984-50.752 172.672-134.848 219.328-45.184 25.408-96 38.272-147.712 38.272-156.288 0-283.52-115.648-283.52-258.56 0-44.352 13.12-87.872 36.608-127.04 35.648-57.216 92.736-99.584 161.664-119.68 19.328-5.312 32.384-7.36 45.184-7.36 30.272 0 53.824 23.36 53.824 52.864a52.8 52.8 0 0 1-53.76 52.928c-2.176 0-6.592 0-11.904 2.048-46.4 13.76-82.944 40.32-103.424 74.176-14.016 22.208-20.48 46.72-20.48 72.128 0 83.84 78.72 152.448 175.616 152.448a197.76 197.76 0 0 0 94.784-24.256c50.752-28.608 80.832-76.224 80.832-128.192V296.192c0-89.984 50.752-172.608 134.848-219.328a283.52 283.52 0 0 1 146.752-39.36z" />
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- Finder / Live -->
+      <div
+        class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
+        title="视频号 / 直播"
+        @click="goFinder"
+      >
+        <div class="sidebar-rail-plate w-[var(--sidebar-rail-btn)] h-[var(--sidebar-rail-btn)] rounded-md flex items-center justify-center transition-colors bg-transparent">
+          <div class="sidebar-rail-icon w-[var(--sidebar-rail-icon)] h-[var(--sidebar-rail-icon)]" :class="{ 'sidebar-rail-icon-active': isFinderRoute }">
+            <svg class="w-full h-full" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="5" width="14" height="14" rx="2" />
+              <path d="M17 9l4-2v10l-4-2" />
+              <path d="M8.5 9.2v5.6L13 12l-4.5-2.8Z" />
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- Payments -->
+      <div
+        class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
+        title="转账 / 红包"
+        @click="goPayments"
+      >
+        <div class="sidebar-rail-plate w-[var(--sidebar-rail-btn)] h-[var(--sidebar-rail-btn)] rounded-md flex items-center justify-center transition-colors bg-transparent">
+          <div class="sidebar-rail-icon w-[18px] h-[18px]" :class="{ 'sidebar-rail-icon-active': isPaymentsRoute }">
+            <svg class="w-full h-full" viewBox="0 0 1109 1024" fill="currentColor" aria-hidden="true">
+              <path d="M391.183105 392.073178H42.628017a18.472141 18.472141 0 0 1-14.209339-30.976359l330.651321-355.233477a18.472141 18.472141 0 0 1 31.971013 12.646311v227.349426a18.472141 18.472141 0 0 0 18.472141 18.330047H1089.856308a18.614234 18.614234 0 0 1 18.472141 18.472141v90.93977a18.472141 18.472141 0 0 1-18.472141 18.472141H391.183105z m325.962239 239.853644H1065.700432a18.472141 18.472141 0 0 1 14.209339 30.976359l-330.367134 355.233477a18.472141 18.472141 0 0 1-31.971013-12.646311V778.851388a18.472141 18.472141 0 0 0-18.472141-18.472141H18.472141a18.472141 18.472141 0 0 1-18.472141-18.472141v-91.650237a18.472141 18.472141 0 0 1 18.472141-18.47214h698.673203z" />
+            </svg>
+          </div>
+        </div>
+      </div>
+
       <!-- Wrapped -->
       <div
         class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
@@ -669,6 +716,9 @@ const isEditsRoute = computed(() => route.path?.startsWith('/edits'))
 const isSnsRoute = computed(() => route.path?.startsWith('/sns'))
 const isContactsRoute = computed(() => route.path?.startsWith('/contacts'))
 const isBizRoute = computed(() => route.path?.startsWith('/biz')) // 新增
+const isMiniProgramsRoute = computed(() => route.path?.startsWith('/mini-programs'))
+const isFinderRoute = computed(() => route.path?.startsWith('/finder'))
+const isPaymentsRoute = computed(() => route.path?.startsWith('/payments'))
 const isWrappedRoute = computed(() => route.path?.startsWith('/wrapped'))
 
 const goChat = async () => { await navigateTo('/chat') }
@@ -676,6 +726,9 @@ const goEdits = async () => { await navigateTo('/edits') }
 const goSns = async () => { await navigateTo('/sns') }
 const goContacts = async () => { await navigateTo('/contacts') }
 const goBiz = async () => { await navigateTo('/biz') }
+const goMiniPrograms = async () => { await navigateTo('/mini-programs') }
+const goFinder = async () => { await navigateTo('/finder') }
+const goPayments = async () => { await navigateTo('/payments') }
 const goWrapped = async () => { await navigateTo('/wrapped') }
 const goGuide = async () => { await navigateTo('/') }
 const goSettings = () => { openSettingsDialog() }
@@ -763,6 +816,12 @@ const toggleImgHelper = async () => {
   max-width: 60px;
   background-color: var(--sidebar-rail-bg);
   border-color: var(--sidebar-rail-border);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.sidebar-rail::-webkit-scrollbar {
+  display: none;
 }
 
 .sidebar-rail-plate {
@@ -781,5 +840,6 @@ const toggleImgHelper = async () => {
 .sidebar-rail-icon-active {
   color: var(--sidebar-rail-icon-active-color);
 }
+
 </style>
 

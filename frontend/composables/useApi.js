@@ -688,6 +688,45 @@ export const useApi = () => {
     return await request(url)
   }
 
+  const buildGeneralUrl = (path, params = {}) => {
+    const query = new URLSearchParams()
+    if (params && params.account) query.set('account', params.account)
+    if (params && params.q) query.set('q', params.q)
+    if (params && params.kind) query.set('kind', params.kind)
+    query.set('source', params?.source || 'realtime')
+    if (params && params.limit != null) query.set('limit', String(params.limit))
+    if (params && params.offset != null) query.set('offset', String(params.offset))
+    return `/general/${path}` + (query.toString() ? `?${query.toString()}` : '')
+  }
+
+  const listGeneralOverview = async (params = {}) => {
+    return await request(buildGeneralUrl('overview', params))
+  }
+
+  const listFriendVerifications = async (params = {}) => {
+    return await request(buildGeneralUrl('friend-verifications', params))
+  }
+
+  const listMiniPrograms = async (params = {}) => {
+    return await request(buildGeneralUrl('mini-programs', params))
+  }
+
+  const listFinderRecords = async (params = {}) => {
+    return await request(buildGeneralUrl('finder', params))
+  }
+
+  const listPaymentRecords = async (params = {}) => {
+    return await request(buildGeneralUrl('payments', params))
+  }
+
+  const listRevokeRecords = async (params = {}) => {
+    return await request(buildGeneralUrl('revokes', params))
+  }
+
+  const listGeneralSearchRecords = async (params = {}) => {
+    return await request(buildGeneralUrl('search-records', params))
+  }
+
   const getBizProxyImageUrl = (url) => {
     if (!url) return ''
     if (url.startsWith('data:')) return url // 如果已经是 base64，不处理
@@ -783,6 +822,13 @@ export const useApi = () => {
     listBizAccounts,
     listBizMessages,
     listBizPayRecords,
+    listGeneralOverview,
+    listFriendVerifications,
+    listMiniPrograms,
+    listFinderRecords,
+    listPaymentRecords,
+    listRevokeRecords,
+    listGeneralSearchRecords,
     getBizProxyImageUrl,
   }
 }
