@@ -21,6 +21,20 @@ from .media_helpers import _resolve_account_db_storage_dir
 
 logger = get_logger(__name__)
 
+_VC_REDIST_HELP_URL = "https://learn.microsoft.com/zh-cn/cpp/windows/latest-supported-vc-redist?view=msvc-170"
+_VC_REDIST_HELP_TEXT = (
+    "如果这是首次运行或换电脑后出现，请下载安装最新版 Microsoft Visual C++ Redistributable"
+    "（建议安装 x64 和 x86 两个版本），安装后重启电脑再运行。"
+    f"下载地址：{_VC_REDIST_HELP_URL}"
+)
+
+
+def _with_vc_redist_help(message: str) -> str:
+    text = str(message or "").strip()
+    if _VC_REDIST_HELP_URL in text:
+        return text
+    return f"{text} {_VC_REDIST_HELP_TEXT}" if text else _VC_REDIST_HELP_TEXT
+
 
 class WCDBRealtimeError(RuntimeError):
     pass
@@ -521,7 +535,10 @@ def _sidecar_call(action: str, payload: Optional[dict[str, Any]] = None, *, time
             hint = ""
             if isinstance(logs, list) and logs:
                 hint = f" logs={[str(x) for x in logs[:6]]}"
-            raise WCDBRealtimeError(f"{err} rc={rc}.{hint}")
+            message = f"{err} rc={rc}.{hint}"
+            if str(action or "").strip() in {"init", "open_account"}:
+                message = _with_vc_redist_help(message)
+            raise WCDBRealtimeError(message)
         except WCDBRealtimeError:
             raise
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -533,7 +550,7 @@ def _sidecar_call(action: str, payload: Optional[dict[str, Any]] = None, *, time
             last_err = exc
             break
 
-    raise WCDBRealtimeError(f"WCDB sidecar unavailable: {last_err}")
+    raise WCDBRealtimeError(_with_vc_redist_help(f"WCDB sidecar unavailable: {last_err}"))
 
 
 def _sidecar_payload(action: str, payload: Optional[dict[str, Any]] = None, *, timeout: float = 30.0) -> str:
@@ -819,7 +836,7 @@ def _ensure_initialized() -> None:
             hint = _format_protection_hint()
             if logs:
                 hint += f" logs={logs[:6]}"
-            raise WCDBRealtimeError(f"wcdb_init failed: {rc}.{hint}")
+            raise WCDBRealtimeError(_with_vc_redist_help(f"wcdb_init failed: {rc}.{hint}"))
         _initialized = True
 
 
@@ -944,7 +961,7 @@ def open_account(session_db_path: Path, key_hex: str) -> int:
         )
         handle = int(result.get("handle") or 0)
         if handle <= 0:
-            raise WCDBRealtimeError("wcdb_open_account failed: invalid sidecar handle.")
+            raise WCDBRealtimeError(_with_vc_redist_help("wcdb_open_account failed: invalid sidecar handle."))
         return handle
 
     lib = _load_wcdb_lib()
@@ -953,7 +970,7 @@ def open_account(session_db_path: Path, key_hex: str) -> int:
     if rc != 0 or int(out_handle.value) <= 0:
         logs = get_native_logs()
         hint = f" logs={logs[:6]}" if logs else ""
-        raise WCDBRealtimeError(f"wcdb_open_account failed: {rc}.{hint}")
+        raise WCDBRealtimeError(_with_vc_redist_help(f"wcdb_open_account failed: {rc}.{hint}"))
     return int(out_handle.value)
 
 
@@ -1822,7 +1839,9 @@ class WCDBRealtimeManager:
             failed_at = self._failed.get(account)
             if failed_at is not None and (time.monotonic() - failed_at) < self._FAILED_TTL:
                 logger.warning("[wcdb] recent failure cache hit account=%s ttl=%ss", account, int(self._FAILED_TTL))
-                raise WCDBRealtimeError("WCDB connection recently failed; retry after 60s.")
+                raise WCDBRealtimeError(
+                    _with_vc_redist_help("WCDB connection recently failed; retry after 60s.")
+                )
 
         deadline = time.monotonic() + timeout
 
@@ -1841,10 +1860,10 @@ class WCDBRealtimeManager:
             # Another thread is connecting; wait a bit and retry.
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise WCDBRealtimeError("Timed out waiting for WCDB connection.")
+                raise WCDBRealtimeError(_with_vc_redist_help("Timed out waiting for WCDB connection."))
             waiter.wait(timeout=min(remaining, 10.0))
             if time.monotonic() >= deadline:
-                raise WCDBRealtimeError("Timed out waiting for WCDB connection.")
+                raise WCDBRealtimeError(_with_vc_redist_help("Timed out waiting for WCDB connection."))
 
         key = str(key_hex or "").strip()
         if not key:
@@ -1891,7 +1910,9 @@ class WCDBRealtimeManager:
                     session_db_path,
                 )
                 raise WCDBRealtimeError(
-                    f"open_account timed out after {timeout:.0f}s for {session_db_path}"
+                    _with_vc_redist_help(
+                        f"open_account timed out after {timeout:.0f}s for {session_db_path}"
+                    )
                 )
             if _open_err:
                 with self._mu:
@@ -1905,7 +1926,7 @@ class WCDBRealtimeManager:
                 raise _open_err[0]
             if not _handle_box:
                 logger.warning("[wcdb] open_account returned no handle account=%s session_db=%s", account, session_db_path)
-                raise WCDBRealtimeError("open_account returned no handle.")
+                raise WCDBRealtimeError(_with_vc_redist_help("open_account returned no handle."))
 
             handle = _handle_box[0]
             # 对齐 WeFlow：传清理后的 wxid/account 名称给 native WCDB，
