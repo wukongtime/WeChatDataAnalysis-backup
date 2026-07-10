@@ -6152,6 +6152,9 @@ def list_chat_messages(
     offset: int = 0,
     order: str = "asc",
     render_types: Optional[str] = None,
+    filter_mode: Optional[str] = None,
+    scan_offset: int = 0,
+    scan_limit: int = 320,
     source: Optional[str] = None,
 ):
     if not username:
@@ -6162,6 +6165,14 @@ def list_chat_messages(
         limit = 500
     if offset < 0:
         offset = 0
+    if scan_offset < 0:
+        scan_offset = 0
+    if scan_limit <= 0:
+        scan_limit = 320
+    if scan_limit < 50:
+        scan_limit = 50
+    if scan_limit > 2000:
+        scan_limit = 2000
 
     account_dir = _resolve_account_dir(account)
     source_requested = _normalize_chat_source(source)
@@ -6180,6 +6191,9 @@ def list_chat_messages(
         offset=int(offset),
         order=str(order or ""),
         renderTypes=str(render_types or ""),
+        filterMode=str(filter_mode or ""),
+        scanOffset=int(scan_offset),
+        scanLimit=int(scan_limit),
     )
     trace("request:start")
 
@@ -6230,7 +6244,17 @@ def list_chat_messages(
         if want and not ({"all", "any", "none"} & want):
             want_types = want
 
-    scan_take = int(limit) + int(offset)
+    progressive_filter = bool(
+        want_types is not None
+        and str(filter_mode or "").strip().lower() in {"progressive", "cursor", "scan"}
+    )
+    progressive_scan_offset = max(0, int(scan_offset or 0))
+    progressive_scan_limit = max(50, min(2000, int(scan_limit or 320)))
+
+    if progressive_filter:
+        scan_take = progressive_scan_offset + progressive_scan_limit
+    else:
+        scan_take = int(limit) + int(offset)
     if scan_take < 0:
         scan_take = 0
 
@@ -6331,6 +6355,9 @@ def list_chat_messages(
                 resource_chat_id=resource_chat_id,
             )
 
+            if progressive_filter:
+                break
+
             if want_types is not None:
                 merged = [m for m in merged if _normalize_render_type_key(m.get("renderType")) in want_types]
 
@@ -6374,8 +6401,11 @@ def list_chat_messages(
                 resource_conn=resource_conn,
                 resource_chat_id=resource_chat_id,
                 take=scan_take,
-                want_types=want_types,
+                want_types=None if progressive_filter else want_types,
             )
+
+            if progressive_filter:
+                break
 
             if want_types is None:
                 break
@@ -6454,9 +6484,9 @@ def list_chat_messages(
                     resource_conn=resource_conn,
                     resource_chat_id=resource_chat_id,
                     take=scan_take,
-                    want_types=want_types,
+                    want_types=None if progressive_filter else want_types,
                 )
-                if want_types is not None:
+                if want_types is not None and not progressive_filter:
                     merged = [m for m in merged if _normalize_render_type_key(m.get("renderType")) in want_types]
                 trace(
                     "self-heal:requery:end",
@@ -6966,8 +6996,29 @@ def list_chat_messages(
         return (cts, sseq, lid)
 
     merged.sort(key=sort_key, reverse=True)
-    has_more_global = bool(has_more_any or (len(merged) > (int(offset) + int(limit))))
-    page = merged[int(offset) : int(offset) + int(limit)]
+    next_scan_offset: Optional[int] = None
+    next_filter_offset: Optional[int] = None
+    if progressive_filter:
+        raw_start = max(0, int(progressive_scan_offset))
+        raw_end = raw_start + int(progressive_scan_limit)
+        raw_window = merged[raw_start:raw_end] if raw_start < len(merged) else []
+        filtered_window = [
+            m for m in raw_window
+            if _normalize_render_type_key(m.get("renderType")) in (want_types or set())
+        ]
+        match_offset = max(0, int(offset))
+        page = filtered_window[match_offset: match_offset + int(limit)]
+        has_more_matches_in_window = (match_offset + int(limit)) < len(filtered_window)
+        has_more_global = bool(has_more_matches_in_window or has_more_any or (len(merged) > raw_end))
+        if has_more_matches_in_window:
+            next_scan_offset = raw_start
+            next_filter_offset = match_offset + int(limit)
+        else:
+            next_scan_offset = raw_end
+            next_filter_offset = 0
+    else:
+        has_more_global = bool(has_more_any or (len(merged) > (int(offset) + int(limit))))
+        page = merged[int(offset) : int(offset) + int(limit)]
     if want_asc:
         page = list(reversed(page))
 
@@ -6977,6 +7028,9 @@ def list_chat_messages(
         pageCount=len(page),
         hasMore=bool(has_more_global),
         orderAsc=bool(want_asc),
+        progressive=bool(progressive_filter),
+        nextScanOffset=next_scan_offset,
+        nextFilterOffset=next_filter_offset,
     )
 
     # Hot path optimization: only enrich the page we return.
@@ -6989,6 +7043,9 @@ def list_chat_messages(
             "source": source_norm,
             "total": int(offset) + (1 if has_more_global else 0),
             "hasMore": bool(has_more_global),
+            "filterMode": "progressive" if progressive_filter else "",
+            "nextScanOffset": next_scan_offset,
+            "nextFilterOffset": next_filter_offset,
             "messages": [],
         }
 
@@ -7269,6 +7326,9 @@ def list_chat_messages(
         pageCount=len(page),
         total=int(offset) + len(page) + (1 if has_more_global else 0),
         hasMore=bool(has_more_global),
+        progressive=bool(progressive_filter),
+        nextScanOffset=next_scan_offset,
+        nextFilterOffset=next_filter_offset,
     )
     return {
         "status": "success",
@@ -7277,6 +7337,9 @@ def list_chat_messages(
         "source": source_norm,
         "total": int(offset) + len(page) + (1 if has_more_global else 0),
         "hasMore": bool(has_more_global),
+        "filterMode": "progressive" if progressive_filter else "",
+        "nextScanOffset": next_scan_offset,
+        "nextFilterOffset": next_filter_offset,
         "messages": page,
     }
 

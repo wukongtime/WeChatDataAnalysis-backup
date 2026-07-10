@@ -20,6 +20,7 @@ export const useChatMessages = ({
   searchContext
 }) => {
   const messagePageSize = 50
+  const messageTypeFilterScanPageSize = 640
 
   const allMessages = ref({})
   const messagesMeta = ref({})
@@ -29,6 +30,7 @@ export const useChatMessages = ({
   const activeMessagesFor = ref('')
   const showJumpToBottom = ref(false)
   let lastRenderMessagesFingerprint = ''
+  let messageLoadSeq = 0
 
   const isDesktopRenderer = () => {
     if (!process.client || typeof window === 'undefined') return false
@@ -983,11 +985,16 @@ export const useChatMessages = ({
   const loadMessages = async ({ username, reset }) => {
     if (!username || !selectedAccount.value) return
 
+    const loadSeq = ++messageLoadSeq
+    const accountAtStart = String(selectedAccount.value || '').trim()
+    const filterAtStart = String(messageTypeFilter.value || 'all').trim() || 'all'
     const trace = createPerfTrace('chat-messages', {
-      account: String(selectedAccount.value || '').trim(),
+      account: accountAtStart,
       selectedUsername: String(selectedContact.value?.username || '').trim(),
       username: String(username || '').trim(),
-      reset: !!reset
+      reset: !!reset,
+      loadSeq,
+      filter: filterAtStart
     })
 
     trace.log('loadMessages:enter', {
@@ -1002,35 +1009,89 @@ export const useChatMessages = ({
       const container = messageContainerRef.value
       const beforeScrollHeight = container ? container.scrollHeight : 0
       const beforeScrollTop = container ? container.scrollTop : 0
-      const offset = reset ? 0 : existing.length
+      const filterActive = !!(messageTypeFilter.value && messageTypeFilter.value !== 'all')
+      const currentMeta = messagesMeta.value[username] || {}
+      const scanOffset = reset
+        ? 0
+        : Math.max(0, Number(currentMeta.nextScanOffset ?? currentMeta.scanOffset ?? 0) || 0)
+      const filterOffset = reset
+        ? 0
+        : Math.max(0, Number(currentMeta.nextFilterOffset ?? 0) || 0)
+      let requestScanOffset = scanOffset
+      let requestFilterOffset = filterOffset
+      let response = null
+      const rawChunks = []
+      const seenFilterCursors = new Set()
+      // 筛选模式按“扫描窗口”分页。不要为了凑满 50 条一直扫；一旦拿到
+      // 可渲染结果就先提交给 UI。只有当前窗口没有匹配时，才向前跳过
+      // 少量空窗口，避免稀疏类型（红包/文件等）滚到顶部后看起来没反应。
+      const maxFilterRequests = filterActive ? 6 : 1
 
-      const params = {
-        account: selectedAccount.value,
-        username,
-        limit: messagePageSize,
-        offset,
-        order: 'asc'
-      }
-      if (messageTypeFilter.value && messageTypeFilter.value !== 'all') {
-        params.render_types = messageTypeFilter.value
-      }
-      params.source = DEFAULT_CHAT_SOURCE
-      trace.log('loadMessages:request:start', {
-        offset,
-        existingCount: existing.length,
-        renderTypeFilter: messageTypeFilter.value,
-        source: DEFAULT_CHAT_SOURCE,
-        realtime: !!realtimeEnabled.value
-      })
-      const response = await api.listChatMessages(params)
-      trace.log('loadMessages:request:end', {
-        source: response?.source || DEFAULT_CHAT_SOURCE,
-        rawCount: Array.isArray(response?.messages) ? response.messages.length : 0,
-        total: Number(response?.total || 0),
-        hasMore: response?.hasMore
-      })
+      for (let requestIndex = 0; requestIndex < maxFilterRequests; requestIndex += 1) {
+        const requestOffset = filterActive ? requestFilterOffset : (reset ? 0 : existing.length)
+        const cursorKey = filterActive ? `${requestScanOffset}:${requestFilterOffset}` : 'default'
+        if (filterActive && seenFilterCursors.has(cursorKey)) break
+        if (filterActive) seenFilterCursors.add(cursorKey)
 
-      const raw = response?.messages || []
+        const params = {
+          account: selectedAccount.value,
+          username,
+          limit: messagePageSize,
+          offset: requestOffset,
+          order: 'asc'
+        }
+        if (filterActive) {
+          params.render_types = messageTypeFilter.value
+          params.filter_mode = 'progressive'
+          params.scan_offset = requestScanOffset
+          params.scan_limit = messageTypeFilterScanPageSize
+        }
+        params.source = DEFAULT_CHAT_SOURCE
+        trace.log('loadMessages:request:start', {
+          requestIndex,
+          offset: requestOffset,
+          scanOffset: filterActive ? requestScanOffset : null,
+          filterOffset: filterActive ? requestFilterOffset : null,
+          scanLimit: filterActive ? messageTypeFilterScanPageSize : null,
+          existingCount: existing.length,
+          renderTypeFilter: messageTypeFilter.value,
+          source: DEFAULT_CHAT_SOURCE,
+          realtime: !!realtimeEnabled.value
+        })
+
+        response = await api.listChatMessages(params)
+        const pageRaw = Array.isArray(response?.messages) ? response.messages : []
+        rawChunks.push(pageRaw)
+        trace.log('loadMessages:request:end', {
+          requestIndex,
+          source: response?.source || DEFAULT_CHAT_SOURCE,
+          rawCount: pageRaw.length,
+          accumulatedRawCount: rawChunks.reduce((sum, chunk) => sum + chunk.length, 0),
+          total: Number(response?.total || 0),
+          hasMore: response?.hasMore,
+          nextScanOffset: response?.nextScanOffset,
+          nextFilterOffset: response?.nextFilterOffset
+        })
+
+        if (!filterActive) break
+        if (!response?.hasMore) break
+        if (pageRaw.length > 0) break
+
+        const nextScanOffset = Math.max(
+          0,
+          Number(response?.nextScanOffset ?? (requestScanOffset + messageTypeFilterScanPageSize)) || 0
+        )
+        const nextFilterOffset = Math.max(0, Number(response?.nextFilterOffset ?? 0) || 0)
+        const nextCursorKey = `${nextScanOffset}:${nextFilterOffset}`
+        if (nextCursorKey === cursorKey || seenFilterCursors.has(nextCursorKey)) break
+        requestScanOffset = nextScanOffset
+        requestFilterOffset = nextFilterOffset
+      }
+
+      if (!response) response = { messages: [], total: 0, hasMore: false }
+      const raw = filterActive
+        ? rawChunks.slice().reverse().flat()
+        : rawChunks.flat()
       trace.log('loadMessages:normalize:start', {
         rawCount: raw.length
       })
@@ -1041,9 +1102,17 @@ export const useChatMessages = ({
         renderTypeCounts: summarizeRenderTypes(mapped)
       })
 
-      if (activeMessagesFor.value !== username) {
+      if (
+        loadSeq !== messageLoadSeq
+        || activeMessagesFor.value !== username
+        || String(selectedAccount.value || '').trim() !== accountAtStart
+        || String(selectedContact.value?.username || '').trim() !== String(username || '').trim()
+        || (String(messageTypeFilter.value || 'all').trim() || 'all') !== filterAtStart
+      ) {
         trace.log('loadMessages:abort-stale', {
-          activeMessagesFor: activeMessagesFor.value
+          activeMessagesFor: activeMessagesFor.value,
+          currentLoadSeq: messageLoadSeq,
+          currentFilter: String(messageTypeFilter.value || 'all').trim() || 'all'
         })
         return
       }
@@ -1076,12 +1145,28 @@ export const useChatMessages = ({
         ...messagesMeta.value,
         [username]: {
           total: Number(response?.total || 0),
-          hasMore: response?.hasMore
+          hasMore: response?.hasMore,
+          renderTypes: filterActive ? String(messageTypeFilter.value || '') : '',
+          filterMode: filterActive ? 'progressive' : '',
+          scanOffset: filterActive ? scanOffset : null,
+          filterOffset: filterActive ? filterOffset : null,
+          scanLimit: filterActive ? messageTypeFilterScanPageSize : null,
+          nextScanOffset: filterActive
+            ? Math.max(
+              scanOffset,
+              Number(response?.nextScanOffset ?? (scanOffset + messageTypeFilterScanPageSize)) || scanOffset
+            )
+            : null,
+          nextFilterOffset: filterActive
+            ? Math.max(0, Number(response?.nextFilterOffset ?? 0) || 0)
+            : null
         }
       }
       trace.log('loadMessages:meta-commit:end', {
         total: Number(response?.total || 0),
-        hasMore: response?.hasMore
+        hasMore: response?.hasMore,
+        nextScanOffset: response?.nextScanOffset,
+        nextFilterOffset: response?.nextFilterOffset
       })
 
       trace.log('loadMessages:nextTick:start')
@@ -1115,9 +1200,13 @@ export const useChatMessages = ({
         reset: !!reset,
         error
       })
-      messagesError.value = error?.message || '加载聊天记录失败'
+      if (loadSeq === messageLoadSeq) {
+        messagesError.value = error?.message || '加载聊天记录失败'
+      }
     } finally {
-      isLoadingMessages.value = false
+      if (loadSeq === messageLoadSeq) {
+        isLoadingMessages.value = false
+      }
       trace.log('loadMessages:exit', {
         loading: isLoadingMessages.value,
         error: messagesError.value
@@ -1127,6 +1216,7 @@ export const useChatMessages = ({
 
   const loadMoreMessages = async () => {
     if (!selectedContact.value) return
+    if (isLoadingMessages.value) return
     if (searchContext.value?.active) return
     await loadMessages({ username: selectedContact.value.username, reset: false })
   }
