@@ -372,6 +372,18 @@
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.5 5.5a8 8 0 010 13" />
                         </svg>
                       </button>
+
+                      <button
+                        type="button"
+                        class="absolute bottom-2 right-2 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-black/45 text-white opacity-0 transition group-hover:opacity-100 hover:bg-[#07c160]"
+                        title="下载"
+                        aria-label="下载朋友圈媒体"
+                        @click.stop="downloadSnsMedia(post, post.media[0], 0)"
+                      >
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v11m0 0l4-4m-4 4l-4-4M5 21h14" />
+                        </svg>
+                      </button>
                     </div>
                     <div
                         v-else
@@ -460,6 +472,18 @@
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5L6 9H2v6h4l5 4V5z" />
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.5 8.5a4 4 0 010 7" />
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.5 5.5a8 8 0 010 13" />
+                        </svg>
+                      </button>
+
+                      <button
+                        type="button"
+                        class="absolute bottom-1.5 right-1.5 z-20 flex h-6 w-6 items-center justify-center rounded-full bg-black/45 text-white opacity-0 transition group-hover:opacity-100 hover:bg-[#07c160]"
+                        title="下载"
+                        aria-label="下载朋友圈媒体"
+                        @click.stop="downloadSnsMedia(post, m, idx)"
+                      >
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v11m0 0l4-4m-4 4l-4-4M5 21h14" />
                         </svg>
                       </button>
                     </div>
@@ -2050,10 +2074,11 @@ const mediaSizeGroupIndex = (post, m, idx) => {
   return count
 }
 
-const getSnsMediaUrl = (post, m, idx, rawUrl) => {
+const getSnsMediaUrl = (post, m, idx, rawUrl, options = {}) => {
   const raw = upgradeTencentHttps(String(rawUrl || '').trim())
   if (!raw) return ''
   const rawLower = raw.toLowerCase()
+  const preferFull = !!options?.preferFull
 
   // If backend already provides a local media endpoint, rewrite it to the effective API base
   // (so web builds with a custom API port still work).
@@ -2098,7 +2123,7 @@ const getSnsMediaUrl = (post, m, idx, rawUrl) => {
         if (mediaType) parts.set('media_type', mediaType)
 
         const thumbCandidate = String(m?.thumb || m?.thumbUrl || '').trim()
-        const isThumbRequest = !!thumbCandidate && raw === upgradeTencentHttps(thumbCandidate)
+        const isThumbRequest = (!preferFull) && !!thumbCandidate && raw === upgradeTencentHttps(thumbCandidate)
         const token = String(
           isThumbRequest
             ? (m?.thumbToken || m?.thumbUrlToken || m?.thumbAttrs?.token || m?.token || m?.urlAttrs?.token || '')
@@ -2117,8 +2142,9 @@ const getSnsMediaUrl = (post, m, idx, rawUrl) => {
         // When cache is disabled, bust browser caching so backend really downloads+decrypts each time.
         if (!snsUseCache.value) parts.set('_t', String(Date.now()))
         if (md5) parts.set('md5', md5)
+        if (preferFull) parts.set('variant', 'full')
         // 修改后端媒体匹配逻辑时递增版本号，避免浏览器复用旧的错误缓存。
-        parts.set('v', '11')
+        parts.set('v', preferFull ? '12' : '11')
         parts.set('url', raw)
         return `${apiBase}/sns/media?${parts.toString()}`
       }
@@ -2133,7 +2159,82 @@ const getMediaThumbSrc = (post, m, idx = 0) => {
 }
 
 const getMediaPreviewSrc = (post, m, idx = 0) => {
-  return getSnsMediaUrl(post, m, idx, m?.url || m?.thumb || m?.thumbUrl)
+  return getSnsMediaUrl(post, m, idx, m?.url || m?.originUrl || m?.originalUrl || m?.thumb || m?.thumbUrl, { preferFull: true })
+}
+
+const inferSnsDownloadExt = (blob, url, isVideo = false) => {
+  const type = String(blob?.type || '').toLowerCase()
+  if (type.includes('mp4')) return 'mp4'
+  if (type.includes('quicktime')) return 'mov'
+  if (type.includes('webm')) return 'webm'
+  if (type.includes('png')) return 'png'
+  if (type.includes('webp')) return 'webp'
+  if (type.includes('gif')) return 'gif'
+  if (type.includes('jpeg') || type.includes('jpg')) return 'jpg'
+  try {
+    const pathname = new URL(String(url || ''), window.location.href).pathname
+    const m = pathname.match(/\.([a-z0-9]{2,5})$/i)
+    if (m?.[1]) return m[1].toLowerCase()
+  } catch {}
+  return isVideo ? 'mp4' : 'jpg'
+}
+
+const makeSnsDownloadName = (post, m, idx, ext) => {
+  const ts = Number(post?.createTime || 0)
+  const baseTime = ts > 0 ? new Date(ts * 1000) : new Date()
+  const pad2 = (n) => String(n).padStart(2, '0')
+  const stamp = `${baseTime.getFullYear()}${pad2(baseTime.getMonth() + 1)}${pad2(baseTime.getDate())}_${pad2(baseTime.getHours())}${pad2(baseTime.getMinutes())}${pad2(baseTime.getSeconds())}`
+  const mediaId = String(m?.id || m?.mediaId || '').trim().replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 24)
+  const suffix = mediaId || String(Number(idx) || 0)
+  return `sns_${stamp}_${suffix}.${ext || 'jpg'}`
+}
+
+const triggerBrowserDownload = (blob, filename) => {
+  if (!process.client || typeof document === 'undefined') return false
+  const objectUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = objectUrl
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 60000)
+  return true
+}
+
+const downloadSnsMedia = async (post, m, idx = 0) => {
+  if (!process.client) return
+  const isVideo = Number(m?.type || 0) === 6
+  const candidates = [
+    isVideo ? getSnsRemoteVideoSrc(post, m) : '',
+    getMediaPreviewSrc(post, m, idx),
+    getMediaThumbSrc(post, m, idx),
+    normalizeMediaUrl(upgradeTencentHttps(String(m?.url || m?.originUrl || m?.originalUrl || m?.thumb || '').trim()))
+  ].map((u) => String(u || '').trim()).filter(Boolean)
+
+  const seen = new Set()
+  const urls = candidates.filter((u) => {
+    if (seen.has(u)) return false
+    seen.add(u)
+    return true
+  })
+  if (!urls.length) return
+
+  for (const url of urls) {
+    try {
+      const resp = await fetch(url)
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      const blob = await resp.blob()
+      if (!blob || !blob.size) throw new Error('empty media')
+      const ext = inferSnsDownloadExt(blob, url, isVideo)
+      triggerBrowserDownload(blob, makeSnsDownloadName(post, m, idx, ext))
+      return
+    } catch {}
+  }
+
+  try {
+    window.open(urls[0], '_blank', 'noopener,noreferrer')
+  } catch {}
 }
 
 const commentImageErrors = ref({})
