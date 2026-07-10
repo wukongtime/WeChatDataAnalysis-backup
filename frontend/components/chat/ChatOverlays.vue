@@ -1095,7 +1095,7 @@
                     <div v-else class="px-3 py-2 text-sm text-gray-700">{{ rec.content || '[视频]' }}</div>
 
                     <button
-                      v-if="rec.videoThumbUrl && rec.videoUrl"
+                      v-if="rec.videoUrl"
                       type="button"
                       class="absolute inset-0 flex items-center justify-center"
                       @click.stop="openVideoPreview(rec.videoUrl, rec.videoThumbUrl)"

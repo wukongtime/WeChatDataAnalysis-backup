@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 from functools import lru_cache
 import hashlib
 import html
@@ -490,12 +491,116 @@ def _parse_304_headers(headers: Any) -> tuple[str, str]:
     return etag, last_modified
 
 
+def _chat_attach_hash_candidates(*values: str) -> list[str]:
+    """Return possible msg/attach conversation directory names."""
+    out: list[str] = []
+    for value in values:
+        u = str(value or "").strip()
+        if not u:
+            continue
+        if re.fullmatch(r"[a-f0-9]{32}", u, flags=re.I):
+            out.append(u.lower())
+        # Runtime message ids commonly look like `message_5:Msg_<attach_hash>:7279`.
+        # Extracting the embedded attach hash is the generic anchor for merged
+        # chat-history Rec media; otherwise only md5(username) works.
+        for match in re.finditer(r"(?i)(?:^|[^0-9a-f])([0-9a-f]{32})(?:$|[^0-9a-f])", u):
+            out.append(str(match.group(1) or "").lower())
+        try:
+            out.append(hashlib.md5(u.encode()).hexdigest())
+        except Exception:
+            pass
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for item in out:
+        key = str(item or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        uniq.append(key)
+    return uniq
+
+
+def _size_matches_with_prefix(actual_size: int, expected_size: int, *, tolerance: int = 64) -> bool:
+    expected = int(expected_size or 0)
+    if expected <= 0:
+        return True
+    actual = int(actual_size or 0)
+    return actual == expected or abs(actual - expected) <= int(tolerance or 0)
+
+
+def _normalize_record_index_path(value: str) -> str:
+    text = str(value or "").strip()
+    return text if re.fullmatch(r"\d+(?:_\d+)*", text) else ""
+
+
+def _month_hint_from_timestamp(ts_value: int) -> str:
+    try:
+        ts = int(ts_value or 0)
+        if ts > 0:
+            dt = datetime.datetime.fromtimestamp(ts)
+            return f"{dt.year:04d}-{dt.month:02d}"
+    except Exception:
+        pass
+    return ""
+
+
+def _iter_chat_attach_base_dirs(wxid_dir: Path, username: str, record_attach: str = "") -> list[Path]:
+    out: list[Path] = []
+    seen: set[str] = set()
+    for chat_hash in _chat_attach_hash_candidates(record_attach, username):
+        p = wxid_dir / "msg" / "attach" / chat_hash
+        try:
+            if not (p.exists() and p.is_dir()):
+                continue
+            key = str(p.resolve())
+        except Exception:
+            key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
+def _iter_chat_attach_month_dirs(base_dir: Path, src_create_time: int = 0) -> list[Path]:
+    month_dirs: list[Path] = []
+    month_hint = _month_hint_from_timestamp(int(src_create_time or 0))
+    if month_hint:
+        hinted = base_dir / month_hint
+        try:
+            if hinted.exists() and hinted.is_dir():
+                month_dirs.append(hinted)
+        except Exception:
+            pass
+
+    try:
+        children: list[Path] = []
+        for child in base_dir.iterdir():
+            try:
+                if child.is_dir() and _is_video_month_dir_name(child.name) and child not in month_dirs:
+                    children.append(child)
+            except Exception:
+                continue
+        children.sort(key=lambda item: item.name, reverse=True)
+        month_dirs.extend(children)
+    except Exception:
+        pass
+
+    try:
+        if (base_dir / "Rec").exists() and base_dir not in month_dirs:
+            month_dirs.append(base_dir)
+    except Exception:
+        pass
+    return month_dirs
+
+
 @lru_cache(maxsize=4096)
 def _fast_probe_image_path_in_chat_attach(
     *,
     wxid_dir_str: str,
     username: str,
     md5: str,
+    record_attach: str = "",
 ) -> Optional[str]:
     """Fast-ish fallback for image md5 misses not indexed by hardlink.db.
 
@@ -517,16 +622,8 @@ def _fast_probe_image_path_in_chat_attach(
     except Exception:
         return None
 
-    try:
-        chat_hash = hashlib.md5(username.encode()).hexdigest()
-    except Exception:
-        return None
-
-    base_dir = wxid_dir / "msg" / "attach" / chat_hash
-    try:
-        if not (base_dir.exists() and base_dir.is_dir()):
-            return None
-    except Exception:
+    base_dirs = _iter_chat_attach_base_dirs(wxid_dir, username, record_attach)
+    if not base_dirs:
         return None
 
     def variant_rank(stem: str) -> int:
@@ -544,45 +641,158 @@ def _fast_probe_image_path_in_chat_attach(
     best_key: Optional[tuple[int, int, int, float, str]] = None
     best_path: Optional[str] = None
 
-    try:
-        for dirpath, _dirnames, filenames in os.walk(base_dir):
-            for fn in filenames:
-                fn_low = str(fn).lower()
-                if not fn_low.startswith(md5_norm):
-                    continue
-                p = Path(dirpath) / fn
-                try:
-                    if not p.is_file():
+    for base_dir in base_dirs:
+        try:
+            for dirpath, _dirnames, filenames in os.walk(base_dir):
+                for fn in filenames:
+                    fn_low = str(fn).lower()
+                    if not fn_low.startswith(md5_norm):
                         continue
-                except Exception:
-                    continue
+                    p = Path(dirpath) / fn
+                    try:
+                        if not p.is_file():
+                            continue
+                    except Exception:
+                        continue
 
-                ext = str(p.suffix or "").lower()
-                if ext not in {".dat", ".jpg", ".jpeg", ".png", ".gif", ".webp"}:
-                    continue
+                    ext = str(p.suffix or "").lower()
+                    if ext not in {".dat", ".jpg", ".jpeg", ".png", ".gif", ".webp"}:
+                        continue
 
-                stem = str(p.stem or "")
-                rank = variant_rank(stem)
-                ext_penalty = 1 if ext == ".dat" else 0
-                try:
-                    st = p.stat()
-                    sz = int(st.st_size)
-                    mt = float(st.st_mtime)
-                except Exception:
-                    sz = 0
-                    mt = 0.0
+                    stem = str(p.stem or "")
+                    rank = variant_rank(stem)
+                    ext_penalty = 1 if ext == ".dat" else 0
+                    try:
+                        st = p.stat()
+                        sz = int(st.st_size)
+                        mt = float(st.st_mtime)
+                    except Exception:
+                        sz = 0
+                        mt = 0.0
 
-                key = (rank, ext_penalty, -sz, -mt, str(p))
-                if best_key is None or key < best_key:
-                    best_key = key
-                    best_path = str(p)
-                    # Found a non-.dat big variant; that's good enough.
-                    if rank == 0 and ext_penalty == 0 and sz > 0:
-                        return best_path
+                    key = (rank, ext_penalty, -sz, -mt, str(p))
+                    if best_key is None or key < best_key:
+                        best_key = key
+                        best_path = str(p)
+                        # Found a non-.dat big variant; that's good enough.
+                        if rank == 0 and ext_penalty == 0 and sz > 0:
+                            return best_path
+        except Exception:
+            continue
+
+    return best_path
+
+
+@lru_cache(maxsize=1024)
+def _fast_probe_record_image_in_chat_attach(
+    *,
+    wxid_dir_str: str,
+    username: str,
+    md5: str = "",
+    src_create_time: int = 0,
+    file_size: int = 0,
+    record_index: int = -1,
+    record_index_path: str = "",
+    record_attach: str = "",
+) -> Optional[str]:
+    """Resolve images embedded in merged chat-history records.
+
+    These are stored as `Rec/<record-id>/Img/<dataitem-index>` (and `<idx>_t`)
+    rather than md5-prefixed filenames. The XML `datasize` is usually the
+    decoded payload size, while the on-disk file can contain a small WeChat
+    prefix, so size matching allows a tiny delta.
+    """
+    wxid_dir_str = str(wxid_dir_str or "").strip()
+    username = str(username or "").strip()
+    idx = int(record_index if record_index is not None else -1)
+    idx_path = _normalize_record_index_path(record_index_path)
+    if not wxid_dir_str or not username or (idx < 0 and not idx_path):
+        return None
+
+    try:
+        wxid_dir = Path(wxid_dir_str)
     except Exception:
         return None
 
-    return best_path
+    base_dirs = _iter_chat_attach_base_dirs(wxid_dir, username, record_attach)
+    if not base_dirs:
+        return None
+
+    index_stems: list[str] = []
+    if idx_path:
+        index_stems.append(idx_path)
+    if idx >= 0:
+        index_stems.append(str(idx))
+    seen_stems: set[str] = set()
+    index_stems = [s for s in index_stems if s and not (s in seen_stems or seen_stems.add(s))]
+
+    variants: list[str] = []
+    seen_variants: set[str] = set()
+
+    def add_variant(name: str) -> None:
+        if not name or name in seen_variants:
+            return
+        seen_variants.add(name)
+        variants.append(name)
+
+    for idx_text in index_stems:
+        for name in [
+            idx_text,
+            f"{idx_text}.dat",
+            f"{idx_text}.jpg",
+            f"{idx_text}.jpeg",
+            f"{idx_text}.png",
+            f"{idx_text}.webp",
+            f"{idx_text}_h",
+            f"{idx_text}_h.dat",
+            f"{idx_text}_b",
+            f"{idx_text}_b.dat",
+            f"{idx_text}_t",
+            f"{idx_text}_t.dat",
+        ]:
+            add_variant(name)
+    expected_size = int(file_size or 0)
+
+    def looks_like_media(path: Path) -> bool:
+        try:
+            data = path.read_bytes()
+            stripped, mt = _try_strip_media_prefix(data)
+            if mt == "application/octet-stream":
+                mt = _detect_image_media_type(data[:32])
+                stripped = data
+            return bool(mt.startswith("image/") and _is_probably_valid_image(stripped, mt))
+        except Exception:
+            return False
+
+    for base_dir in base_dirs:
+        for month_dir in _iter_chat_attach_month_dirs(base_dir, src_create_time):
+            rec_root = month_dir / "Rec"
+            try:
+                if not (rec_root.exists() and rec_root.is_dir()):
+                    continue
+            except Exception:
+                continue
+            try:
+                for dirpath, _dirnames, _filenames in os.walk(str(rec_root)):
+                    img_dir = Path(dirpath)
+                    if img_dir.name.lower() != "img":
+                        continue
+                    for name in variants:
+                        candidate = img_dir / name
+                        try:
+                            if not candidate.exists() or not candidate.is_file():
+                                continue
+                            stat_size = int(candidate.stat().st_size)
+                        except Exception:
+                            continue
+                        if expected_size > 0 and (not _size_matches_with_prefix(stat_size, expected_size, tolerance=96)):
+                            continue
+                        if expected_size > 0 or looks_like_media(candidate):
+                            return str(candidate)
+            except Exception:
+                continue
+
+    return None
 
 
 @lru_cache(maxsize=64)
@@ -616,6 +826,12 @@ def _fast_probe_video_path_by_md5(
     wxid_dir: Optional[Path],
     db_storage_dir: Optional[Path],
     want_thumb: bool,
+    username: Optional[str] = None,
+    src_create_time: Optional[int] = None,
+    file_size: Optional[int] = None,
+    record_index: Optional[int] = None,
+    record_index_path: Optional[str] = None,
+    record_attach: Optional[str] = None,
 ) -> Optional[Path]:
     md5_norm = str(md5 or "").strip().lower()
     if not md5_norm:
@@ -643,60 +859,271 @@ def _fast_probe_video_path_by_md5(
         except Exception:
             continue
 
-    if not uniq_bases:
+    if uniq_bases:
+        if want_thumb:
+            variants = [
+                f"{md5_norm}_thumb.jpg",
+                f"{md5_norm}_thumb.jpeg",
+                f"{md5_norm}_thumb.png",
+                f"{md5_norm}_thumb.webp",
+                f"{md5_norm}_thumb.dat",
+                f"{md5_norm}.jpg",
+                f"{md5_norm}.jpeg",
+                f"{md5_norm}.png",
+                f"{md5_norm}.gif",
+                f"{md5_norm}.webp",
+                f"{md5_norm}.dat",
+            ]
+        else:
+            variants = [
+                f"{md5_norm}.mp4",
+                f"{md5_norm}.m4v",
+                f"{md5_norm}.mov",
+                f"{md5_norm}.dat",
+            ]
+
+        def is_month_dir_name(name: str) -> bool:
+            n = str(name or "")
+            return (
+                len(n) == 7
+                and n[4] == "-"
+                and n[:4].isdigit()
+                and n[5:7].isdigit()
+            )
+
+        for base in uniq_bases:
+            dirs_to_check: list[Path] = [base]
+            try:
+                for child in base.iterdir():
+                    try:
+                        if child.is_dir() and is_month_dir_name(child.name):
+                            dirs_to_check.append(child)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            for d in dirs_to_check:
+                for name in variants:
+                    p = d / name
+                    try:
+                        if p.exists() and p.is_file():
+                            return p
+                    except Exception:
+                        continue
+
+    if wxid_dir and username:
+        attach_hit = _fast_probe_record_video_in_chat_attach(
+            wxid_dir_str=str(wxid_dir),
+            username=str(username or ""),
+            md5=md5_norm,
+            want_thumb=bool(want_thumb),
+            src_create_time=int(src_create_time or 0),
+            file_size=int(file_size or 0),
+            record_index=int(record_index if record_index is not None else -1),
+            record_index_path=str(record_index_path or ""),
+            record_attach=str(record_attach or ""),
+        )
+        if attach_hit:
+            return Path(attach_hit)
+
+    return None
+
+
+@lru_cache(maxsize=512)
+def _fast_probe_record_video_in_chat_attach(
+    *,
+    wxid_dir_str: str,
+    username: str,
+    md5: str,
+    want_thumb: bool,
+    src_create_time: int = 0,
+    file_size: int = 0,
+    record_index: int = -1,
+    record_index_path: str = "",
+    record_attach: str = "",
+) -> Optional[str]:
+    """Resolve videos embedded in merged chat-history records.
+
+    WeChat stores those source videos under:
+      `{wxid_dir}/msg/attach/{md5(username)}/YYYY-MM/Rec/<record-id>/V/<dataitem-index>.mp4`
+
+    Older code verified only XML fullmd5, but real WeChat can save the Rec file
+    with a different content md5 after the media is loaded. For merged records,
+    `record_index + datasize + month + conversation` is the stable local key.
+    """
+    wxid_dir_str = str(wxid_dir_str or "").strip()
+    username = str(username or "").strip()
+    md5_norm = str(md5 or "").strip().lower()
+    if not wxid_dir_str or not username or not re.fullmatch(r"[a-f0-9]{32}", md5_norm):
         return None
 
-    if want_thumb:
-        variants = [
-            f"{md5_norm}_thumb.jpg",
-            f"{md5_norm}_thumb.jpeg",
-            f"{md5_norm}_thumb.png",
-            f"{md5_norm}_thumb.webp",
-            f"{md5_norm}_thumb.dat",
-            f"{md5_norm}.jpg",
-            f"{md5_norm}.jpeg",
-            f"{md5_norm}.png",
-            f"{md5_norm}.gif",
-            f"{md5_norm}.webp",
-            f"{md5_norm}.dat",
-        ]
-    else:
-        variants = [
-            f"{md5_norm}.mp4",
-            f"{md5_norm}.m4v",
-            f"{md5_norm}.mov",
-            f"{md5_norm}.dat",
-        ]
+    try:
+        wxid_dir = Path(wxid_dir_str)
+    except Exception:
+        return None
 
-    def is_month_dir_name(name: str) -> bool:
-        n = str(name or "")
-        return (
-            len(n) == 7
-            and n[4] == "-"
-            and n[:4].isdigit()
-            and n[5:7].isdigit()
-        )
+    base_dirs = _iter_chat_attach_base_dirs(wxid_dir, username, record_attach)
+    if not base_dirs:
+        return None
 
-    for base in uniq_bases:
-        dirs_to_check: list[Path] = [base]
+    expected_size = int(file_size or 0)
+    idx = int(record_index if record_index is not None else -1)
+    idx_path = _normalize_record_index_path(record_index_path)
+
+    def file_md5(path: Path) -> str:
+        h = hashlib.md5()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
+
+    def is_plain_video(path: Path) -> bool:
         try:
-            for child in base.iterdir():
-                try:
-                    if child.is_dir() and is_month_dir_name(child.name):
-                        dirs_to_check.append(child)
-                except Exception:
-                    continue
+            with open(path, "rb") as f:
+                head = f.read(16)
+            return bool(len(head) >= 8 and head[4:8] == b"ftyp")
         except Exception:
-            pass
+            return False
 
-        for d in dirs_to_check:
-            for name in variants:
-                p = d / name
-                try:
-                    if p.exists() and p.is_file():
-                        return p
-                except Exception:
+    def sibling_thumb_for_video(video_path: Path) -> Optional[Path]:
+        stem = str(video_path.stem or "")
+        rec_dir = video_path.parent.parent
+        img_dir = rec_dir / "Img"
+        variants = [
+            f"{stem}_t",
+            f"{stem}_t.dat",
+            f"{stem}_thumb.jpg",
+            f"{stem}_thumb.jpeg",
+            f"{stem}_thumb.png",
+            f"{stem}.jpg",
+            f"{stem}.jpeg",
+            f"{stem}.png",
+            f"{stem}.webp",
+            stem,
+        ]
+        for name in variants:
+            p = img_dir / name
+            try:
+                if p.exists() and p.is_file():
+                    return p
+            except Exception:
+                continue
+        try:
+            if img_dir.exists() and img_dir.is_dir():
+                files = sorted(
+                    [p for p in img_dir.iterdir() if p.is_file()],
+                    key=lambda p: (0 if str(p.name).startswith(stem) else 1, str(p.name)),
+                )
+                return files[0] if files else None
+        except Exception:
+            return None
+        return None
+
+    def accept_video(candidate: Path, *, allow_index_size: bool) -> bool:
+        try:
+            if not candidate.is_file():
+                return False
+            stat_size = int(candidate.stat().st_size)
+            if expected_size > 0 and stat_size != expected_size:
+                return False
+            if allow_index_size and expected_size > 0 and is_plain_video(candidate):
+                return True
+            return file_md5(candidate) == md5_norm
+        except Exception:
+            return False
+
+    def loose_index_video_score(candidate: Path) -> Optional[tuple[int, int, float, str]]:
+        if not idx_path:
+            return None
+        try:
+            if str(candidate.stem or "") != idx_path:
+                return None
+            if not candidate.is_file() or not is_plain_video(candidate):
+                return None
+            stat = candidate.stat()
+            size_delta = abs(int(stat.st_size) - expected_size) if expected_size > 0 else 0
+            return (size_delta, -int(stat.st_size), -float(stat.st_mtime), str(candidate))
+        except Exception:
+            return None
+
+    video_exts = {".mp4", ".m4v", ".mov"}
+    index_names: list[str] = []
+    index_stems: list[str] = []
+    if idx_path:
+        index_stems.append(idx_path)
+    if idx >= 0:
+        index_stems.append(str(idx))
+    seen_stems: set[str] = set()
+    for stem in index_stems:
+        if not stem or stem in seen_stems:
+            continue
+        seen_stems.add(stem)
+        index_names.extend([f"{stem}.mp4", f"{stem}.m4v", f"{stem}.mov"])
+
+    loose_index_hits: list[tuple[tuple[int, int, float, str], Path]] = []
+
+    for base_dir in base_dirs:
+        for month_dir in _iter_chat_attach_month_dirs(base_dir, src_create_time):
+            rec_root = month_dir / "Rec"
+            try:
+                if not (rec_root.exists() and rec_root.is_dir()):
                     continue
+            except Exception:
+                continue
+
+            # First: direct Rec index lookup. This fixes freshly-loaded merged
+            # record media where the saved file is `V/2.mp4` / `V/3.mp4` and the
+            # raw file md5 no longer equals XML fullmd5.
+            if index_names:
+                try:
+                    for dirpath, _dirnames, _filenames in os.walk(str(rec_root)):
+                        v_dir = Path(dirpath)
+                        if v_dir.name.lower() != "v":
+                            continue
+                        for name in index_names:
+                            candidate = v_dir / name
+                            if accept_video(candidate, allow_index_size=True):
+                                if not want_thumb:
+                                    return str(candidate)
+                                thumb = sibling_thumb_for_video(candidate)
+                                return str(thumb) if thumb else None
+                            score = loose_index_video_score(candidate)
+                            if score is not None:
+                                loose_index_hits.append((score, candidate))
+                except Exception:
+                    pass
+
+            if loose_index_hits:
+                loose_index_hits.sort(key=lambda item: item[0])
+                candidate = loose_index_hits[0][1]
+                if not want_thumb:
+                    return str(candidate)
+                thumb = sibling_thumb_for_video(candidate)
+                return str(thumb) if thumb else None
+
+            # Fallback: scan scoped Rec/V files and verify md5. This keeps the
+            # old behavior for records where no dataitem index is available.
+            try:
+                for dirpath, _dirnames, filenames in os.walk(str(rec_root)):
+                    current_dir = Path(dirpath)
+                    if current_dir.name.lower() != "v":
+                        continue
+                    for fn in filenames:
+                        candidate = current_dir / fn
+                        if str(candidate.suffix or "").lower() not in video_exts:
+                            continue
+                        if not accept_video(candidate, allow_index_size=False):
+                            continue
+
+                        if not want_thumb:
+                            return str(candidate)
+                        thumb = sibling_thumb_for_video(candidate)
+                        return str(thumb) if thumb else None
+            except Exception:
+                continue
 
     return None
 
@@ -1866,6 +2293,11 @@ async def get_chat_image(
     server_id: Optional[int] = None,
     account: Optional[str] = None,
     username: Optional[str] = None,
+    src_create_time: Optional[int] = None,
+    file_size: Optional[int] = None,
+    record_index: Optional[int] = None,
+    record_index_path: Optional[str] = None,
+    record_attach: Optional[str] = None,
     deep_scan: bool = False,
     prefer_live: bool = False,
 ):
@@ -1885,6 +2317,11 @@ async def get_chat_image(
         md5=str(md5 or ""),
         fileId=str(file_id or ""),
         serverId=int(server_id or 0),
+        srcCreateTime=int(src_create_time or 0),
+        fileSize=int(file_size or 0),
+        recordIndex=int(record_index if record_index is not None else -1),
+        recordIndexPath=_normalize_record_index_path(str(record_index_path or "")),
+        recordAttach=str(record_attach or ""),
         deepScan=bool(deep_scan),
         preferLive=bool(prefer_live),
     )
@@ -2037,6 +2474,7 @@ async def get_chat_image(
                 wxid_dir_str=str(wxid_dir),
                 username=str(username),
                 md5=str(md5),
+                record_attach=str(record_attach or ""),
             )
             if hit:
                 p = Path(hit)
@@ -2045,6 +2483,33 @@ async def get_chat_image(
                 found=bool(hit),
                 path=str(hit or ""),
                 elapsedMsLocal=round((time.perf_counter() - fast_probe_started_at) * 1000.0, 1),
+            )
+
+        # Merged chat-history images are saved as Rec/<record-id>/Img/<dataitem-index>
+        # and do not have md5-prefixed filenames, so use the record index/datasize
+        # passed from recordItem XML before any broad file_id/deep scan.
+        if (not p) and wxid_dir and username and (record_index is not None or _normalize_record_index_path(str(record_index_path or ""))):
+            record_probe_started_at = time.perf_counter()
+            hit = await asyncio.to_thread(
+                _fast_probe_record_image_in_chat_attach,
+                wxid_dir_str=str(wxid_dir),
+                username=str(username),
+                md5=str(md5 or ""),
+                src_create_time=int(src_create_time or 0),
+                file_size=int(file_size or 0),
+                record_index=int(record_index if record_index is not None else -1),
+                record_index_path=str(record_index_path or ""),
+                record_attach=str(record_attach or ""),
+            )
+            if hit:
+                p = Path(hit)
+            trace(
+                "source:chat-record-image-probe",
+                found=bool(hit),
+                path=str(hit or ""),
+                recordIndex=int(record_index if record_index is not None else -1),
+                recordIndexPath=_normalize_record_index_path(str(record_index_path or "")),
+                elapsedMsLocal=round((time.perf_counter() - record_probe_started_at) * 1000.0, 1),
             )
 
         # Some WeChat versions send both md5 + file_id; md5 may be missing from hardlink.db while file_id still works.
@@ -2364,6 +2829,13 @@ async def get_chat_video_thumb(
     file_id: Optional[str] = None,
     account: Optional[str] = None,
     username: Optional[str] = None,
+    server_id: Optional[int] = None,
+    src_local_id: Optional[int] = None,
+    src_create_time: Optional[int] = None,
+    file_size: Optional[int] = None,
+    record_index: Optional[int] = None,
+    record_index_path: Optional[str] = None,
+    record_attach: Optional[str] = None,
     deep_scan: bool = False,
 ):
     if (not md5) and (not file_id):
@@ -2378,6 +2850,13 @@ async def get_chat_video_thumb(
         username=str(username or ""),
         md5=md5_norm,
         fileId=file_id_norm,
+        serverId=int(server_id or 0),
+        srcLocalId=int(src_local_id or 0),
+        srcCreateTime=int(src_create_time or 0),
+        fileSize=int(file_size or 0),
+        recordIndex=int(record_index if record_index is not None else -1),
+        recordIndexPath=_normalize_record_index_path(str(record_index_path or "")),
+        recordAttach=str(record_attach or ""),
         deepScan=bool(deep_scan),
     )
     trace("request:start")
@@ -2486,6 +2965,12 @@ async def get_chat_video_thumb(
                 wxid_dir=wxid_dir,
                 db_storage_dir=db_storage_dir,
                 want_thumb=True,
+                username=username,
+                src_create_time=src_create_time,
+                file_size=file_size,
+                record_index=record_index,
+                record_index_path=record_index_path,
+                record_attach=record_attach,
             )
             trace(
                 "source:fast-probe",
@@ -2571,6 +3056,13 @@ async def get_chat_video(
     file_id: Optional[str] = None,
     account: Optional[str] = None,
     username: Optional[str] = None,
+    server_id: Optional[int] = None,
+    src_local_id: Optional[int] = None,
+    src_create_time: Optional[int] = None,
+    file_size: Optional[int] = None,
+    record_index: Optional[int] = None,
+    record_index_path: Optional[str] = None,
+    record_attach: Optional[str] = None,
     deep_scan: bool = False,
 ):
     if (not md5) and (not file_id):
@@ -2585,6 +3077,13 @@ async def get_chat_video(
         username=str(username or ""),
         md5=md5_norm,
         fileId=file_id_norm,
+        serverId=int(server_id or 0),
+        srcLocalId=int(src_local_id or 0),
+        srcCreateTime=int(src_create_time or 0),
+        fileSize=int(file_size or 0),
+        recordIndex=int(record_index if record_index is not None else -1),
+        recordIndexPath=_normalize_record_index_path(str(record_index_path or "")),
+        recordAttach=str(record_attach or ""),
         deepScan=bool(deep_scan),
     )
     trace("request:start")
@@ -2678,6 +3177,12 @@ async def get_chat_video(
                 wxid_dir=wxid_dir,
                 db_storage_dir=db_storage_dir,
                 want_thumb=False,
+                username=username,
+                src_create_time=src_create_time,
+                file_size=file_size,
+                record_index=record_index,
+                record_index_path=record_index_path,
+                record_attach=record_attach,
             )
             trace(
                 "source:fast-probe",
