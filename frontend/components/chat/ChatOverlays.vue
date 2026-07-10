@@ -822,9 +822,11 @@
                     <div
                       v-else-if="rec.renderType === 'emoji'"
                       class="inline-block"
+                      :class="rec.emojiUrl ? 'cursor-pointer' : ''"
+                      @click="rec.emojiUrl && openImagePreview(rec.emojiUrl)"
                       @contextmenu="openMediaContextMenu($event, rec, 'emoji')"
                     >
-                      <img v-if="rec.emojiUrl" :src="rec.emojiUrl" alt="表情" class="w-24 h-24 object-contain" />
+                      <img v-if="rec.emojiUrl" :src="rec.emojiUrl" alt="表情" class="w-24 h-24 object-contain hover:opacity-90 transition-opacity" />
                       <div v-else class="px-3 py-2 text-sm text-gray-700">{{ rec.content || '[表情]' }}</div>
                     </div>
 
@@ -1137,9 +1139,11 @@
                   <div
                     v-else-if="rec.renderType === 'emoji'"
                     class="inline-block"
+                    :class="rec.emojiUrl ? 'cursor-pointer' : ''"
+                    @click="rec.emojiUrl && openImagePreview(rec.emojiUrl)"
                     @contextmenu="openMediaContextMenu($event, rec, 'emoji')"
                   >
-                    <img v-if="rec.emojiUrl" :src="rec.emojiUrl" alt="表情" class="w-24 h-24 object-contain" />
+                    <img v-if="rec.emojiUrl" :src="rec.emojiUrl" alt="表情" class="w-24 h-24 object-contain hover:opacity-90 transition-opacity" />
                     <div v-else class="px-3 py-2 text-sm text-gray-700">{{ rec.content || '[表情]' }}</div>
                   </div>
 

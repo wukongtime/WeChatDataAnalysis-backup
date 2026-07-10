@@ -133,10 +133,11 @@
                       <img
                         v-chat-lazy-src="message.emojiUrl"
                         alt="表情"
-                        class="w-24 h-24 object-contain"
+                        class="w-24 h-24 object-contain cursor-pointer hover:opacity-90 transition-opacity"
                         loading="lazy"
                         decoding="async"
                         fetchpriority="low"
+                        @click.stop="openImagePreview(message.emojiUrl)"
                         @contextmenu="openMediaContextMenu($event, message, 'emoji')"
                       >
                       <button

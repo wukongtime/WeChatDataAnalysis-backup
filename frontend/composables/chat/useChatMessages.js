@@ -361,6 +361,9 @@ export const useChatMessages = ({
       if (message?.renderType === 'image') {
         push(message.imageUrl, message)
       }
+      if (message?.renderType === 'emoji') {
+        push(message.emojiUrl, { ...message, id: `${message.id || ''}:emoji`, label: message.content || '表情' })
+      }
       if (message?.quoteImageUrl) {
         push(message.quoteImageUrl, { ...message, id: `${message.id || ''}:quote-image` })
       }
