@@ -758,6 +758,8 @@ export const useApi = () => {
       body: {
         account: payload.account || null,
         dataset: payload.dataset || '',
+        username: payload.username || '',
+        subject_name: payload.subject_name || '',
         format: payload.format || 'html',
         types: Array.isArray(payload.types) ? payload.types : [],
         query: payload.query || '',
