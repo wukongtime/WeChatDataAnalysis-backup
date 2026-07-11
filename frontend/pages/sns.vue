@@ -711,13 +711,13 @@
           </div>
 
           <div class="flex flex-wrap items-end gap-4 xl:flex-nowrap">
-            <div class="min-w-[180px]">
+            <div class="w-full min-w-[280px] sm:w-auto">
               <div class="text-sm font-medium text-gray-900 mb-2">&#23548;&#20986;&#26684;&#24335;</div>
-              <div class="flex flex-wrap gap-2">
+              <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <label
                     v-for="item in exportFormatOptions"
                     :key="item.value"
-                    class="px-3 py-2 text-sm rounded-md border cursor-pointer transition-colors"
+                    class="px-3 py-2 text-center text-sm rounded-md border cursor-pointer transition-colors"
                     :class="exportFormat === item.value ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
                 >
                   <input v-model="exportFormat" type="radio" :value="item.value" class="hidden" />
@@ -1113,7 +1113,8 @@ const exportFormat = ref('html')
 const exportFormatOptions = [
   { value: 'html', label: 'HTML' },
   { value: 'json', label: 'JSON' },
-  { value: 'txt', label: 'TXT' }
+  { value: 'txt', label: 'TXT' },
+  { value: 'excel', label: 'Excel' }
 ]
 const exportFolder = ref('')
 const exportFolderHandle = ref(null)
