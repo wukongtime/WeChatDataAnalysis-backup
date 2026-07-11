@@ -915,6 +915,9 @@ def _scan_db_storage_mtime_ns(db_storage_dir: Path) -> int:
                     or ("contact" in name)
                     or ("name2id" in name)
                     or ("head_image" in name)
+                    or ("general" in name)
+                    or ("favorite" in name)
+                    or ("sns" in name)
                 ):
                     continue
 
