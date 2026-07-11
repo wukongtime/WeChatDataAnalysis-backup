@@ -2576,6 +2576,28 @@ function registerWindowIpc() {
     }
   });
 
+  ipcMain.handle("app:openExternalUrl", async (_event, rawUrl) => {
+    const url = String(rawUrl || "").trim();
+    if (!url) throw new Error("外部链接为空");
+    let protocol = "";
+    try {
+      protocol = new URL(url).protocol.toLowerCase();
+    } catch {
+      throw new Error("外部链接格式无效");
+    }
+    if (!["http:", "https:", "weixin:"].includes(protocol)) {
+      throw new Error(`不支持的外部链接协议：${protocol || "unknown"}`);
+    }
+    try {
+      await shell.openExternal(url);
+      return { success: true };
+    } catch (e) {
+      const message = e?.message || String(e);
+      logMain(`[main] openExternalUrl failed: ${message}`);
+      throw new Error(message);
+    }
+  });
+
   ipcMain.handle("app:setOutputDir", async (_event, nextDir) => {
     if (outputDirChangeInProgress) {
       return {

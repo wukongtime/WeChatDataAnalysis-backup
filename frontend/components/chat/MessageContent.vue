@@ -33,7 +33,7 @@
                     :class="message.isSent ? 'flex-row-reverse' : ''">
                   <div class="msg-radius overflow-hidden cursor-pointer flex-shrink-0" :class="message.isSent ? '' : ''" @click="message.imageUrl && openImagePreview(message.imageUrl)" @contextmenu="openMediaContextMenu($event, message, 'image')">
                       <img
-                        v-if="message.imageUrl"
+                        v-if="message.imageUrl && !message._imageRenderError"
                         v-chat-lazy-src="message.imageUrl"
                         alt="图片"
                         class="block min-w-[96px] min-h-[96px] max-w-[240px] max-h-[240px] object-cover bg-gray-100 hover:opacity-90 transition-opacity"
@@ -41,7 +41,12 @@
                         decoding="async"
                         fetchpriority="low"
                         v-chat-media-perf="{ kind: 'message-image', meta: { conversation: selectedContact?.username || '', messageId: message.id, serverId: message.serverIdStr || '', imageMd5: message.imageMd5 || '', imageFileId: message.imageFileId || '' } }"
+                        @error="onMessageImageRenderError(message)"
                       >
+                      <div v-else-if="message.imageUrl" class="wechat-media-placeholder wechat-media-placeholder--image">
+                        <i class="fa-regular fa-image" aria-hidden="true"></i>
+                        <span>图片未缓存</span>
+                      </div>
                       <div v-else class="px-3 py-2 text-sm max-w-sm relative msg-bubble whitespace-pre-wrap break-words leading-relaxed"
                         :class="message.isSent ? 'bg-[#95EC69] text-black bubble-tail-r' : 'bg-white text-gray-800 bubble-tail-l'">
                         {{ message.content }}
@@ -62,7 +67,7 @@
                   <div v-else-if="message.renderType === 'video'" class="max-w-sm">
                     <div class="msg-radius overflow-hidden relative bg-black/5" @contextmenu="openMediaContextMenu($event, message, 'video')">
                       <img
-                        v-if="message.videoThumbUrl"
+                        v-if="message.videoThumbUrl && !message._videoThumbRenderError"
                         v-chat-lazy-src="message.videoThumbUrl"
                         alt="视频"
                         class="block w-[220px] min-h-[120px] max-w-[260px] h-auto max-h-[260px] object-cover bg-gray-100"
@@ -70,7 +75,12 @@
                         decoding="async"
                         fetchpriority="low"
                         v-chat-media-perf="{ kind: 'message-video-thumb', meta: { conversation: selectedContact?.username || '', messageId: message.id, serverId: message.serverIdStr || '', videoThumbMd5: message.videoThumbMd5 || '', videoThumbFileId: message.videoThumbFileId || '' } }"
+                        @error="onMessageVideoThumbRenderError(message)"
                       >
+                      <div v-else-if="message.videoThumbUrl" class="wechat-media-placeholder wechat-media-placeholder--video">
+                        <i class="fa-solid fa-video" aria-hidden="true"></i>
+                        <span>视频未缓存</span>
+                      </div>
                       <div v-else class="px-3 py-2 text-sm relative msg-bubble whitespace-pre-wrap break-words leading-relaxed"
                         :class="message.isSent ? 'bg-[#95EC69] text-black bubble-tail-r' : 'bg-white text-gray-800 bubble-tail-l'">
                         {{ message.content }}
@@ -129,7 +139,7 @@
                     </div>
                   </div>
                   <div v-else-if="message.renderType === 'emoji'" class="max-w-sm flex items-center group" :class="message.isSent ? 'flex-row-reverse' : ''">
-                    <template v-if="message.emojiUrl">
+                    <template v-if="message.emojiUrl && !message._emojiRenderError">
                       <img
                         v-chat-lazy-src="message.emojiUrl"
                         alt="表情"
@@ -139,6 +149,7 @@
                         fetchpriority="low"
                         @click.stop="openImagePreview(message.emojiUrl)"
                         @contextmenu="openMediaContextMenu($event, message, 'emoji')"
+                        @error="onMessageEmojiRenderError(message)"
                       >
                       <button
                         v-if="shouldShowEmojiDownload(message)"
@@ -150,6 +161,10 @@
                         {{ message._emojiDownloading ? '下载中...' : (message._emojiDownloaded ? '已下载' : '下载') }}
                       </button>
                     </template>
+                    <div v-else-if="message.emojiUrl" class="wechat-media-placeholder wechat-media-placeholder--emoji">
+                      <i class="fa-regular fa-face-smile" aria-hidden="true"></i>
+                      <span>表情未缓存</span>
+                    </div>
                     <div v-else class="px-3 py-2 text-sm max-w-sm relative msg-bubble whitespace-pre-wrap break-words leading-relaxed"
                       :class="message.isSent ? 'bg-[#95EC69] text-black bubble-tail-r' : 'bg-white text-gray-800 bubble-tail-l'">
                       {{ message.content }}
@@ -161,6 +176,14 @@
                       :class="message.isSent ? 'bg-[#95EC69] text-black bubble-tail-r' : 'bg-white text-gray-800 bubble-tail-l'">
                       <span v-for="(seg, idx) in parseMessageTextSegments(message)" :key="idx">
                         <span v-if="seg.type === 'text'">{{ seg.content }}</span>
+                        <a
+                          v-else-if="seg.type === 'link'"
+                          class="chat-message-link"
+                          :href="seg.url"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          @click.prevent.stop="openMessageUrl(seg.url)"
+                        >{{ seg.content }}</a>
                         <span
                           v-else-if="seg.type === 'mention'"
                           class="chat-mention"
@@ -283,7 +306,7 @@
                         </div>
                       </div>
                     </div>
-                    <div class="wechat-chat-history-bottom">
+                    <div v-if="!hideTypeFooter" class="wechat-chat-history-bottom">
                       <span>聊天记录</span>
                     </div>
                   </div>
@@ -328,6 +351,14 @@
                     :class="message.isSent ? 'bg-[#95EC69] text-black bubble-tail-r' : 'bg-white text-gray-800 bubble-tail-l'">
                     <span v-for="(seg, idx) in parseMessageTextSegments(message)" :key="idx">
                       <span v-if="seg.type === 'text'">{{ seg.content }}</span>
+                      <a
+                        v-else-if="seg.type === 'link'"
+                        class="chat-message-link"
+                        :href="seg.url"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        @click.prevent.stop="openMessageUrl(seg.url)"
+                      >{{ seg.content }}</a>
                       <span
                         v-else-if="seg.type === 'mention'"
                         class="chat-mention"
@@ -352,6 +383,7 @@ import wechatPcLogoUrl from '~/assets/images/wechat/WeChat-Icon-Logo.wine.svg'
 import ChatLocationCard from '~/components/ChatLocationCard.vue'
 import FileTypeIcon from '~/components/chat/FileTypeIcon.vue'
 import LinkCard from '~/components/chat/LinkCard.vue'
+import { linkifyMessageSegments, openMessageExternalUrl } from '~/lib/chat/message-links'
 
 const MENTION_SEPARATOR_RE = /[\s\u00a0\u1680\u180e\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff]/
 const MENTION_TRAILING_BOUNDARY_RE = /[\s\u00a0\u1680\u180e\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff,，.。!！?？:：;；、)]/
@@ -451,7 +483,8 @@ export default defineComponent({
   components: { ChatLocationCard, FileTypeIcon, LinkCard },
   props: {
     state: { type: Object, required: true },
-    message: { type: Object, required: true }
+    message: { type: Object, required: true },
+    hideTypeFooter: { type: Boolean, default: false }
   },
   setup(props) {
     const parseEmojiSegments = (text) => {
@@ -462,14 +495,14 @@ export default defineComponent({
 
     const appendEmojiSegments = (output, text) => {
       if (!text) return
-      const segments = parseEmojiSegments(text)
+      const segments = linkifyMessageSegments(parseEmojiSegments(text))
       for (const seg of segments) output.push(seg)
     }
 
     const parseMessageTextSegments = (message) => {
       const text = String(message?.content || '')
       const mentionRanges = buildMentionRanges(message)
-      if (!mentionRanges.length) return parseEmojiSegments(text)
+      if (!mentionRanges.length) return linkifyMessageSegments(parseEmojiSegments(text))
 
       const output = []
       let pos = 0
@@ -486,6 +519,14 @@ export default defineComponent({
       return output
     }
 
+    const openMessageUrl = (url) => {
+      if (typeof props.state?.openUrlInBrowser === 'function') {
+        props.state.openUrlInBrowser(url)
+        return
+      }
+      void openMessageExternalUrl(url)
+    }
+
     const handleMentionMouseEnter = (message, user) => {
       if (typeof props.state?.onMentionMouseEnter === 'function') {
         props.state.onMentionMouseEnter(message, user)
@@ -500,12 +541,44 @@ export default defineComponent({
       }
     }
 
+    const onMessageImageRenderError = (message) => {
+      const fallback = String(message?.imageFallbackUrl || '').trim()
+      if (fallback && fallback !== String(message?.imageUrl || '').trim() && !message?._imageFallbackTried) {
+        message._imageFallbackTried = true
+        message.imageUrl = fallback
+        return
+      }
+      message._imageRenderError = true
+      if (typeof props.state?.onMessageImageRenderError === 'function') {
+        props.state.onMessageImageRenderError(message)
+      }
+    }
+
+    const onMessageVideoThumbRenderError = (message) => {
+      message._videoThumbRenderError = true
+      if (typeof props.state?.onMessageVideoThumbRenderError === 'function') {
+        props.state.onMessageVideoThumbRenderError(message)
+      }
+    }
+
+    const onMessageEmojiRenderError = (message) => {
+      message._emojiRenderError = true
+      if (typeof props.state?.onMessageEmojiRenderError === 'function') {
+        props.state.onMessageEmojiRenderError(message)
+      }
+    }
+
     return {
       ...props.state,
       message: props.message,
+      hideTypeFooter: props.hideTypeFooter,
       parseMessageTextSegments,
+      openMessageUrl,
       handleMentionMouseEnter,
       handleMentionMouseLeave,
+      onMessageImageRenderError,
+      onMessageVideoThumbRenderError,
+      onMessageEmojiRenderError,
       wechatPcLogoUrl
     }
   }
@@ -526,4 +599,35 @@ export default defineComponent({
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+
+.chat-message-link {
+  color: #245fbd;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+.chat-message-link:hover {
+  color: #174a99;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.wechat-media-placeholder {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 7px;
+  width: 160px;
+  height: 112px;
+  border-radius: var(--message-radius);
+  color: #8a919b;
+  background: #e4e6e8;
+  font-size: 12px;
+}
+
+.wechat-media-placeholder > i { font-size: 24px; }
+.wechat-media-placeholder--image { width: 160px; height: 128px; }
+.wechat-media-placeholder--video { width: 220px; height: 124px; color: #d1d5db; background: #34383d; }
+.wechat-media-placeholder--emoji { width: 96px; height: 96px; background: rgba(255, 255, 255, 0.58); }
 </style>
