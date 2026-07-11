@@ -11,6 +11,25 @@
 
     <SettingsDialog :open="settingsDialogOpen" @close="closeSettingsDialog" />
 
+    <GuideDialog
+      :open="noAccountGuideOpen"
+      eyebrow="数据准备提示"
+      title="还没有可查看的微信数据"
+      description="当前没有已解密或已导入的账号。您仍然可以留在此页面，但聊天、联系人、朋友圈和其他记录暂时无法加载。"
+      :details="[
+        '首次使用可以先检测本机微信数据并完成数据库解密',
+        '已有解密备份时，也可以从首页进入“导入备份”',
+        '完成后再返回当前页面即可查看对应账号的数据'
+      ]"
+      note="这个提示不会强制跳转，选择“暂时留在此页”可以继续浏览当前界面。"
+      primary-label="去检测解密"
+      secondary-label="暂时留在此页"
+      tone="info"
+      @primary="goToAccountSetup"
+      @secondary="dismissNoAccountGuide"
+      @close="dismissNoAccountGuide"
+    />
+
     <ClientOnly v-if="isDesktopUpdater">
       <DesktopUpdateDialog
         :open="desktopUpdate.open.value"
@@ -38,6 +57,57 @@ const route = useRoute()
 const desktopUpdate = useDesktopUpdate()
 const { open: settingsDialogOpen, closeDialog: closeSettingsDialog } = useSettingsDialog()
 const themeStore = useThemeStore()
+const chatAccounts = useChatAccountsStore()
+const { selectedAccount } = storeToRefs(chatAccounts)
+const noAccountGuideOpen = ref(false)
+
+const accountDataRoutePrefixes = [
+  '/chat',
+  '/edits',
+  '/sns',
+  '/favorites',
+  '/contacts',
+  '/biz',
+  '/mini-programs',
+  '/finder',
+  '/payments',
+  '/revokes',
+  '/wrapped'
+]
+
+const isAccountDataRoute = (path) => accountDataRoutePrefixes.some(
+  (prefix) => path === prefix || path.startsWith(`${prefix}/`)
+)
+
+let accountGuideCheckToken = 0
+const checkNoAccountGuide = async () => {
+  if (!process.client) return
+
+  const path = String(route.path || '')
+  const token = ++accountGuideCheckToken
+  if (!isAccountDataRoute(path)) {
+    noAccountGuideOpen.value = false
+    return
+  }
+
+  await chatAccounts.ensureLoaded()
+  if (token !== accountGuideCheckToken || String(route.path || '') !== path) return
+  noAccountGuideOpen.value = !String(selectedAccount.value || '').trim()
+}
+
+const dismissNoAccountGuide = () => {
+  noAccountGuideOpen.value = false
+}
+
+const goToAccountSetup = async () => {
+  noAccountGuideOpen.value = false
+  await navigateTo('/detection-result')
+}
+
+watch(() => route.path, () => { void checkNoAccountGuide() }, { immediate: true })
+watch(selectedAccount, (account) => {
+  if (String(account || '').trim()) noAccountGuideOpen.value = false
+})
 
 if (process.client) {
   themeStore.init()
@@ -73,7 +143,6 @@ onMounted(() => {
   }
 
   // Init global UI state.
-  const chatAccounts = useChatAccountsStore()
   const privacy = usePrivacyStore()
   void chatAccounts.ensureLoaded()
   privacy.init()

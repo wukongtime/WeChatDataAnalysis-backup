@@ -650,6 +650,21 @@
         </div>
       </transition>
     </div>
+
+    <GuideDialog
+      :open="guideDialog.open"
+      :eyebrow="guideDialog.eyebrow"
+      :title="guideDialog.title"
+      :description="guideDialog.description"
+      :details="guideDialog.details"
+      :note="guideDialog.note"
+      :primary-label="guideDialog.primaryLabel"
+      :secondary-label="guideDialog.secondaryLabel"
+      :tone="guideDialog.tone"
+      @primary="settleGuideDialog(true)"
+      @secondary="settleGuideDialog(false)"
+      @close="settleGuideDialog(false)"
+    />
   </div>
 </template>
 
@@ -688,6 +703,42 @@ const currentStep = ref(0)
 const mediaAccount = ref('')
 const activeKeyAccount = ref('')
 const isGettingDbKey = ref(false)
+const guideDialog = reactive({
+  open: false,
+  eyebrow: '操作提示',
+  title: '',
+  description: '',
+  details: [],
+  note: '',
+  primaryLabel: '我知道了，继续',
+  secondaryLabel: '',
+  tone: 'guide'
+})
+let guideDialogResolve = null
+
+const requestGuideDialog = (options) => new Promise((resolve) => {
+  if (guideDialogResolve) guideDialogResolve(false)
+  Object.assign(guideDialog, {
+    open: true,
+    eyebrow: '操作提示',
+    title: '',
+    description: '',
+    details: [],
+    note: '',
+    primaryLabel: '我知道了，继续',
+    secondaryLabel: '',
+    tone: 'guide',
+    ...options
+  })
+  guideDialogResolve = resolve
+})
+
+const settleGuideDialog = (confirmed) => {
+  const resolve = guideDialogResolve
+  guideDialogResolve = null
+  guideDialog.open = false
+  resolve?.(!!confirmed)
+}
 
 // 步骤定义
 const steps = [
@@ -896,6 +947,23 @@ const ensureKeysForAccount = async (account) => {
 
 const handleGetDbKey = async () => {
   if (isGettingDbKey.value) return
+
+  const shouldContinue = await requestGuideDialog({
+    eyebrow: '密钥获取提示',
+    title: '获取前请确认微信已登录',
+    description: '系统会先尝试从当前运行的微信中扫描数据库密钥。这里只做操作提醒，不会强制检查登录状态。',
+    details: [
+      '保持电脑版微信运行，并登录需要解密的账号',
+      '确认下方数据库路径属于同一个微信账号',
+      '获取期间不要退出微信或切换到其他账号'
+    ],
+    note: '如果内存扫描失败，系统会再次询问是否切换到 Hook 获取。',
+    primaryLabel: '准备好了，开始获取',
+    secondaryLabel: '暂不获取',
+    tone: 'guide'
+  })
+  if (!shouldContinue) return
+
   isGettingDbKey.value = true
 
   error.value = ''
@@ -945,7 +1013,20 @@ const handleGetDbKey = async () => {
         key_mode: 'key_v4'
       })
     } else {
-      const useHook = window.confirm('V4 内存扫描需要先填写数据库存储路径，用于校验候选密钥。是否跳过扫内存，改用 Hook 获取数据库密钥？')
+      const useHook = await requestGuideDialog({
+        eyebrow: '获取方式切换',
+        title: '是否改用 Hook 获取密钥？',
+        description: 'V4 内存扫描需要数据库存储路径来校验候选密钥。当前路径为空，可以返回填写，也可以直接切换到 Hook。',
+        details: [
+          'Hook 可能会关闭并重新启动微信',
+          '请关闭微信自动登录，并在弹出的微信窗口中手动登录',
+          '登录时请选择当前准备解密的同一个账号'
+        ],
+        note: '选择“返回填写路径”不会执行 Hook，也不会关闭微信。',
+        primaryLabel: '继续使用 Hook',
+        secondaryLabel: '返回填写路径',
+        tone: 'warning'
+      })
       if (!useHook) {
         warning.value = ''
         formErrors.db_storage_path = '请填写数据库存储路径后再使用 V4 内存扫描'
@@ -959,7 +1040,20 @@ const handleGetDbKey = async () => {
     } else if (res?.data?.can_fallback_to_hook) {
       const detail = res?.data?.key_v4_error || res?.errmsg || '未知错误'
       warning.value = ''
-      const useHook = window.confirm(`V4 内存扫描失败：${detail}\n\n是否改用 Hook 获取数据库密钥？Hook 会关闭并重启微信。`)
+      const useHook = await requestGuideDialog({
+        eyebrow: '获取方式切换',
+        title: '内存扫描失败，是否改用 Hook？',
+        description: `V4 内存扫描未能获取密钥：${detail}`,
+        details: [
+          'Hook 可能会关闭并重新启动微信',
+          '请关闭微信自动登录，并在弹出的微信窗口中手动登录',
+          '登录时请选择当前准备解密的同一个账号'
+        ],
+        note: '选择“暂不切换”会停止本次获取，不影响现有微信数据。',
+        primaryLabel: '继续使用 Hook',
+        secondaryLabel: '暂不切换',
+        tone: 'warning'
+      })
       if (!useHook) {
         error.value = 'V4 内存扫描失败，已取消 Hook 获取。'
         return
@@ -1158,6 +1252,8 @@ const closeEmojiDownloadEventSource = () => {
 }
 
 onBeforeUnmount(() => {
+  settleGuideDialog(false)
+
   try {
     if (dbDecryptEventSource) dbDecryptEventSource.close()
   } catch (e) {
@@ -1653,6 +1749,24 @@ const goToMediaDecryptStep = async () => {
   })
   if (!ok || manualKeyErrors.xor_key || manualKeyErrors.aes_key) return
 
+  if (!mediaKeys.xor_key) {
+    const shouldContinue = await requestGuideDialog({
+      eyebrow: '图片密钥提示',
+      title: '尚未填写图片 XOR 密钥',
+      description: '您可以继续进入图片解密步骤，但加密图片、视频缩略图等媒体大概率无法正常显示。',
+      details: [
+        '纯文本聊天记录不受图片密钥影响',
+        '图片解密可能出现大量失败或空白预览',
+        '之后仍可返回此流程补充密钥并重新解密'
+      ],
+      note: '这里只提示可能的影响，不会强制要求填写图片密钥。',
+      primaryLabel: '仍然进入图片解密',
+      secondaryLabel: '返回填写密钥',
+      tone: 'warning'
+    })
+    if (!shouldContinue) return
+  }
+
   // 用户已输入 XOR 时，自动保存一次，避免下次重复输入（失败不影响继续）
   if (mediaKeys.xor_key) {
     try {
@@ -1675,6 +1789,24 @@ const goToMediaDecryptStep = async () => {
 
 // 跳过图片解密，直接查看聊天记录
 const skipToChat = async () => {
+  if (!mediaDecryptResult.value) {
+    const shouldContinue = await requestGuideDialog({
+      eyebrow: '跳过媒体准备',
+      title: '确定暂时跳过图片解密？',
+      description: '跳过后可以直接查看聊天记录，但尚未解密的图片和其他媒体可能显示为空或加载失败。',
+      details: [
+        '已解密的文字消息可以正常查看和搜索',
+        '未处理的图片、缩略图和部分媒体暂时不可用',
+        '之后可以重新进入解密流程继续处理媒体文件'
+      ],
+      note: '跳过不会删除已完成的数据，也不会修改微信客户端中的内容。',
+      primaryLabel: '仍然查看聊天记录',
+      secondaryLabel: '继续准备媒体',
+      tone: 'warning'
+    })
+    if (!shouldContinue) return
+  }
+
   try {
     const ok = applyManualKeys()
     if (ok && mediaKeys.xor_key) {
