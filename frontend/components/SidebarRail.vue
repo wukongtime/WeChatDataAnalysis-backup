@@ -83,6 +83,21 @@
         </div>
       </div>
 
+      <!-- Favorites -->
+      <div
+        class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
+        title="收藏"
+        @click="goFavorites"
+      >
+        <div class="sidebar-rail-plate w-[var(--sidebar-rail-btn)] h-[var(--sidebar-rail-btn)] rounded-md flex items-center justify-center transition-colors bg-transparent">
+          <div class="sidebar-rail-icon w-[var(--sidebar-rail-icon)] h-[var(--sidebar-rail-icon)]" :class="{ 'sidebar-rail-icon-active': isFavoritesRoute }">
+            <svg class="w-full h-full" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6.5 4.5A2.5 2.5 0 0 1 9 2h6a2.5 2.5 0 0 1 2.5 2.5V21L12 17.5 6.5 21V4.5Z" />
+            </svg>
+          </div>
+        </div>
+      </div>
+
       <!-- Contacts -->
       <div
         class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
@@ -714,6 +729,7 @@ const selectAccountFromDialog = async (account) => {
 const isChatRoute = computed(() => route.path?.startsWith('/chat'))
 const isEditsRoute = computed(() => route.path?.startsWith('/edits'))
 const isSnsRoute = computed(() => route.path?.startsWith('/sns'))
+const isFavoritesRoute = computed(() => route.path?.startsWith('/favorites'))
 const isContactsRoute = computed(() => route.path?.startsWith('/contacts'))
 const isBizRoute = computed(() => route.path?.startsWith('/biz')) // 新增
 const isMiniProgramsRoute = computed(() => route.path?.startsWith('/mini-programs'))
@@ -724,6 +740,7 @@ const isWrappedRoute = computed(() => route.path?.startsWith('/wrapped'))
 const goChat = async () => { await navigateTo('/chat') }
 const goEdits = async () => { await navigateTo('/edits') }
 const goSns = async () => { await navigateTo('/sns') }
+const goFavorites = async () => { await navigateTo('/favorites') }
 const goContacts = async () => { await navigateTo('/contacts') }
 const goBiz = async () => { await navigateTo('/biz') }
 const goMiniPrograms = async () => { await navigateTo('/mini-programs') }
