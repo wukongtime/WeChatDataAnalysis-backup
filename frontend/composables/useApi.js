@@ -6,6 +6,15 @@ const CHAT_CONTACTS_LIST_CACHE_TTL_MS = 3000
 // API请求组合式函数
 export const useApi = () => {
   const baseURL = useApiBase()
+
+  const responseDetailMessage = (response, fallback = '') => {
+    const detail = response?._data?.detail
+    if (typeof detail === 'string') return detail.trim() || fallback
+    if (detail && typeof detail === 'object') {
+      return String(detail.message || detail.detail || detail.code || '').trim() || fallback
+    }
+    return fallback
+  }
   
   // 基础请求函数
   const request = async (url, options = {}) => {
@@ -15,9 +24,9 @@ export const useApi = () => {
         ...options,
         async onResponseError({ response }) {
           if (response.status === 400) {
-            throw new Error(response._data?.detail || '请求参数错误')
+            throw new Error(responseDetailMessage(response, '请求参数错误'))
           } else if (response.status >= 500) {
-            const backendDetail = String(response._data?.detail || '').trim()
+            const backendDetail = responseDetailMessage(response)
             const message = backendDetail || '服务器错误，请稍后重试'
             await reportServerError({
               status: response.status,
@@ -696,6 +705,7 @@ export const useApi = () => {
     if (params && params.account) query.set('account', params.account)
     if (params && params.q) query.set('q', params.q)
     if (params && params.kind) query.set('kind', params.kind)
+    if (params && params.status) query.set('status', params.status)
     query.set('source', params?.source || 'realtime')
     if (params && params.limit != null) query.set('limit', String(params.limit))
     if (params && params.offset != null) query.set('offset', String(params.offset))
@@ -728,6 +738,33 @@ export const useApi = () => {
 
   const listGeneralSearchRecords = async (params = {}) => {
     return await request(buildGeneralUrl('search-records', params))
+  }
+
+  const listFavorites = async (params = {}) => {
+    const query = new URLSearchParams()
+    if (params && params.account) query.set('account', params.account)
+    if (params && params.q) query.set('q', params.q)
+    if (params && params.kind) query.set('kind', params.kind)
+    if (params && params.tagId) query.set('tag_id', String(params.tagId))
+    query.set('source', 'realtime')
+    if (params && params.limit != null) query.set('limit', String(params.limit))
+    if (params && params.offset != null) query.set('offset', String(params.offset))
+    return await request('/favorites' + (query.toString() ? `?${query.toString()}` : ''))
+  }
+
+  const exportRecords = async (payload = {}) => {
+    return await request('/records/export', {
+      method: 'POST',
+      body: {
+        account: payload.account || null,
+        dataset: payload.dataset || '',
+        format: payload.format || 'html',
+        types: Array.isArray(payload.types) ? payload.types : [],
+        query: payload.query || '',
+        output_dir: payload.output_dir || '',
+        file_name: payload.file_name || '',
+      },
+    })
   }
 
   const getBizProxyImageUrl = (url) => {
@@ -832,6 +869,8 @@ export const useApi = () => {
     listPaymentRecords,
     listRevokeRecords,
     listGeneralSearchRecords,
+    listFavorites,
+    exportRecords,
     getBizProxyImageUrl,
   }
 }

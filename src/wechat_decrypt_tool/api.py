@@ -37,6 +37,8 @@ from .routers.sns_export import router as _sns_export_router
 from .routers.wechat_detection import router as _wechat_detection_router
 from .routers.wrapped import router as _wrapped_router
 from .routers.general import router as _general_router
+from .routers.favorites import router as _favorites_router
+from .routers.record_export import router as _record_export_router
 from .request_logging import log_server_errors_middleware
 from .wcdb_realtime import WCDB_REALTIME, shutdown as _wcdb_shutdown
 from .img_helper import IMG_HELPER
@@ -85,6 +87,8 @@ app.include_router(_sns_export_router)
 app.include_router(_wrapped_router)
 app.include_router(_biz_router)
 app.include_router(_general_router)
+app.include_router(_favorites_router)
+app.include_router(_record_export_router)
 app.include_router(_system_router)
 
 
