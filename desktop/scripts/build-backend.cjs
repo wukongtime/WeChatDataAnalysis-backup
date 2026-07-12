@@ -13,6 +13,33 @@ fs.mkdirSync(distDir, { recursive: true });
 fs.mkdirSync(workDir, { recursive: true });
 fs.mkdirSync(specDir, { recursive: true });
 
+const integrityPreflight = spawnSync(
+  "uv",
+  [
+    "run",
+    "python",
+    "-c",
+    [
+      "from wechat_decrypt_tool.native import wce_integrity as w",
+      "required=('chat','sns','records-project','records-generic','contacts')",
+      "assert all(w.export_css(kind).strip() for kind in required)",
+      "assert callable(w.record_file) and callable(w.seal_export)",
+    ].join(";"),
+  ],
+  {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      PYTHONPATH: [path.join(repoRoot, "src"), process.env.PYTHONPATH || ""].filter(Boolean).join(path.delimiter),
+    },
+    stdio: "inherit",
+  }
+);
+if ((integrityPreflight.status ?? 1) !== 0) {
+  console.error("wce_integrity.pyd is missing or stale. Rebuild it before packaging.");
+  process.exit(integrityPreflight.status ?? 1);
+}
+
 function parseVersionTuple(rawVersion) {
   const nums = String(rawVersion || "")
     .split(/[^\d]+/)
