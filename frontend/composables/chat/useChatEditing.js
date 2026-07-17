@@ -1,4 +1,5 @@
 import { nextTick, ref, toRaw } from 'vue'
+import { showErrorAlert } from '~/composables/useErrorNotice'
 
 const CONTEXT_MENU_MARGIN = 8
 
@@ -409,9 +410,9 @@ export const useChatEditing = ({
         return
       }
       const ok = await copyTextToClipboard(text)
-      if (!ok) window.alert('复制失败：无法写入剪贴板')
+      if (!ok) showErrorAlert('复制失败：无法写入剪贴板')
     } catch {
-      window.alert('复制失败')
+      showErrorAlert('复制失败')
     } finally {
       closeContextMenu()
     }
@@ -425,9 +426,9 @@ export const useChatEditing = ({
       const raw = toRaw(message) || message
       const json = JSON.stringify(raw, (_key, value) => (typeof value === 'bigint' ? value.toString() : value), 2)
       const ok = await copyTextToClipboard(json)
-      if (!ok) window.alert('复制失败：无法写入剪贴板')
+      if (!ok) showErrorAlert('复制失败：无法写入剪贴板')
     } catch {
-      window.alert('复制失败')
+      showErrorAlert('复制失败')
     } finally {
       closeContextMenu()
     }
@@ -501,7 +502,7 @@ export const useChatEditing = ({
       closeContextMenu()
       await refreshSelectedMessages()
     } catch (error) {
-      window.alert(error?.message || '恢复失败')
+      showErrorAlert(error?.message || '恢复失败')
     } finally {
       closeContextMenu()
     }
@@ -523,7 +524,7 @@ export const useChatEditing = ({
       closeContextMenu()
       await refreshSelectedMessages()
     } catch (error) {
-      window.alert(error?.message || '修复失败')
+      showErrorAlert(error?.message || '修复失败')
     } finally {
       closeContextMenu()
     }
@@ -547,7 +548,7 @@ export const useChatEditing = ({
       closeContextMenu()
       await refreshSelectedMessages()
     } catch (error) {
-      window.alert(error?.message || '反转失败')
+      showErrorAlert(error?.message || '反转失败')
     } finally {
       closeContextMenu()
     }
@@ -559,7 +560,7 @@ export const useChatEditing = ({
     closeContextMenu()
     const ok = await locateMessageByServerId(message.quoteServerId)
     if (!ok && process.client) {
-      window.alert('定位引用消息失败')
+      showErrorAlert('定位引用消息失败')
     }
   }
 

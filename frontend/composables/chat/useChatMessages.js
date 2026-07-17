@@ -1,4 +1,5 @@
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { showErrorAlert } from '~/composables/useErrorNotice'
 import {
   formatFileSize,
   formatTimeDivider,
@@ -758,7 +759,7 @@ export const useChatMessages = ({
         message.emojiUrl = message.emojiLocalUrl
       }
     } catch (error) {
-      window.alert(error?.message || '下载失败')
+      showErrorAlert(error?.message || '下载失败')
     } finally {
       message._emojiDownloading = false
     }
@@ -982,6 +983,7 @@ export const useChatMessages = ({
       })
     } catch (error) {
       console.error('打开文件夹失败:', error)
+      showErrorAlert(error?.message || '打开文件夹失败')
     }
   }
 

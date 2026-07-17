@@ -71,9 +71,7 @@
             </button>
           </div>
 
-          <div v-if="timeSidebarError" class="time-sidebar-status time-sidebar-status-error">
-            {{ timeSidebarError }}
-          </div>
+          <ErrorNotice v-if="timeSidebarError" :message="timeSidebarError" compact class="time-sidebar-status time-sidebar-status-error" />
           <div v-else class="time-sidebar-status">
             <span v-if="timeSidebarLoading">加载中...</span>
             <span v-else>本月 {{ timeSidebarTotal }} 条消息，{{ timeSidebarActiveDays }} 天有聊天</span>
@@ -290,9 +288,7 @@
                     <div v-if="messageSearchSenderLoading" class="px-2 py-3 text-xs text-gray-500">
                       加载中...
                     </div>
-                    <div v-else-if="messageSearchSenderError" class="px-2 py-3 text-xs text-red-500 whitespace-pre-wrap">
-                      {{ messageSearchSenderError }}
-                    </div>
+                    <ErrorNotice v-else-if="messageSearchSenderError" :message="messageSearchSenderError" compact class="px-2 py-3 text-xs text-red-500" />
                     <div v-else-if="filteredMessageSearchSenderOptions.length === 0" class="px-2 py-3 text-xs text-gray-500">
                       暂无发送者
                     </div>
@@ -395,9 +391,7 @@
 
           <!-- 搜索状态 -->
           <div class="search-sidebar-status">
-            <div v-if="messageSearchError" class="sidebar-status-error">
-              {{ messageSearchError }}
-            </div>
+            <ErrorNotice v-if="messageSearchError" :message="messageSearchError" compact class="sidebar-status-error" />
             <div v-else-if="messageSearchQuery.trim()" class="sidebar-status-info">
               <div class="flex items-center justify-between gap-2">
                 <div class="min-w-0">
@@ -652,12 +646,12 @@
           playsinline
           @error="onPreviewVideoError"
         ></video>
-        <div
+        <ErrorNotice
           v-if="previewVideoError"
-          class="mt-3 text-xs text-red-200 whitespace-pre-wrap text-center max-w-[90vw]"
-        >
-          {{ previewVideoError }}
-        </div>
+          :message="previewVideoError"
+          compact
+          class="mt-3 text-xs text-red-200 text-center max-w-[90vw]"
+        />
       </div>
       <button
         class="absolute top-4 right-4 text-white/80 hover:text-white p-2 rounded-full bg-black/30 hover:bg-black/50 transition-colors"
@@ -1031,7 +1025,7 @@
         </div>
 
         <div class="p-5 max-h-[75vh] overflow-y-auto space-y-3">
-          <div v-if="messageEditModal.error" class="text-sm text-red-600 whitespace-pre-wrap">{{ messageEditModal.error }}</div>
+          <ErrorNotice v-if="messageEditModal.error" :message="messageEditModal.error" compact class="text-sm text-red-600" />
           <div v-if="messageEditModal.loading" class="text-sm text-gray-500">加载中…</div>
 
           <textarea
@@ -1078,7 +1072,7 @@
         </div>
 
         <div class="p-5 max-h-[75vh] overflow-y-auto space-y-3">
-          <div v-if="messageFieldsModal.error" class="text-sm text-red-600 whitespace-pre-wrap">{{ messageFieldsModal.error }}</div>
+          <ErrorNotice v-if="messageFieldsModal.error" :message="messageFieldsModal.error" compact class="text-sm text-red-600" />
           <div v-if="messageFieldsModal.loading" class="text-sm text-gray-500">加载中…</div>
 
           <div class="flex items-center gap-3">

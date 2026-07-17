@@ -52,17 +52,27 @@
                         {{ message.content }}
                       </div>
                     </div>
-                    <button
+                    <div
                       v-if="shouldShowImageLargeReload(message)"
-                      type="button"
-                      class="text-xs px-2 py-1 rounded bg-white border border-gray-200 text-gray-700 shadow-sm opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity hover:bg-gray-50 disabled:cursor-wait disabled:opacity-60 whitespace-nowrap"
+                      class="flex max-w-[260px] flex-col gap-1"
                       :class="message.isSent ? 'mr-2' : 'ml-2'"
-                      :disabled="!!message._imageLargeLoading"
-                      :title="message._imageLargeError || '手动从微信本地目录重新查找更高清图片；如果微信后来已缓存大图，会替换当前缩略图。'"
-                      @click.stop.prevent="onTryLoadLargeImageClick(message)"
                     >
-                      {{ message._imageLargeLoading ? '查找中...' : '尝试加载大图' }}
-                    </button>
+                      <button
+                        type="button"
+                        class="whitespace-nowrap rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 opacity-0 shadow-sm transition-opacity hover:bg-gray-50 focus:opacity-100 group-hover:opacity-100 disabled:cursor-wait disabled:opacity-60"
+                        :disabled="!!message._imageLargeLoading"
+                        title="手动从微信本地目录重新查找更高清图片；如果微信后来已缓存大图，会替换当前缩略图。"
+                        @click.stop.prevent="onTryLoadLargeImageClick(message)"
+                      >
+                        {{ message._imageLargeLoading ? '查找中...' : '尝试加载大图' }}
+                      </button>
+                      <ErrorNotice
+                        v-if="message._imageLargeError"
+                        :message="message._imageLargeError"
+                        compact
+                        class="text-[11px] text-red-600"
+                      />
+                    </div>
                   </div>
                   <div v-else-if="message.renderType === 'video'" class="max-w-sm">
                     <div class="msg-radius overflow-hidden relative bg-black/5" @contextmenu="openMediaContextMenu($event, message, 'video')">

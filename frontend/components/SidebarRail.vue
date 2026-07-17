@@ -392,7 +392,7 @@
             <div class="text-[11px] leading-relaxed text-[#8a8a8a]">
               只有已经获取并保存“数据库密钥 + 图片密钥”的账号会出现在这里。
             </div>
-            <div v-if="chatAccounts.error" class="text-[11px] text-red-600">{{ chatAccounts.error }}</div>
+            <ErrorNotice v-if="chatAccounts.error" :message="chatAccounts.error" compact class="text-[11px] text-red-600" />
           </div>
           <div v-else class="max-h-[260px] space-y-1 overflow-y-auto pr-1">
             <button
@@ -481,8 +481,8 @@
         </button>
         <div class="text-[11px] text-[#8a8a8a]">删除成功后将自动返回引导页。</div>
 
-        <div v-if="accountInfoError" class="text-[11px] text-red-600 whitespace-pre-wrap">{{ accountInfoError }}</div>
-        <div v-if="accountDeleteError" class="text-[11px] text-red-600 whitespace-pre-wrap">{{ accountDeleteError }}</div>
+        <ErrorNotice v-if="accountInfoError" :message="accountInfoError" compact class="text-[11px] text-red-600" />
+        <ErrorNotice v-if="accountDeleteError" :message="accountDeleteError" compact class="text-[11px] text-red-600" />
       </div>
     </div>
   </div>
@@ -496,6 +496,7 @@ import { useChatAccountsStore } from '~/stores/chatAccounts'
 import { useImgHelperStore } from '~/stores/imgHelper'
 import { usePrivacyStore } from '~/stores/privacy'
 import { useThemeStore } from '~/stores/theme'
+import { withErrorLogGuidance } from '~/composables/useErrorNotice'
 
 const route = useRoute()
 
@@ -817,7 +818,7 @@ const imgHelperBusy = computed(() => !!imgHelperChecking.value || !!imgHelperTog
 
 const imgHelperTitle = computed(() => {
   if (imgHelperEnabled.value) return '关闭自动下载大图'
-  return imgHelperError.value || '开启自动下载大图'
+  return imgHelperError.value ? withErrorLogGuidance(imgHelperError.value) : '开启自动下载大图'
 })
 
 const toggleImgHelper = async () => {

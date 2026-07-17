@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { showErrorAlert } from '~/composables/useErrorNotice'
 
 export const useImgHelperStore = defineStore('imgHelper', () => {
   const enabled = ref(false)
@@ -47,7 +48,7 @@ export const useImgHelperStore = defineStore('imgHelper', () => {
     } catch (e) {
       error.value = e?.message || '操作失败'
       if (process.client) {
-          window.alert(error.value)
+          showErrorAlert(error.value)
       }
       return false
     } finally {
