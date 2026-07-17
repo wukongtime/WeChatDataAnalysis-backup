@@ -10,7 +10,11 @@
       </div>
     </div>
 
-    <SettingsDialog :open="settingsDialogOpen" @close="closeSettingsDialog" />
+    <SettingsDialog
+      :open="settingsDialogOpen"
+      :focus-target="settingsDialogFocusTarget"
+      @close="closeSettingsDialog"
+    />
 
     <GuideDialog
       :open="noAccountGuideOpen"
@@ -56,7 +60,11 @@ import { usePrivacyStore } from '~/stores/privacy'
 
 const route = useRoute()
 const desktopUpdate = useDesktopUpdate()
-const { open: settingsDialogOpen, closeDialog: closeSettingsDialog } = useSettingsDialog()
+const {
+  open: settingsDialogOpen,
+  focusTarget: settingsDialogFocusTarget,
+  closeDialog: closeSettingsDialog,
+} = useSettingsDialog()
 const themeStore = useThemeStore()
 const chatAccounts = useChatAccountsStore()
 const { selectedAccount, selectedDataSourceStatus } = storeToRefs(chatAccounts)

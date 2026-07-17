@@ -1,7 +1,7 @@
 <template>
   <div
     v-if="open"
-    class="settings-dialog fixed inset-0 z-[120] flex items-center justify-center bg-black/40 px-4 py-4 backdrop-blur-md sm:py-8"
+    class="settings-dialog fixed inset-0 z-[20000] flex items-center justify-center bg-black/40 px-4 py-4 backdrop-blur-md sm:py-8"
     @click.self="handleClose"
   >
     <div class="settings-dialog-panel flex h-[80vh] min-h-[380px] w-full max-w-[880px] overflow-hidden rounded-[10px] border border-[#e2e2e2] bg-white shadow-2xl">
@@ -83,9 +83,7 @@
                     <span class="settings-switch-thumb" :class="desktopAutoLaunch ? 'translate-x-[20px]' : 'translate-x-0'" />
                   </button>
                 </div>
-                <div v-if="desktopAutoLaunchError" class="mt-1.5 text-[11px] text-red-600 whitespace-pre-wrap">
-                  {{ desktopAutoLaunchError }}
-                </div>
+                <ErrorNotice v-if="desktopAutoLaunchError" :message="desktopAutoLaunchError" compact manual class="mt-1.5 text-[11px] text-red-600" />
               </div>
 
               <div class="px-3.5 py-3">
@@ -104,9 +102,7 @@
                     <option value="exit">直接退出</option>
                   </select>
                 </div>
-                <div v-if="desktopCloseBehaviorError" class="mt-1.5 text-[11px] text-red-600 whitespace-pre-wrap">
-                  {{ desktopCloseBehaviorError }}
-                </div>
+                <ErrorNotice v-if="desktopCloseBehaviorError" :message="desktopCloseBehaviorError" compact manual class="mt-1.5 text-[11px] text-red-600" />
               </div>
 
               <div class="px-3.5 py-3">
@@ -143,9 +139,7 @@
                     </button>
                   </div>
                 </div>
-                <div v-if="desktopBackendPortError" class="mt-1.5 text-[11px] text-red-600 whitespace-pre-wrap">
-                  {{ desktopBackendPortError }}
-                </div>
+                <ErrorNotice v-if="desktopBackendPortError" :message="desktopBackendPortError" compact manual class="mt-1.5 text-[11px] text-red-600" />
               </div>
 
               <div class="px-3.5 py-3">
@@ -234,12 +228,10 @@
                     {{ desktopOutputDirMessage }}
                   </div>
                 </div>
-                <div v-if="desktopOutputDirError" class="mt-1.5 text-[11px] text-red-600 whitespace-pre-wrap">
-                  {{ desktopOutputDirError }}
-                </div>
+                <ErrorNotice v-if="desktopOutputDirError" :message="desktopOutputDirError" compact manual class="mt-1.5 text-[11px] text-red-600" />
               </div>
 
-              <div class="px-3.5 py-3">
+              <div ref="desktopLogFileRef" class="px-3.5 py-3">
                 <div class="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
                   <div class="min-w-0 flex-1">
                     <div class="text-[13px] font-medium text-[#222]">日志文件</div>
@@ -254,9 +246,7 @@
                     {{ desktopLogFileOpening ? '打开中...' : '打开日志' }}
                   </button>
                 </div>
-                <div v-if="desktopLogFileError" class="mt-1.5 text-[11px] text-red-600 whitespace-pre-wrap">
-                  {{ desktopLogFileError }}
-                </div>
+                <ErrorNotice v-if="desktopLogFileError" :message="desktopLogFileError" compact manual class="mt-1.5 text-[11px] text-red-600" />
               </div>
             </div>
           </section>
@@ -271,7 +261,7 @@
                     <div class="mt-0.5 text-[11px] leading-relaxed text-[#909090]">开启后后端监听 0.0.0.0，手机可通过接入提示词中的地址接入。</div>
                     <div class="mt-0.5 text-[11px] leading-relaxed text-[#909090] break-all">当前地址：{{ mcpEndpoint }}</div>
                     <div v-if="mcpLanAccessMessage" class="mt-1 text-[11px] leading-relaxed text-[#1b6b43]">{{ mcpLanAccessMessage }}</div>
-                    <div v-if="mcpLanAccessError" class="mt-1 text-[11px] leading-relaxed text-red-600">{{ mcpLanAccessError }}</div>
+                    <ErrorNotice v-if="mcpLanAccessError" :message="mcpLanAccessError" compact manual class="mt-1 text-[11px] leading-relaxed text-red-600" />
                   </div>
                   <button
                     type="button"
@@ -293,7 +283,7 @@
                     <div class="min-w-0 flex-1">
                       <div class="text-[13px] font-medium text-[#222]">MCP Token</div>
                       <div class="mt-0.5 text-[11px] leading-relaxed text-[#909090]">手机端请求 MCP 时使用 Bearer token。</div>
-                      <div v-if="mcpTokenError" class="mt-1 text-[11px] leading-relaxed text-red-600">{{ mcpTokenError }}</div>
+                      <ErrorNotice v-if="mcpTokenError" :message="mcpTokenError" compact manual class="mt-1 text-[11px] leading-relaxed text-red-600" />
                     </div>
                     <div class="flex shrink-0 gap-1.5">
                       <button
@@ -343,7 +333,7 @@
                     <div class="min-w-0 flex-1">
                       <div class="text-[13px] font-medium text-[#222]">Skill Markdown</div>
                       <div class="mt-0.5 text-[11px] leading-relaxed text-[#909090]">单独复制到手机端 AI 的 skill 或知识配置。</div>
-                      <div v-if="mcpSkillBundleError" class="mt-1 text-[11px] leading-relaxed text-red-600">{{ mcpSkillBundleError }}</div>
+                      <ErrorNotice v-if="mcpSkillBundleError" :message="mcpSkillBundleError" compact manual class="mt-1 text-[11px] leading-relaxed text-red-600" />
                     </div>
                     <button
                       type="button"
@@ -403,7 +393,13 @@
                   </button>
                 </div>
                 <div v-if="desktopUpdate.lastCheckMessage.value" class="mt-2 rounded-[6px] bg-[#f9f9f9] border border-[#eee] px-2.5 py-1.5 text-[11px] text-[#666] whitespace-pre-wrap break-words">
-                  {{ desktopUpdate.lastCheckMessage.value }}
+                  <ErrorNotice
+                    v-if="desktopUpdateLastCheckFailed"
+                    :message="desktopUpdate.lastCheckMessage.value"
+                    compact
+                    manual
+                  />
+                  <template v-else>{{ desktopUpdate.lastCheckMessage.value }}</template>
                 </div>
               </div>
             </div>
@@ -450,6 +446,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  focusTarget: {
+    type: String,
+    default: '',
+  },
 })
 
 const emit = defineEmits(['close'])
@@ -466,6 +466,7 @@ const settingNavItems = [
 const activeSection = ref(settingNavItems[0].key)
 const contentScrollRef = ref(null)
 const desktopSectionRef = ref(null)
+const desktopLogFileRef = ref(null)
 const mcpSectionRef = ref(null)
 const startupSectionRef = ref(null)
 const updatesSectionRef = ref(null)
@@ -707,9 +708,35 @@ const scrollToSection = (key) => {
   })
 }
 
+const scrollToFocusTarget = async () => {
+  if (String(props.focusTarget || '').trim() !== 'log-file') return
+  await nextTick()
+  activeSection.value = 'desktop'
+  const scrollHost = contentScrollRef.value
+  const target = desktopLogFileRef.value
+  if (!scrollHost || !target) return
+  const scrollRect = scrollHost.getBoundingClientRect()
+  const targetRect = target.getBoundingClientRect()
+  const targetTop = scrollHost.scrollTop + targetRect.top - scrollRect.top
+  scrollHost.scrollTo({
+    top: Math.max(0, targetTop - 18),
+    behavior: 'smooth',
+  })
+}
+
 const onContentScroll = () => {
   const scrollHost = contentScrollRef.value
   if (!scrollHost) return
+  if (String(props.focusTarget || '').trim() === 'log-file' && desktopLogFileRef.value) {
+    const scrollRect = scrollHost.getBoundingClientRect()
+    const targetRect = desktopLogFileRef.value.getBoundingClientRect()
+    const targetIsVisible = targetRect.bottom > scrollRect.top + 16
+      && targetRect.top < scrollRect.bottom - 16
+    if (targetIsVisible) {
+      activeSection.value = 'desktop'
+      return
+    }
+  }
   const position = scrollHost.scrollTop + 120
   let current = settingNavItems[0].key
   for (const section of sectionElements.value) {
@@ -1286,7 +1313,16 @@ const refreshSettingsDialogData = async () => {
 watch(() => props.open, async (isOpen) => {
   if (!isOpen) return
   await refreshSettingsDialogData()
+  await scrollToFocusTarget()
 }, { immediate: false })
+
+watch(() => props.focusTarget, async () => {
+  if (!props.open) return
+  await scrollToFocusTarget()
+})
+const desktopUpdateLastCheckFailed = computed(() => /失败|错误|异常/.test(
+  String(desktopUpdate.lastCheckMessage.value || '')
+))
 
 onMounted(async () => {
   if (process.client && typeof window !== 'undefined') {
