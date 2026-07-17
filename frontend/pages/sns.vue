@@ -148,7 +148,7 @@
                 </div>
               </div>
             </div>
-            <div v-if="error" class="text-sm text-red-500 whitespace-pre-wrap py-4 text-center">{{ error }}</div>
+            <ErrorNotice v-if="error" :message="error" class="my-4" />
 
             <div v-else-if="isLoading && posts.length === 0" class="flex flex-col items-center justify-center py-16">
               <div class="w-8 h-8 border-[3px] border-gray-200 border-t-[#576b95] rounded-full animate-spin"></div>
@@ -165,6 +165,12 @@
               提示：左侧“缓存统计”来自解密后的 sns.db；当前 timeline 接口只返回可见部分，所以会出现
               <span class="font-medium">{{ posts.length }}/{{ selectedSnsUserInfo?.postCount || 0 }}</span>。
             </div>
+            <ErrorNotice
+              v-if="hasSnsMediaErrors"
+              message="部分朋友圈图片或实况内容加载失败"
+              class="mb-3"
+              compact
+            />
 
 	          <div v-for="post in posts" :key="post.id" class="bg-white rounded-sm px-4 py-4 mb-3">
 	            <div class="flex items-start gap-3" @contextmenu.prevent="openPostContextMenu($event, post)">
@@ -634,13 +640,7 @@
           </button>
         </header>
 
-        <div v-if="exportError" class="app-export-alert app-export-alert--error" role="alert">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="9" />
-            <path d="M12 7v6M12 17h.01" />
-          </svg>
-          <span>{{ exportError }}</span>
-        </div>
+        <ErrorNotice v-if="exportError" :message="exportError" class="app-export-alert app-export-alert--error" compact />
 
         <div class="app-export-workspace">
           <div class="app-export-layout">
@@ -816,10 +816,12 @@
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v6M12 17h.01" /></svg>
                   <span>导出已取消。</span>
                 </div>
-                <div v-else-if="exportJob.status === 'error' && exportJob.error" class="app-export-result app-export-result--error" role="alert">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v6M12 17h.01" /></svg>
-                  <span>{{ exportJob.error }}</span>
-                </div>
+                <ErrorNotice
+                  v-else-if="exportJob.status === 'error' && exportJob.error"
+                  :message="exportJob.error"
+                  class="app-export-result app-export-result--error"
+                  compact
+                />
                 <div v-if="exportOutputPathText" class="app-export-result app-export-result--success">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="m8 12 2.5 2.5L16 9" /></svg>
                   <span>已导出到：{{ exportOutputPathText }}</span>
@@ -828,10 +830,12 @@
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v6M12 17h.01" /></svg>
                   <span>{{ exportSaveProgressText }}</span>
                 </div>
-                <div v-if="exportSaveError" class="app-export-result app-export-result--error" role="alert">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v6M12 17h.01" /></svg>
-                  <span>{{ exportSaveError }}</span>
-                </div>
+                <ErrorNotice
+                  v-if="exportSaveError"
+                  :message="exportSaveError"
+                  class="app-export-result app-export-result--error"
+                  compact
+                />
                 <div v-else-if="exportSaveMsg" class="app-export-result app-export-result--success">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="m8 12 2.5 2.5L16 9" /></svg>
                   <span>{{ exportSaveMsg }}</span>
@@ -910,12 +914,12 @@
             @dblclick.stop="resetPreviewImageTransform"
           />
 
-	        <div
+	        <ErrorNotice
 	          v-if="previewIsVideo && previewVideoError"
-	          class="mt-3 text-xs text-red-200 whitespace-pre-wrap text-center max-w-[90vw]"
-	        >
-	          {{ previewVideoError }}
-	        </div>
+	          :message="previewVideoError"
+	          class="mt-3 max-w-[90vw] text-xs text-red-200"
+	          compact
+	        />
 
 	      </div>
 
@@ -1693,15 +1697,16 @@ const selfInfo = ref({ wxid: '', nickname: '' })
 
 const loadSelfInfo = async () => {
   if (!selectedAccount.value) return
+  const requestUrl = `${apiBase}/sns/self_info?account=${encodeURIComponent(selectedAccount.value)}&source=decrypted`
   try {
-    const resp = await $fetch(`${apiBase}/sns/self_info?account=${encodeURIComponent(selectedAccount.value)}`)
+    const resp = await $fetch(requestUrl)
     if (resp && resp.wxid) {
       selfInfo.value = resp
     }
   } catch (e) {
     await reportServerErrorFromError(e, {
       method: 'GET',
-      requestUrl: `${apiBase}/sns/self_info?account=${encodeURIComponent(selectedAccount.value)}`,
+      requestUrl,
       source: 'sns.loadSelfInfo',
       apiBase,
     })
@@ -1994,10 +1999,10 @@ const onCopyPostTextClick = async () => {
       return
     }
     const ok = await copyTextToClipboard(text)
-    if (!ok) window.alert('复制失败：无法写入剪贴板')
+    if (!ok) showErrorAlert('复制失败：无法写入剪贴板')
   } catch (e) {
     console.error('复制失败:', e)
-    window.alert('复制失败')
+    showErrorAlert('复制失败')
   } finally {
     closeContextMenu()
   }
@@ -2012,10 +2017,10 @@ const onCopyPostJsonClick = async () => {
     const raw = toRaw(post) || post
     const json = JSON.stringify(raw, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 2)
     const ok = await copyTextToClipboard(json)
-    if (!ok) window.alert('复制失败：无法写入剪贴板')
+    if (!ok) showErrorAlert('复制失败：无法写入剪贴板')
   } catch (e) {
     console.error('复制失败:', e)
-    window.alert('复制失败')
+    showErrorAlert('复制失败')
   } finally {
     closeContextMenu()
   }
@@ -2034,7 +2039,7 @@ const postAvatarUrl = (username) => {
   const acc = String(selectedAccount.value || '').trim()
   const u = String(username || '').trim()
   if (!acc || !u) return ''
-  return `${apiBase}/chat/avatar?account=${encodeURIComponent(acc)}&username=${encodeURIComponent(u)}`
+  return `${apiBase}/chat/avatar?account=${encodeURIComponent(acc)}&username=${encodeURIComponent(u)}&source=decrypted`
 }
 
 const cleanLikeName = (v) => String(v ?? '').replace(/\u00A0/g, ' ').trim()
@@ -2398,6 +2403,16 @@ const isLocalVideoLoaded = (postId, mediaId) => {
 // 实况（Live Photo）：鼠标悬停播放远程解密视频
 const activeLivePhotoKey = ref('')
 const livePhotoVideoErrors = ref({})
+const hasSnsMediaErrors = computed(() => (
+  Object.values(mediaErrors.value || {}).some(Boolean)
+  || Object.values(commentImageErrors.value || {}).some(Boolean)
+  || Object.values(livePhotoVideoErrors.value || {}).some(Boolean)
+))
+const resetSnsMediaErrors = () => {
+  mediaErrors.value = {}
+  commentImageErrors.value = {}
+  livePhotoVideoErrors.value = {}
+}
 const livePhotoHoverVideoEl = ref(null)
 const livePhotoHoverMuted = ref(false)
 
@@ -2778,7 +2793,7 @@ const loadAccounts = async () => {
   error.value = ''
   await chatAccounts.ensureLoaded({ force: true })
   if (!selectedAccount.value) {
-    error.value = chatAccounts.error || '未检测到已解密账号，请先解密数据库。'
+    error.value = chatAccounts.error || ''
   }
 }
 
@@ -2789,6 +2804,7 @@ const loadPosts = async ({ reset }) => {
   isLoading.value = true
   try {
     if (reset) {
+      resetSnsMediaErrors()
       timelineOffset.value = 0
       hasMore.value = true
       cachePagingExhausted.value = false
@@ -2805,6 +2821,7 @@ const loadPosts = async ({ reset }) => {
       account: selectedAccount.value,
       limit: pageSize,
       offset,
+      source: 'decrypted',
       usernames: selectedSnsUser.value ? [String(selectedSnsUser.value).trim()] : []
     })
     const items = Array.isArray(resp?.timeline) ? resp.timeline : []
@@ -2902,7 +2919,7 @@ watch(
         snsUsers.value = []
         snsAvatarErrors.value = {}
         activeLivePhotoKey.value = ''
-        livePhotoVideoErrors.value = {}
+        resetSnsMediaErrors()
         if (previewCtx.value) closeImagePreview()
         await loadSelfInfo()
         await loadSnsUsers()

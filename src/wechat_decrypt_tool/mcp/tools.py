@@ -488,7 +488,7 @@ async def _resolve_app_message(args: dict[str, Any], ctx: McpToolContext) -> dic
 
 
 def _sns_self_info(args: dict[str, Any], _: McpToolContext) -> dict[str, Any]:
-    return _sns_router().api_sns_self_info(account=_account_arg(args))
+    return _sns_router().api_sns_self_info(account=_account_arg(args), source="auto")
 
 
 def _sns_timeline(args: dict[str, Any], _: McpToolContext) -> dict[str, Any]:
@@ -499,6 +499,7 @@ def _sns_timeline(args: dict[str, Any], _: McpToolContext) -> dict[str, Any]:
             offset=_int(args, "offset", 0, minimum=0),
             usernames=_csv(args, "usernames"),
             keyword=_opt_str(args, "keyword") or _opt_str(args, "query"),
+            source="auto",
         ),
         max_items=80,
     )

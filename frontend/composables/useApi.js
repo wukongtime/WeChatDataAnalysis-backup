@@ -371,6 +371,7 @@ export const useApi = () => {
       query.set('usernames', params.usernames)
     }
     if (params && params.keyword) query.set('keyword', params.keyword)
+    if (params && params.source) query.set('source', params.source)
     const url = '/sns/timeline' + (query.toString() ? `?${query.toString()}` : '')
     return await request(url)
   }

@@ -35,6 +35,7 @@ from ..avatar_cache import (
     write_avatar_cache_payload,
 )
 from ..logging_config import get_logger
+from ..source_fallback import normalize_data_source
 from ..media_helpers import (
     _convert_silk_to_browser_audio,
     _decrypt_emoticon_aes_cbc,
@@ -450,7 +451,12 @@ def _write_cached_chat_image(account_dir: Path, md5: str, data: bytes) -> None:
     out_path.write_bytes(data)
 
 
-def _resolve_avatar_remote_url(*, account_dir: Path, username: str) -> str:
+def _resolve_avatar_remote_url(
+    *,
+    account_dir: Path,
+    username: str,
+    prefer_realtime: bool = True,
+) -> str:
     u = str(username or "").strip()
     if not u:
         return ""
@@ -466,15 +472,16 @@ def _resolve_avatar_remote_url(*, account_dir: Path, username: str) -> str:
         pass
 
     # 2) WCDB fallback (more complete on enterprise/openim IDs)
-    try:
-        wcdb_conn = WCDB_REALTIME.ensure_connected(account_dir)
-        with wcdb_conn.lock:
-            mp = _wcdb_get_avatar_urls(wcdb_conn.handle, [u])
-        wa = str(mp.get(u) or "").strip()
-        if wa.lower().startswith(("http://", "https://")):
-            return normalize_avatar_source_url(wa)
-    except Exception:
-        pass
+    if prefer_realtime:
+        try:
+            wcdb_conn = WCDB_REALTIME.ensure_connected(account_dir)
+            with wcdb_conn.lock:
+                mp = _wcdb_get_avatar_urls(wcdb_conn.handle, [u])
+            wa = str(mp.get(u) or "").strip()
+            if wa.lower().startswith(("http://", "https://")):
+                return normalize_avatar_source_url(wa)
+        except Exception:
+            pass
 
     return ""
 
@@ -1129,12 +1136,15 @@ def _fast_probe_record_video_in_chat_attach(
 
 
 @router.get("/api/chat/avatar", summary="获取联系人头像")
-async def get_chat_avatar(username: str, account: Optional[str] = None):
+async def get_chat_avatar(username: str, account: Optional[str] = None, source: str = "auto"):
     if not username:
         raise HTTPException(status_code=400, detail="Missing username.")
     account_dir = _resolve_account_dir(account)
     account_name = str(account_dir.name or "").strip()
     user_key = str(username or "").strip()
+    requested_source = normalize_data_source(source, "auto")
+    if requested_source not in {"auto", "realtime", "decrypted"}:
+        raise HTTPException(status_code=400, detail="Invalid source. Use auto, realtime, or decrypted.")
     if _avatar_trace_enabled():
         _trace_id, trace = create_perf_trace(
             logger,
@@ -1257,7 +1267,11 @@ async def get_chat_avatar(username: str, account: Optional[str] = None):
         conn.close()
 
     # 2) Fallback: remote avatar URL (contact/WCDB), cache by URL.
-    remote_url = _resolve_avatar_remote_url(account_dir=account_dir, username=user_key)
+    remote_url = _resolve_avatar_remote_url(
+        account_dir=account_dir,
+        username=user_key,
+        prefer_realtime=requested_source != "decrypted",
+    )
     trace("remote-url:resolved", hasRemoteUrl=bool(remote_url))
     if remote_url and is_avatar_cache_enabled():
         url_entry = get_avatar_cache_url_entry(account_name, remote_url)
