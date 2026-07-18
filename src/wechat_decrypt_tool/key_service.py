@@ -24,9 +24,23 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from packaging import version as pkg_version  # 建议使用 packaging 库处理版本比较
-from .wechat_detection import detect_wechat_installation
+from .wechat_detection import detect_wechat_installation, parse_global_config
 from .dll_key_scan import extract_xor_keys_from_dll
-from .key_store import upsert_account_keys_in_store
+from .image_key_resolver import (
+    ImageKeyResolution,
+    TemplateScanResult,
+    clean_wxid,
+    derive_image_keys,
+    resolve_local_image_key,
+    scan_v2_templates,
+    verify_key_pair,
+)
+from .image_key_memory_scan import scan_image_key_from_memory
+from .key_store import (
+    get_account_keys_from_store,
+    normalize_key_store_path,
+    upsert_account_keys_in_store,
+)
 from .media_helpers import _resolve_account_dir, _resolve_account_wxid_dir
 
 logger = logging.getLogger(__name__)
@@ -758,104 +772,520 @@ def try_get_local_image_keys() -> List[Dict[str, Any]]:
         return []
 
 
+def _parse_image_xor_key(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value if 0 <= value <= 0xFF else None
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        if raw.lower().startswith("0x"):
+            parsed = int(raw[2:], 16)
+        elif re.fullmatch(r"\d+", raw):
+            parsed = int(raw, 10)
+        else:
+            parsed = int(raw, 16)
+    except (TypeError, ValueError):
+        return None
+    return parsed if 0 <= parsed <= 0xFF else None
+
+
+def _normalize_complete_image_key_payload(payload: Dict[str, Any]) -> Optional[tuple[int, str]]:
+    xor_key = _parse_image_xor_key(
+        payload.get("xor_key", payload.get("xorKey", payload.get("image_xor_key")))
+    )
+    aes_key = str(
+        payload.get("aes_key", payload.get("aesKey", payload.get("image_aes_key", ""))) or ""
+    ).strip()
+    if xor_key is None or len(aes_key) < 16:
+        return None
+    aes_key = aes_key[:16]
+    try:
+        if len(aes_key.encode("ascii")) != 16:
+            return None
+    except UnicodeEncodeError:
+        return None
+    return xor_key, aes_key
+
+
+def _get_image_key_kvcomm_dir() -> Path:
+    override = str(os.environ.get("WECHAT_IMAGE_KVCOMM_DIR") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    appdata = str(os.environ.get("APPDATA") or "").strip()
+    appdata_root = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+    return appdata_root / "Tencent" / "xwechat" / "net" / "kvcomm"
+
+
+def _image_key_aliases(canonical_account: str, *values: Any) -> list[str]:
+    aliases: list[str] = []
+    seen = {str(canonical_account or "").strip().lower()}
+    for value in values:
+        alias = str(value or "").strip()
+        normalized = alias.lower()
+        if not alias or normalized in seen:
+            continue
+        seen.add(normalized)
+        aliases.append(alias)
+    return aliases
+
+
+def _is_trusted_image_key_alias(
+    alias: Any,
+    *,
+    canonical_account: str,
+    matched_wxid: str,
+    source_wxid_dir: Path,
+) -> bool:
+    alias_text = str(alias or "").strip()
+    if not alias_text:
+        return False
+    alias_variants = _image_key_account_match_variants(alias_text)
+    if alias_variants & _image_key_account_match_variants(canonical_account):
+        return True
+    if alias_variants & _image_key_account_match_variants(matched_wxid):
+        return True
+    try:
+        account_dir = _resolve_account_dir(alias_text)
+        resolved_source = _resolve_account_wxid_dir(account_dir)
+    except Exception:
+        return False
+    return (
+        resolved_source is not None
+        and normalize_key_store_path(str(resolved_source))
+        == normalize_key_store_path(str(source_wxid_dir))
+    )
+
+
+def _load_verified_image_key_cache(
+        canonical_account: str,
+        request_account: Optional[str],
+        source_wxid_dir: Path,
+) -> Optional[Dict[str, Any]]:
+    candidates = [canonical_account, str(request_account or "").strip()]
+    for value in list(candidates):
+        candidates.extend(sorted(_image_key_account_match_variants(value)))
+
+    seen: set[str] = set()
+    expected_source = normalize_key_store_path(str(source_wxid_dir))
+    for candidate in candidates:
+        candidate = str(candidate or "").strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        saved = get_account_keys_from_store(candidate)
+        if not isinstance(saved, dict) or saved.get("image_key_verified") is not True:
+            continue
+        if normalize_key_store_path(saved.get("image_key_source_wxid_dir")) != expected_source:
+            continue
+        normalized = _normalize_complete_image_key_payload(saved)
+        if normalized is None:
+            continue
+        xor_key, aes_key = normalized
+        return {
+            "wxid": canonical_account,
+            "matched_wxid": str(saved.get("image_key_derived_wxid") or canonical_account),
+            "xor_key": f"0x{xor_key:02X}",
+            "aes_key": aes_key,
+            "source": "verified_cache",
+            "cached_source": str(saved.get("image_key_source") or ""),
+            "verified": True,
+            "code": saved.get("image_key_code"),
+        }
+    return None
+
+
+def _verified_image_key_cache_matches_templates(
+    cached: Dict[str, Any],
+    template_scan: TemplateScanResult,
+) -> bool:
+    if not template_scan.templates:
+        return True
+    normalized = _normalize_complete_image_key_payload(cached)
+    if normalized is None:
+        return False
+    xor_key, aes_key = normalized
+
+    if str(cached.get("cached_source") or "").strip() == "weflow_local_verified":
+        try:
+            code = int(cached.get("code"))
+            derived = derive_image_keys(code, str(cached.get("matched_wxid") or ""))
+        except (TypeError, ValueError):
+            return False
+        if derived.xor_key != xor_key or derived.aes_key != aes_key:
+            return False
+        return verify_key_pair(
+            xor_key,
+            aes_key,
+            template_scan,
+            require_xor_match=False,
+        )
+
+    return verify_key_pair(
+        xor_key,
+        aes_key,
+        template_scan,
+        require_xor_match=True,
+    )
+
+
+def _persist_verified_image_keys(
+        *,
+        canonical_account: str,
+        request_account: Optional[str],
+        source_wxid_dir: Path,
+        matched_wxid: str,
+        xor_key: int,
+        aes_key: str,
+        source: str,
+        code: Optional[int] = None,
+        trust_matched_alias: bool = True,
+) -> None:
+    normalized = _normalize_complete_image_key_payload({"xor_key": xor_key, "aes_key": aes_key})
+    if normalized is None:
+        raise RuntimeError("拒绝保存不完整的图片密钥")
+    normalized_xor, normalized_aes = normalized
+    alias_values: list[str] = []
+    if _is_trusted_image_key_alias(
+        request_account,
+        canonical_account=canonical_account,
+        matched_wxid=matched_wxid,
+        source_wxid_dir=source_wxid_dir,
+    ):
+        alias_values.append(str(request_account or "").strip())
+    if trust_matched_alias:
+        alias_values.append(matched_wxid)
+    upsert_account_keys_in_store(
+        account=canonical_account,
+        image_xor_key=f"0x{normalized_xor:02X}",
+        image_aes_key=normalized_aes,
+        aliases=_image_key_aliases(canonical_account, *alias_values),
+        image_key_verified=True,
+        image_key_source=source,
+        image_key_source_wxid_dir=str(source_wxid_dir),
+        image_key_derived_wxid=matched_wxid,
+        image_key_code=code,
+    )
+
+
+def _verified_image_key_result(
+        *,
+        canonical_account: str,
+        matched_wxid: str,
+        xor_key: int,
+        aes_key: str,
+        source: str,
+        code: Optional[int] = None,
+        template_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    return {
+        "wxid": canonical_account,
+        "matched_wxid": matched_wxid,
+        "xor_key": f"0x{xor_key:02X}",
+        "aes_key": aes_key,
+        "source": source,
+        "verified": True,
+        "code": code,
+        "template_path": str(template_path) if template_path else "",
+    }
+
+
 async def get_image_key_integrated_workflow(
         account: Optional[str] = None,
         *,
         wxid_dir: Optional[str] = None,
         db_storage_path: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    集成图片密钥获取流程：
-    1. 优先尝试本地算法提取
-    2. 如果本地提取失败或未匹配到指定账号，尝试远程 API 解析
-    """
-    # 1. 尝试本地提取
-    local_keys = try_get_local_image_keys()
+    """Resolve image keys locally with real V2 validation before remote fallback."""
+    resolved_wxid_dir: Optional[Path] = None
+    try:
+        resolved_wxid_dir = _resolve_wxid_dir_for_image_key(
+            account,
+            wxid_dir=wxid_dir,
+            db_storage_path=db_storage_path,
+        )
+    except Exception as error:
+        logger.info("[image_key] 无法预先解析目标账号目录，将保留远端兜底: %s", str(error))
 
-    target_account_wxid = None
-    if account or wxid_dir or db_storage_path:
-        try:
-            resolved_wxid_dir = _resolve_wxid_dir_for_image_key(
-                account,
-                wxid_dir=wxid_dir,
-                db_storage_path=db_storage_path,
-            )
-            target_account_wxid = resolved_wxid_dir.name
-        except Exception:
-            target_account_wxid = account
-    target_account_wxid = str(target_account_wxid or "").strip().lower()
-    logger.info(
-        "[image_key] 开始集成流程：request_account=%s target_wxid=%s local_key_count=%s db_storage_path=%s wxid_dir=%s",
-        str(account or "").strip(),
-        target_account_wxid,
-        len(local_keys),
-        str(db_storage_path or "").strip(),
-        str(wxid_dir or "").strip(),
+    canonical_account = (
+        resolved_wxid_dir.name if resolved_wxid_dir is not None else str(account or "").strip()
     )
+    template_scan: Optional[TemplateScanResult] = None
+    if resolved_wxid_dir is not None:
+        template_scan = await asyncio.to_thread(scan_v2_templates, resolved_wxid_dir)
+        logger.info(
+            "[image_key] V2 模板扫描完成: account=%s templates=%s files_scanned=%s inferred_xor=%s fallback=%s",
+            canonical_account,
+            len(template_scan.templates),
+            template_scan.files_scanned,
+            f"0x{template_scan.inferred_xor_key:02X}" if template_scan.inferred_xor_key is not None else "",
+            template_scan.used_fallback,
+        )
+        cached = _load_verified_image_key_cache(canonical_account, account, resolved_wxid_dir)
+        if cached is not None and _verified_image_key_cache_matches_templates(cached, template_scan):
+            logger.info(
+                "[image_key] 命中已验真缓存: account=%s source=%s code=%s",
+                canonical_account,
+                cached.get("cached_source"),
+                cached.get("code"),
+            )
+            return cached
+        if cached is not None:
+            logger.info(
+                "[image_key] 已验真缓存未通过最新 V2 模板复验，将重新解析: account=%s source=%s",
+                canonical_account,
+                cached.get("cached_source"),
+            )
 
-    if local_keys:
-        # 如果指定了账号，尝试在本地结果中找匹配的
-        if target_account_wxid:
-            target_account_variants = _image_key_account_match_variants(target_account_wxid)
-            for k in local_keys:
-                local_wxid = str(k.get("wxid") or "").strip().lower()
-                local_account_variants = _image_key_account_match_variants(local_wxid)
-                if local_account_variants and (local_account_variants & target_account_variants):
-                    logger.info(
-                        "[image_key] 本地算法账号匹配成功：target_wxid=%s target_variants=%s local_variants=%s payload=%s",
-                        target_account_wxid,
-                        sorted(target_account_variants),
-                        sorted(local_account_variants),
-                        _summarize_key_payload(k),
+    local_keys: List[Dict[str, Any]] = []
+    local_native_wxids: list[str] = []
+    trusted_native_aliases = set(_image_key_account_match_variants(canonical_account))
+    trusted_native_aliases.update(_image_key_account_match_variants(account))
+    if resolved_wxid_dir is not None:
+        global_info = await asyncio.to_thread(parse_global_config, str(resolved_wxid_dir.parent))
+        if isinstance(global_info, dict) and str(global_info.get("wxid") or "").strip():
+            global_wxid = str(global_info["wxid"]).strip()
+            local_native_wxids.append(global_wxid)
+            trusted_native_aliases.update(_image_key_account_match_variants(global_wxid))
+        try:
+            siblings = await asyncio.to_thread(lambda: list(resolved_wxid_dir.parent.iterdir()))
+            local_native_wxids.extend(
+                item.name for item in siblings[:128]
+                if item.is_dir() and item.name.lower() != "all_users"
+            )
+        except OSError:
+            pass
+
+        try:
+            resolution: Optional[ImageKeyResolution] = await asyncio.to_thread(
+                resolve_local_image_key,
+                kvcomm_dir=_get_image_key_kvcomm_dir(),
+                account_dir=resolved_wxid_dir,
+                target_wxid=canonical_account,
+                account=account,
+                local_native_wxids=local_native_wxids,
+                template_scan=template_scan,
+            )
+        except Exception as error:
+            logger.warning("[image_key] WeFlow 本地派生失败: %s", str(error))
+            resolution = None
+
+        if resolution is None and template_scan.templates:
+            local_keys = await asyncio.to_thread(try_get_local_image_keys)
+            known_wxids = {
+                clean_wxid(value).casefold()
+                for value in local_native_wxids
+                if clean_wxid(value)
+            }
+            additional_native_wxids: list[str] = []
+            for item in local_keys:
+                native_wxid = str(item.get("wxid") or "").strip()
+                cleaned_native_wxid = clean_wxid(native_wxid)
+                if not cleaned_native_wxid or cleaned_native_wxid.casefold() in known_wxids:
+                    continue
+                known_wxids.add(cleaned_native_wxid.casefold())
+                additional_native_wxids.append(native_wxid)
+
+            if additional_native_wxids:
+                local_native_wxids.extend(additional_native_wxids)
+                try:
+                    resolution = await asyncio.to_thread(
+                        resolve_local_image_key,
+                        kvcomm_dir=_get_image_key_kvcomm_dir(),
+                        account_dir=resolved_wxid_dir,
+                        target_wxid=canonical_account,
+                        account=account,
+                        local_native_wxids=local_native_wxids,
+                        template_scan=template_scan,
                     )
-                    if local_wxid != target_account_wxid:
-                        aliases = []
-                        for alias in [local_wxid, str(account or "").strip()]:
-                            if alias and alias not in aliases:
-                                aliases.append(alias)
-                        upsert_account_keys_in_store(
-                            account=target_account_wxid,
-                            image_xor_key=k['xor_key'],
-                            image_aes_key=k['aes_key'],
-                            aliases=aliases,
-                        )
-                    else:
-                        upsert_account_keys_in_store(
-                            account=str(k.get("wxid") or "").strip(),
-                            image_xor_key=k['xor_key'],
-                            image_aes_key=k['aes_key']
-                        )
-                    k = dict(k)
-                    k.setdefault("matched_wxid", target_account_wxid)
-                    k.setdefault("match_variants", sorted(local_account_variants | target_account_variants))
-                    return k
-            logger.info(
-                "[image_key] 本地算法未匹配到目标账号：target_wxid=%s target_variants=%s local_wxids=%s",
-                target_account_wxid,
-                sorted(target_account_variants),
-                [str(item.get("wxid") or "").strip() for item in local_keys],
-            )
-        else:
-            # 如果没指定账号，返回第一个发现的并存入 store (如果有的话)
-            k = local_keys[0]
-            logger.info(
-                "[image_key] 未指定账号，返回本地首个结果：payload=%s",
-                _summarize_key_payload(k),
-            )
-            upsert_account_keys_in_store(
-                account=k['wxid'],
-                image_xor_key=k['xor_key'],
-                image_aes_key=k['aes_key']
-            )
-            return k
+                except Exception as error:
+                    logger.warning("[image_key] 使用原生 wxid 补充派生失败: %s", str(error))
+                    resolution = None
 
-    # 2. 本地提取失败或不匹配，尝试远程解析
-    logger.info("[image_key] 本地算法未命中，尝试远程 API 解析")
-    return await fetch_and_save_remote_keys(
+        if resolution is not None and resolution.verified is True:
+            _persist_verified_image_keys(
+                canonical_account=canonical_account,
+                request_account=account,
+                source_wxid_dir=resolved_wxid_dir,
+                matched_wxid=resolution.wxid,
+                xor_key=resolution.xor_key,
+                aes_key=resolution.aes_key,
+                source="weflow_local_verified",
+                code=resolution.code,
+            )
+            logger.info(
+                "[image_key] WeFlow 本地派生验真成功: account=%s matched_wxid=%s code=%s xor=0x%02X",
+                canonical_account,
+                resolution.wxid,
+                resolution.code,
+                resolution.xor_key,
+            )
+            return _verified_image_key_result(
+                canonical_account=canonical_account,
+                matched_wxid=resolution.wxid,
+                xor_key=resolution.xor_key,
+                aes_key=resolution.aes_key,
+                source="weflow_local_verified",
+                code=resolution.code,
+                template_path=resolution.template_path,
+            )
+
+        if template_scan.templates:
+            for candidate in local_keys:
+                normalized = _normalize_complete_image_key_payload(candidate)
+                if normalized is None:
+                    continue
+                xor_key, aes_key = normalized
+                if not verify_key_pair(
+                    xor_key,
+                    aes_key,
+                    template_scan,
+                    require_xor_match=True,
+                ):
+                    continue
+                matched_wxid = str(candidate.get("wxid") or canonical_account).strip()
+                _persist_verified_image_keys(
+                    canonical_account=canonical_account,
+                    request_account=account,
+                    source_wxid_dir=resolved_wxid_dir,
+                    matched_wxid=matched_wxid,
+                    xor_key=xor_key,
+                    aes_key=aes_key,
+                    source="native_v2_verified",
+                    trust_matched_alias=bool(
+                        _image_key_account_match_variants(matched_wxid) & trusted_native_aliases
+                    ),
+                )
+                logger.info(
+                    "[image_key] 原生候选通过 V2 验真: account=%s matched_wxid=%s xor=0x%02X",
+                    canonical_account,
+                    matched_wxid,
+                    xor_key,
+                )
+                return _verified_image_key_result(
+                    canonical_account=canonical_account,
+                    matched_wxid=matched_wxid,
+                    xor_key=xor_key,
+                    aes_key=aes_key,
+                    source="native_v2_verified",
+                )
+
+    logger.info("[image_key] 本地验真未命中，最后尝试远程 API 解析")
+    remote_result = await fetch_and_save_remote_keys(
+        account,
+        wxid_dir=wxid_dir,
+        db_storage_path=db_storage_path,
+        persist=False,
+    )
+    normalized_remote = _normalize_complete_image_key_payload(remote_result)
+    if normalized_remote is None:
+        raise RuntimeError("远程 API 返回了不完整或格式无效的图片密钥")
+    remote_xor, remote_aes = normalized_remote
+
+    if resolved_wxid_dir is not None and template_scan is not None and template_scan.templates:
+        if not verify_key_pair(
+            remote_xor,
+            remote_aes,
+            template_scan,
+            require_xor_match=True,
+        ):
+            raise RuntimeError("远程 API 返回的图片密钥未通过本地 V2 图片验真")
+        matched_wxid = str(remote_result.get("wxid") or canonical_account).strip()
+        _persist_verified_image_keys(
+            canonical_account=canonical_account,
+            request_account=account,
+            source_wxid_dir=resolved_wxid_dir,
+            matched_wxid=matched_wxid,
+            xor_key=remote_xor,
+            aes_key=remote_aes,
+            source="remote_v2_verified",
+        )
+        return _verified_image_key_result(
+            canonical_account=canonical_account,
+            matched_wxid=matched_wxid,
+            xor_key=remote_xor,
+            aes_key=remote_aes,
+            source="remote_v2_verified",
+        )
+
+    result = dict(remote_result)
+    result.update({
+        "xor_key": f"0x{remote_xor:02X}",
+        "aes_key": remote_aes,
+        "source": "remote_api",
+        "verified": False,
+    })
+    return result
+
+
+async def get_image_key_memory_workflow(
+        account: Optional[str] = None,
+        *,
+        wxid_dir: Optional[str] = None,
+        db_storage_path: Optional[str] = None,
+        timeout: float = 60,
+) -> Dict[str, Any]:
+    """Scan WeChat process memory and persist only a V2-verified image key pair."""
+    resolved_wxid_dir = _resolve_wxid_dir_for_image_key(
         account,
         wxid_dir=wxid_dir,
         db_storage_path=db_storage_path,
     )
+    canonical_account = resolved_wxid_dir.name
+    logger.info(
+        "[image_key] 开始显式内存扫描: account=%s wxid_dir=%s timeout=%ss",
+        canonical_account,
+        str(resolved_wxid_dir),
+        timeout,
+    )
+
+    timeout_seconds = max(0.0, float(timeout))
+    try:
+        resolution = await asyncio.wait_for(
+            asyncio.to_thread(
+                scan_image_key_from_memory,
+                resolved_wxid_dir,
+                timeout_seconds,
+            ),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        resolution = None
+    if resolution is None or resolution.verified is not True:
+        raise RuntimeError(
+            f"{int(timeout_seconds)} 秒内未在微信进程内存中找到可通过 V2 图片验真的 AES 密钥"
+        )
+
+    _persist_verified_image_keys(
+        canonical_account=canonical_account,
+        request_account=account,
+        source_wxid_dir=resolved_wxid_dir,
+        matched_wxid=canonical_account,
+        xor_key=resolution.xor_key,
+        aes_key=resolution.aes_key,
+        source="memory_v2_verified",
+    )
+    logger.info(
+        "[image_key] 内存候选通过 V2 验真: account=%s pid=%s encoding=%s xor=0x%02X",
+        canonical_account,
+        resolution.pid,
+        resolution.encoding,
+        resolution.xor_key,
+    )
+
+    result = _verified_image_key_result(
+        canonical_account=canonical_account,
+        matched_wxid=canonical_account,
+        xor_key=resolution.xor_key,
+        aes_key=resolution.aes_key,
+        source="memory_v2_verified",
+        template_path=resolution.template_path,
+    )
+    result.update({"pid": resolution.pid, "encoding": resolution.encoding})
+    return result
 
 
 async def fetch_and_save_remote_keys(
@@ -863,6 +1293,7 @@ async def fetch_and_save_remote_keys(
         *,
         wxid_dir: Optional[str] = None,
         db_storage_path: Optional[str] = None,
+        persist: bool = True,
 ) -> Dict[str, Any]:
     wx_id_dir = _resolve_wxid_dir_for_image_key(
         account,
@@ -919,34 +1350,35 @@ async def fetch_and_save_remote_keys(
         str(config.get("nickName", config.get("nick_name", ""))),
     )
 
-    # 新 API 的字段兼容处理
-    xor_raw = str(config.get("xorKey", config.get("xor_key", "")))
-    aes_val = str(config.get("aesKey", config.get("aes_key", "")))
+    normalized = _normalize_complete_image_key_payload({
+        "xor_key": config.get("xorKey", config.get("xor_key")),
+        "aes_key": config.get("aesKey", config.get("aes_key")),
+    })
+    if normalized is None:
+        raise RuntimeError("云端解析失败: 返回的 XOR/AES 密钥不完整或格式无效")
+    xor_int, aes_val = normalized
+    xor_hex_str = f"0x{xor_int:02X}"
 
-    try:
-        if xor_raw.startswith("0x"):
-            xor_int = int(xor_raw, 16)
-        else:
-            xor_int = int(xor_raw)
-        xor_hex_str = f"0x{xor_int:02X}"
-    except:
-        xor_hex_str = xor_raw
-
-    upsert_account_keys_in_store(
-        account=wxid,
-        image_xor_key=xor_hex_str,
-        image_aes_key=aes_val
-    )
-    logger.info(
-        "[image_key] 远程密钥已保存：account=%s xor_key=%s aes_key=%s",
-        wxid,
-        xor_hex_str,
-        _summarize_aes_key(aes_val),
-    )
+    if persist:
+        upsert_account_keys_in_store(
+            account=wxid,
+            image_xor_key=xor_hex_str,
+            image_aes_key=aes_val,
+            image_key_verified=False,
+            image_key_source="remote_api",
+        )
+        logger.info(
+            "[image_key] 远程候选已按未验真状态保存：account=%s xor_key=%s aes_key=%s",
+            wxid,
+            xor_hex_str,
+            _summarize_aes_key(aes_val),
+        )
 
     return {
         "wxid": wxid,
         "xor_key": xor_hex_str,
         "aes_key": aes_val,
-        "nick_name": config.get("nickName", config.get("nick_name", ""))
+        "nick_name": config.get("nickName", config.get("nick_name", "")),
+        "source": "remote_api",
+        "verified": False,
     }

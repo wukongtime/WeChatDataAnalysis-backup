@@ -204,8 +204,36 @@
           <div class="mb-6">
             <div class="bg-gray-50 rounded-lg p-4">
 
-              <div class="flex justify-between items-center mb-4 pb-3 border-b border-gray-200">
+              <div class="flex flex-col gap-3 mb-3 pb-3 border-b border-gray-200 sm:flex-row sm:items-center sm:justify-between">
                 <span class="text-sm font-medium text-gray-500">此步骤将为您解密微信聊天中的图片</span>
+                <button
+                  type="button"
+                  @click="scanImageKeyMemory"
+                  :disabled="isImageKeyAcquisitionPending"
+                  :aria-busy="isScanningImageKeyMemory"
+                  title="扫描微信内存获取图片密钥"
+                  class="inline-flex h-9 shrink-0 items-center justify-center self-start rounded-lg border border-[#10AEEF] px-3 text-sm font-medium text-[#087FAE] transition-colors hover:bg-[#EAF8FE] disabled:cursor-not-allowed disabled:opacity-60 sm:self-auto"
+                >
+                  <svg v-if="isScanningImageKeyMemory" class="mr-2 h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                  </svg>
+                  <svg v-else class="mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="5" y="5" width="14" height="14" rx="2" stroke-width="2"></rect>
+                    <path stroke-linecap="round" stroke-width="2" d="M9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3"></path>
+                  </svg>
+                  {{ isScanningImageKeyMemory ? '正在扫描...' : '扫描微信内存' }}
+                </button>
+              </div>
+              <div class="min-h-6" aria-live="polite">
+                <p
+                  v-if="imageMemoryScanMessage"
+                  role="status"
+                  class="mb-3 text-xs"
+                  :class="imageMemoryScanState === 'success' ? 'text-[#078A45]' : imageMemoryScanState === 'error' ? 'text-[#C83C3C]' : 'text-[#087FAE]'"
+                >
+                  {{ imageMemoryScanMessage }}
+                </p>
               </div>
               <p class="mt-3 mb-4 text-xs text-[#7F7F7F] flex items-center">
                 <svg class="w-4 h-4 mr-1 text-[#10AEEF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -219,6 +247,7 @@
                   <label class="block text-sm font-medium text-[#000000e6] mb-2">XOR（必填）</label>
                   <input
                       v-model="manualKeys.xor_key"
+                      @input="markImageKeysManual"
                       type="text"
                       placeholder="例如：0xA5"
                       class="w-full px-4 py-2 border border-[#EDEDED] rounded-lg focus:ring-2 focus:ring-[#10AEEF] focus:border-transparent font-mono"
@@ -229,6 +258,7 @@
                   <label class="block text-sm font-medium text-[#000000e6] mb-2">AES（可选）</label>
                   <input
                       v-model="manualKeys.aes_key"
+                      @input="markImageKeysManual"
                       type="text"
                       placeholder="16 个字符（V4-V2 需要）"
                       class="w-full px-4 py-2 border border-[#EDEDED] rounded-lg focus:ring-2 focus:ring-[#10AEEF] focus:border-transparent font-mono"
@@ -243,7 +273,8 @@
           <div class="flex gap-3 justify-center pt-4 border-t border-[#EDEDED]">
             <button
               @click="goToMediaDecryptStep"
-              class="inline-flex items-center px-6 py-3 bg-[#07C160] text-white rounded-lg font-medium hover:bg-[#06AD56] transition-all duration-200"
+              :disabled="isImageKeyAcquisitionPending"
+              class="inline-flex items-center px-6 py-3 bg-[#07C160] text-white rounded-lg font-medium hover:bg-[#06AD56] transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-60"
             >
               下一步
               <svg class="w-5 h-5 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -254,7 +285,11 @@
 
           <!-- 跳过按钮 -->
           <div class="text-center mt-4">
-            <button @click="skipToChat" class="text-sm text-[#7F7F7F] hover:text-[#07C160] transition-colors">
+            <button
+              @click="skipToChat"
+              :disabled="isImageKeyAcquisitionPending"
+              class="text-sm text-[#7F7F7F] hover:text-[#07C160] transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+            >
               跳过后续媒体准备，直接查看聊天记录 →
             </button>
           </div>
@@ -688,7 +723,7 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useApi } from '~/composables/useApi'
 import { normalizeWechatInstallPath, readStoredWechatInstallPath } from '~/lib/wechat-install-path'
 
-const { decryptDatabase, saveMediaKeys, getSavedKeys, getKeys, getImageKey, getWxStatus } = useApi()
+const { decryptDatabase, saveMediaKeys, getSavedKeys, getKeys, getImageKey, getImageKeyMemory, getWxStatus } = useApi()
 
 const loading = ref(false)
 const error = ref('')
@@ -769,12 +804,73 @@ const manualKeys = reactive({
   xor_key: '',
   aes_key: ''
 })
+const imageKeysVerified = ref(false)
+const imageKeyInputOrigin = ref('empty')
+const imageMemoryScanState = ref('idle')
+const imageMemoryScanMessage = ref('')
+const imageKeyPendingCount = ref(0)
+const imageMemoryScanPending = ref(false)
+const isImageKeyAcquisitionPending = computed(() => imageKeyPendingCount.value > 0)
+const isScanningImageKeyMemory = computed(() => imageMemoryScanPending.value)
+let imageKeyRequestRevision = 0
+let ensureKeysRevision = 0
 const manualKeyErrors = reactive({
   xor_key: '',
   aes_key: ''
 })
 
 const normalizeAccountId = (value) => String(value || '').trim()
+const normalizeImageKeyPath = (value) => String(value || '')
+  .trim()
+  .replace(/\//g, '\\')
+  .replace(/[\\]+$/, '')
+  .toLowerCase()
+const imageKeyAccountDirName = (value) => {
+  const normalized = String(value || '').trim().replace(/[\\/]+$/, '')
+  return normalized ? String(normalized.split(/[\\/]/).pop() || '').trim() : ''
+}
+const imageKeyAccountVariants = (value) => {
+  const normalized = normalizeAccountId(value).toLowerCase()
+  if (!normalized) return new Set()
+  const variants = new Set([normalized])
+  const suffixMatch = /^(wxid_[^_\s]+)_[0-9a-f]{4}$/i.exec(normalized)
+  if (suffixMatch) variants.add(suffixMatch[1].toLowerCase())
+  return variants
+}
+const imageKeyAccountsMatch = (left, right) => {
+  const leftVariants = imageKeyAccountVariants(left)
+  const rightVariants = imageKeyAccountVariants(right)
+  return [...leftVariants].some((value) => rightVariants.has(value))
+}
+const currentImageKeyAccount = () => normalizeAccountId(mediaAccount.value || activeKeyAccount.value)
+const beginImageKeyRequest = (account, dbStoragePath) => {
+  const context = {
+    id: ++imageKeyRequestRevision,
+    account: normalizeAccountId(account),
+    dbStoragePath: String(dbStoragePath || '').trim()
+  }
+  imageKeyPendingCount.value += 1
+  return context
+}
+const finishImageKeyRequest = () => {
+  imageKeyPendingCount.value = Math.max(0, imageKeyPendingCount.value - 1)
+}
+const invalidateImageKeyRequests = () => {
+  imageKeyRequestRevision += 1
+}
+const imageKeyContextStillSelected = (context) => (
+  currentImageKeyAccount() === context.account
+  && normalizeImageKeyPath(formData.db_storage_path) === normalizeImageKeyPath(context.dbStoragePath)
+)
+const isCurrentImageKeyRequest = (context) => (
+  context.id === imageKeyRequestRevision && imageKeyContextStillSelected(context)
+)
+const imageKeyResponseMatchesContext = (responseAccount, context) => {
+  const canonical = normalizeAccountId(responseAccount)
+  if (!canonical) return false
+  const requestedDir = imageKeyAccountDirName(wxidDirFromDbStoragePath(context.dbStoragePath))
+  return imageKeyAccountsMatch(canonical, context.account) || imageKeyAccountsMatch(canonical, requestedDir)
+}
 const summarizeAesForLog = (value) => {
   const raw = String(value || '').trim()
   if (!raw) return ''
@@ -831,31 +927,162 @@ const normalizeAesKey = (value) => {
   return { ok: true, value: raw.slice(0, 16), message: '' }
 }
 
+const normalizeCompleteImageKeys = (xorKey, aesKey) => {
+  const xor = normalizeXorKey(xorKey)
+  const aes = normalizeAesKey(aesKey)
+  return {
+    ok: xor.ok && aes.ok && !!aes.value,
+    xor,
+    aes
+  }
+}
+
+const markImageKeysManual = () => {
+  invalidateImageKeyRequests()
+  imageKeyInputOrigin.value = 'manual'
+  imageKeysVerified.value = false
+  imageMemoryScanState.value = 'idle'
+  imageMemoryScanMessage.value = ''
+}
+
+const wxidDirFromDbStoragePath = (value) => {
+  const normalized = String(value || '').trim().replace(/[\\/]+$/, '')
+  if (!normalized) return ''
+  return /[\\/]db_storage$/i.test(normalized)
+    ? normalized.replace(/[\\/]db_storage$/i, '')
+    : ''
+}
+
+const scanImageKeyMemory = async () => {
+  if (isImageKeyAcquisitionPending.value) return
+
+  const account = currentImageKeyAccount()
+  const dbStoragePath = String(formData.db_storage_path || '').trim()
+  const wxidDir = wxidDirFromDbStoragePath(dbStoragePath)
+  if (!account && !dbStoragePath && !wxidDir) {
+    imageMemoryScanState.value = 'error'
+    imageMemoryScanMessage.value = '无法定位当前账号目录，请先完成数据库解密。'
+    return
+  }
+
+  const context = beginImageKeyRequest(account, dbStoragePath)
+  imageMemoryScanPending.value = true
+  imageMemoryScanState.value = 'loading'
+  imageMemoryScanMessage.value = '正在扫描微信进程内存，请保持微信运行并打开几张聊天图片。'
+  logDecryptDebug('image-memory-scan:start', {
+    account,
+    db_storage_path: dbStoragePath,
+    wxid_dir: wxidDir
+  })
+
+  try {
+    const response = await getImageKeyMemory({
+      account: account || null,
+      db_storage_path: dbStoragePath,
+      wxid_dir: wxidDir
+    })
+    if (!isCurrentImageKeyRequest(context)) {
+      logDecryptDebug('image-memory-scan:stale-response', {
+        request_account: account,
+        response_account: String(response?.data?.account || '').trim(),
+        request_id: context.id
+      })
+      return
+    }
+    const scannedKeys = normalizeCompleteImageKeys(
+      response?.data?.xor_key,
+      response?.data?.aes_key
+    )
+    const verified = response?.status === 0 && response?.data?.verified === true && scannedKeys.ok
+    const accountMatches = imageKeyResponseMatchesContext(response?.data?.account, context)
+
+    if (!verified || !accountMatches) {
+      imageMemoryScanState.value = 'error'
+      imageMemoryScanMessage.value = !accountMatches && verified
+        ? '内存扫描结果不属于当前账号，已拒绝采用。'
+        : String(response?.errmsg || '内存扫描未找到可验证的图片密钥，请打开图片后重试。')
+      logDecryptDebug('image-memory-scan:invalid-response', {
+        account,
+        status: response?.status,
+        verified: response?.data?.verified === true,
+        account_matches: accountMatches,
+        source: String(response?.data?.source || ''),
+        errmsg: String(response?.errmsg || '')
+      })
+      return
+    }
+
+    manualKeys.xor_key = scannedKeys.xor.value
+    manualKeys.aes_key = scannedKeys.aes.value
+    imageKeysVerified.value = true
+    imageKeyInputOrigin.value = 'memory'
+    imageMemoryScanState.value = 'success'
+    imageMemoryScanMessage.value = '内存扫描完成，图片密钥已通过本地图片校验。'
+    logDecryptDebug('image-memory-scan:success', {
+      account,
+      source: String(response?.data?.source || ''),
+      pid: response?.data?.pid,
+      encoding: String(response?.data?.encoding || ''),
+      keys: summarizeKeyStateForLog(scannedKeys.xor.value, scannedKeys.aes.value)
+    })
+  } catch (e) {
+    if (isCurrentImageKeyRequest(context)) {
+      imageMemoryScanState.value = 'error'
+      imageMemoryScanMessage.value = String(e?.message || '内存扫描失败，请确认微信正在运行后重试。')
+      logDecryptDebug('image-memory-scan:error', { account, error: formatLogError(e) })
+    }
+  } finally {
+    imageMemoryScanPending.value = false
+    finishImageKeyRequest()
+  }
+}
+
 const prefillKeysForAccount = async (account) => {
   const acc = normalizeAccountId(account)
   if (!acc) return
+  const dbStoragePath = String(formData.db_storage_path || '').trim()
+  const context = beginImageKeyRequest(acc, dbStoragePath)
   logDecryptDebug('prefill:start', { account: acc })
   try {
     const resp = await getSavedKeys({
       account: acc,
-      db_storage_path: String(formData.db_storage_path || '').trim()
+      db_storage_path: dbStoragePath
     })
     if (!resp || resp.status !== 'success') return
     const keys = resp.keys || {}
 
     const dbKey = String(keys.db_key || '').trim()
-    if (dbKey && !String(formData.key || '').trim()) {
+    if (imageKeyContextStillSelected(context) && dbKey && !String(formData.key || '').trim()) {
       formData.key = dbKey
     }
 
-    const xorKey = String(keys.image_xor_key || '').trim()
-    if (xorKey && !String(manualKeys.xor_key || '').trim()) {
-      manualKeys.xor_key = xorKey
+    if (!isCurrentImageKeyRequest(context) || imageKeyInputOrigin.value === 'manual') {
+      logDecryptDebug('prefill:stale-image-response', {
+        account: acc,
+        request_id: context.id,
+        input_origin: imageKeyInputOrigin.value
+      })
+      return
     }
 
+    const xorKey = String(keys.image_xor_key || '').trim()
     const aesKey = String(keys.image_aes_key || '').trim()
-    if (aesKey && !String(manualKeys.aes_key || '').trim()) {
-      manualKeys.aes_key = aesKey
+    const cachedXor = normalizeXorKey(xorKey)
+    const cachedAes = normalizeAesKey(aesKey)
+    const cachedPair = normalizeCompleteImageKeys(xorKey, aesKey)
+    if (cachedPair.ok) {
+      manualKeys.xor_key = cachedPair.xor.value
+      manualKeys.aes_key = cachedPair.aes.value
+      imageKeysVerified.value = keys.image_key_verified === true
+      imageKeyInputOrigin.value = 'prefill'
+    } else if (xorKey || aesKey) {
+      manualKeys.xor_key = cachedXor.ok ? cachedXor.value : ''
+      manualKeys.aes_key = cachedAes.ok ? cachedAes.value : ''
+      imageKeysVerified.value = false
+      imageKeyInputOrigin.value = 'prefill'
+    } else {
+      imageKeysVerified.value = false
+      imageKeyInputOrigin.value = 'empty'
     }
     logDecryptDebug('prefill:done', {
       request_account: acc,
@@ -872,13 +1099,20 @@ const prefillKeysForAccount = async (account) => {
     })
   } catch (e) {
     logDecryptDebug('prefill:error', { account: acc, error: formatLogError(e) })
+  } finally {
+    finishImageKeyRequest()
   }
 }
 
 const tryAutoFetchImageKeys = async (account) => {
   const acc = normalizeAccountId(account)
   if (!acc) return
-  if (String(manualKeys.xor_key || '').trim() || String(manualKeys.aes_key || '').trim()) {
+  if (imageKeyInputOrigin.value === 'manual') {
+    logDecryptDebug('auto-fetch:skip-manual-input', { account: acc })
+    return
+  }
+  const existingKeys = normalizeCompleteImageKeys(manualKeys.xor_key, manualKeys.aes_key)
+  if (existingKeys.ok && imageKeysVerified.value) {
     logDecryptDebug('auto-fetch:skip-existing', {
       account: acc,
       keys: summarizeKeyStateForLog(manualKeys.xor_key, manualKeys.aes_key)
@@ -886,12 +1120,14 @@ const tryAutoFetchImageKeys = async (account) => {
     return
   }
 
-  warning.value = '正在通过云端/本地算法自动获取图片密钥，请稍候...'
+  const dbStoragePath = String(formData.db_storage_path || '').trim()
+  const context = beginImageKeyRequest(acc, dbStoragePath)
+  warning.value = '正在自动解析并校验图片密钥，请稍候...'
   logDecryptDebug('auto-fetch:start', { account: acc })
   try {
     const imgRes = await getImageKey({
       account: acc,
-      db_storage_path: String(formData.db_storage_path || '').trim()
+      db_storage_path: dbStoragePath
     })
     logDecryptDebug('auto-fetch:response', {
       account: acc,
@@ -901,26 +1137,56 @@ const tryAutoFetchImageKeys = async (account) => {
       keys: summarizeKeyStateForLog(imgRes?.data?.xor_key, imgRes?.data?.aes_key)
     })
 
-    if (imgRes && imgRes.status === 0) {
-      if (imgRes.data?.xor_key) manualKeys.xor_key = imgRes.data.xor_key
-      if (imgRes.data?.aes_key) manualKeys.aes_key = imgRes.data.aes_key
-      warning.value = '已通过云端成功获取图片密钥！'
-      setTimeout(() => { if (warning.value.includes('成功获取')) warning.value = '' }, 3000)
+    if (!isCurrentImageKeyRequest(context)) {
+      logDecryptDebug('auto-fetch:stale-response', { account: acc, request_id: context.id })
+      return
+    }
+
+    const fetchedKeys = normalizeCompleteImageKeys(
+      imgRes?.data?.xor_key,
+      imgRes?.data?.aes_key
+    )
+    const verified = imgRes && imgRes.status === 0 && imgRes?.data?.verified === true && fetchedKeys.ok
+    if (verified && imageKeyResponseMatchesContext(imgRes?.data?.account, context)) {
+      manualKeys.xor_key = fetchedKeys.xor.value
+      manualKeys.aes_key = fetchedKeys.aes.value
+      imageKeysVerified.value = true
+      imageKeyInputOrigin.value = 'auto'
+      const successMessage = String(imgRes?.data?.source || '').startsWith('remote_')
+        ? '远端候选已通过本地图片校验！'
+        : '已通过本地解析成功获取图片密钥！'
+      warning.value = successMessage
+      setTimeout(() => { if (warning.value === successMessage) warning.value = '' }, 3000)
     } else {
-      warning.value = '云端获取图片密钥失败，您可以尝试手动填写。'
+      warning.value = '本地解析图片密钥失败，您可以尝试手动填写。'
+      logDecryptDebug('auto-fetch:invalid-response', {
+        account: acc,
+        status: imgRes?.status,
+        verified: imgRes?.data?.verified === true,
+        source: String(imgRes?.data?.source || ''),
+        errmsg: String(imgRes?.errmsg || ''),
+        xor_error: fetchedKeys.xor.message,
+        aes_error: fetchedKeys.aes.message || (fetchedKeys.aes.value ? '' : '缺少 AES 密钥')
+      })
     }
   } catch (e) {
-    warning.value = '网络请求失败，请手动填写图片密钥。'
-    logDecryptDebug('auto-fetch:error', { account: acc, error: formatLogError(e) })
+    if (isCurrentImageKeyRequest(context)) {
+      warning.value = '本地解析图片密钥失败，请手动填写图片密钥。'
+      logDecryptDebug('auto-fetch:error', { account: acc, error: formatLogError(e) })
+    }
+  } finally {
+    finishImageKeyRequest()
   }
 }
 
 const ensureKeysForAccount = async (account) => {
   const acc = normalizeAccountId(account)
   if (!acc) return
+  const ensureRevision = ++ensureKeysRevision
 
   logDecryptDebug('ensure-keys:start', {
     account: acc,
+    ensure_revision: ensureRevision,
     previous_account: activeKeyAccount.value,
     current_manual: summarizeKeyStateForLog(manualKeys.xor_key, manualKeys.aes_key)
   })
@@ -934,8 +1200,21 @@ const ensureKeysForAccount = async (account) => {
   }
 
   activeKeyAccount.value = acc
+  const ensureContext = { account: acc, dbStoragePath: String(formData.db_storage_path || '').trim() }
   await prefillKeysForAccount(acc)
-  await tryAutoFetchImageKeys(acc)
+  if (ensureRevision !== ensureKeysRevision || activeKeyAccount.value !== acc || !imageKeyContextStillSelected(ensureContext)) {
+    logDecryptDebug('ensure-keys:stale-after-prefill', {
+      account: acc,
+      ensure_revision: ensureRevision,
+      current_ensure_revision: ensureKeysRevision,
+      active_account: activeKeyAccount.value,
+      db_storage_path: ensureContext.dbStoragePath
+    })
+    return
+  }
+  if (imageKeyInputOrigin.value !== 'manual') {
+    await tryAutoFetchImageKeys(acc)
+  }
   logDecryptDebug('ensure-keys:done', {
     account: acc,
     manual: summarizeKeyStateForLog(manualKeys.xor_key, manualKeys.aes_key)
@@ -1107,6 +1386,7 @@ const applyManualKeys = () => {
 }
 
 const clearManualKeys = () => {
+  invalidateImageKeyRequests()
   logDecryptDebug('keys:clear', {
     active_account: activeKeyAccount.value,
     manual: summarizeKeyStateForLog(manualKeys.xor_key, manualKeys.aes_key),
@@ -1114,6 +1394,10 @@ const clearManualKeys = () => {
   })
   manualKeys.xor_key = ''
   manualKeys.aes_key = ''
+  imageKeysVerified.value = false
+  imageKeyInputOrigin.value = 'empty'
+  imageMemoryScanState.value = 'idle'
+  imageMemoryScanMessage.value = ''
   manualKeyErrors.xor_key = ''
   manualKeyErrors.aes_key = ''
   mediaKeys.xor_key = ''
@@ -1734,6 +2018,7 @@ const goBackToMediaDecryptStep = () => {
 
 // 从密钥步骤进入图片解密步骤
 const goToMediaDecryptStep = async () => {
+  if (isImageKeyAcquisitionPending.value) return
   error.value = ''
   warning.value = ''
   // 校验并应用（未填写则允许直接进入，后端会使用已保存密钥或报错提示）
@@ -1766,7 +2051,7 @@ const goToMediaDecryptStep = async () => {
   }
 
   // 用户已输入 XOR 时，自动保存一次，避免下次重复输入（失败不影响继续）
-  if (mediaKeys.xor_key) {
+  if (mediaKeys.xor_key && !imageKeysVerified.value) {
     try {
       const aesVal = String(mediaKeys.aes_key || '').trim()
       logDecryptDebug('media-step:save-keys', {
@@ -1781,12 +2066,15 @@ const goToMediaDecryptStep = async () => {
     } catch (e) {
       logDecryptDebug('media-step:save-keys-error', { account: mediaAccount.value, error: formatLogError(e) })
     }
+  } else if (mediaKeys.xor_key) {
+    logDecryptDebug('media-step:skip-save-verified', { account: mediaAccount.value })
   }
   currentStep.value = 2
 }
 
 // 跳过图片解密，直接查看聊天记录
 const skipToChat = async () => {
+  if (isImageKeyAcquisitionPending.value) return
   if (!mediaDecryptResult.value) {
     const shouldContinue = await requestGuideDialog({
       eyebrow: '跳过媒体准备',
@@ -1807,7 +2095,7 @@ const skipToChat = async () => {
 
   try {
     const ok = applyManualKeys()
-    if (ok && mediaKeys.xor_key) {
+    if (ok && mediaKeys.xor_key && !imageKeysVerified.value) {
       const aesVal = String(mediaKeys.aes_key || '').trim()
       logDecryptDebug('skip-chat:save-keys', {
         account: mediaAccount.value,
@@ -1818,6 +2106,8 @@ const skipToChat = async () => {
         xor_key: mediaKeys.xor_key,
         aes_key: aesVal ? aesVal : null
       })
+    } else if (ok && mediaKeys.xor_key) {
+      logDecryptDebug('skip-chat:skip-save-verified', { account: mediaAccount.value })
     }
   } catch (e) {
     logDecryptDebug('skip-chat:save-keys-error', { account: mediaAccount.value, error: formatLogError(e) })

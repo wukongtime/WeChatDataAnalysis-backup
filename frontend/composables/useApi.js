@@ -672,6 +672,18 @@ export const useApi = () => {
     return await request(url)
   }
 
+  // 扫描微信进程内存并通过本地 V2 图片校验密钥
+  const getImageKeyMemory = async (params = {}) => {
+    return await request('/get_image_key_memory', {
+      method: 'POST',
+      body: {
+        account: params.account || null,
+        db_storage_path: params.db_storage_path || null,
+        wxid_dir: params.wxid_dir || null
+      }
+    })
+  }
+
   // 枚举服务号信息
   const listBizAccounts = async (params = {}) => {
     const query = new URLSearchParams()
@@ -864,6 +876,7 @@ export const useApi = () => {
     getWrappedAnnualCard,
     getKeys,
     getImageKey,
+    getImageKeyMemory,
     getWxStatus,
     listBizAccounts,
     listBizMessages,

@@ -2,15 +2,26 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter
+from pydantic import BaseModel, Field
 
 from ..logging_config import get_logger
 from ..key_store import get_account_keys_from_store, normalize_key_store_path
-from ..key_service import get_db_key_workflow, get_image_key_integrated_workflow
+from ..key_service import (
+    get_db_key_workflow,
+    get_image_key_integrated_workflow,
+    get_image_key_memory_workflow,
+)
 from ..media_helpers import _load_media_keys, _resolve_account_dir
 from ..path_fix import PathFixRoute
 
 router = APIRouter(route_class=PathFixRoute)
 logger = get_logger(__name__)
+
+
+class ImageKeyMemoryRequest(BaseModel):
+    account: Optional[str] = Field(None, description="账号目录名")
+    db_storage_path: Optional[str] = Field(None, description="账号的 db_storage 路径")
+    wxid_dir: Optional[str] = Field(None, description="微信原始账号目录")
 
 
 def _summarize_aes_key(value: str) -> str:
@@ -20,6 +31,17 @@ def _summarize_aes_key(value: str) -> str:
     if len(raw) <= 8:
         return raw
     return f"{raw[:4]}...{raw[-4:]}(len={len(raw)})"
+
+
+def _is_valid_image_key_pair(xor_value: object, aes_value: object) -> bool:
+    xor_raw = str(xor_value or "").strip()
+    aes_raw = str(aes_value or "").strip()
+    try:
+        xor_key = int(xor_raw[2:], 16) if xor_raw.lower().startswith("0x") else int(xor_raw, 16)
+        aes_key = aes_raw[:16].encode("ascii")
+    except (TypeError, ValueError, UnicodeEncodeError):
+        return False
+    return 0 <= xor_key <= 0xFF and len(aes_key) == 16
 
 
 def _resolve_requested_wxid_dir(*, db_storage_path: Optional[str] = None, wxid_dir: Optional[str] = None) -> str:
@@ -148,6 +170,8 @@ async def get_saved_keys(
     )
 
     keys: dict = {}
+    selected_image_keys: dict = {}
+    selected_image_key_score = -1
     selected_db_key_account = ""
     selected_db_key_score = -1
     db_key_blocked_reason = ""
@@ -159,12 +183,45 @@ async def get_saved_keys(
         if not isinstance(candidate_keys, dict) or not candidate_keys:
             continue
 
-        if not str(keys.get("image_xor_key") or "").strip():
-            keys["image_xor_key"] = str(candidate_keys.get("image_xor_key") or "").strip()
-        if not str(keys.get("image_aes_key") or "").strip():
-            keys["image_aes_key"] = str(candidate_keys.get("image_aes_key") or "").strip()
-        if not str(keys.get("updated_at") or "").strip():
-            keys["updated_at"] = str(candidate_keys.get("updated_at") or "").strip()
+        image_xor_key = str(candidate_keys.get("image_xor_key") or "").strip()
+        image_aes_key = str(candidate_keys.get("image_aes_key") or "").strip()
+        has_complete_image_pair = _is_valid_image_key_pair(image_xor_key, image_aes_key)
+        image_key_source_wxid_dir = normalize_key_store_path(
+            candidate_keys.get("image_key_source_wxid_dir")
+        )
+        image_key_source_matches = not request_wxid_dir or (
+            bool(image_key_source_wxid_dir) and image_key_source_wxid_dir == request_wxid_dir
+        )
+        image_key_source_conflicts = bool(
+            request_wxid_dir
+            and image_key_source_wxid_dir
+            and image_key_source_wxid_dir != request_wxid_dir
+        )
+        image_key_verified = (
+            candidate_keys.get("image_key_verified") is True
+            and has_complete_image_pair
+            and image_key_source_matches
+        )
+        image_score = (
+            -1 if image_key_source_conflicts
+            else 300 if has_complete_image_pair and image_key_verified
+            else 200 if has_complete_image_pair
+            else 100 if image_xor_key or image_aes_key
+            else -1
+        )
+        if image_score > selected_image_key_score:
+            selected_image_key_score = image_score
+            selected_image_keys = {
+                "image_xor_key": image_xor_key,
+                "image_aes_key": image_aes_key,
+                "image_key_verified": image_key_verified,
+                "image_key_source": str(candidate_keys.get("image_key_source") or "").strip(),
+                "image_key_source_wxid_dir": image_key_source_wxid_dir,
+                "image_key_derived_wxid": str(candidate_keys.get("image_key_derived_wxid") or "").strip(),
+                "image_key_code": candidate_keys.get("image_key_code"),
+                "image_key_store_account": candidate_account,
+                "updated_at": str(candidate_keys.get("updated_at") or "").strip(),
+            }
 
         ok, score, blocked_reason = _evaluate_db_key_candidate(
             store_account=candidate_account,
@@ -184,14 +241,28 @@ async def get_saved_keys(
         elif (not ok) and blocked_reason and (not db_key_blocked_reason):
             db_key_blocked_reason = blocked_reason
 
-    # 兼容：如果 store 里没有图片密钥，尝试从账号目录的 _media_keys.json 读取
-    if account_dir and isinstance(keys, dict):
+    keys.update(selected_image_keys)
+
+    # 兼容：没有完整账号级记录时，尝试从账号目录的 _media_keys.json 读取一整对密钥。
+    if account_dir and selected_image_key_score < 200:
         try:
             media = _load_media_keys(account_dir)
-            if keys.get("image_xor_key") in (None, "") and media.get("xor") is not None:
-                keys["image_xor_key"] = f"0x{int(media['xor']):02X}"
-            if keys.get("image_aes_key") in (None, "") and str(media.get("aes") or "").strip():
-                keys["image_aes_key"] = str(media.get("aes") or "").strip()
+            media_xor = f"0x{int(media['xor']):02X}" if media.get("xor") is not None else ""
+            media_aes = str(media.get("aes") or "").strip()
+            if media_xor or media_aes:
+                keys.update({
+                    "image_xor_key": media_xor,
+                    "image_aes_key": media_aes,
+                    "image_key_verified": media.get("verified") is True and _is_valid_image_key_pair(
+                        media_xor,
+                        media_aes,
+                    ),
+                    "image_key_source": str(media.get("source") or "legacy_media_cache").strip(),
+                    "image_key_source_wxid_dir": normalize_key_store_path(media.get("source_wxid_dir")),
+                    "image_key_derived_wxid": str(media.get("derived_wxid") or "").strip(),
+                    "image_key_code": media.get("code"),
+                    "image_key_store_account": account_dir.name,
+                })
         except Exception:
             pass
 
@@ -200,6 +271,12 @@ async def get_saved_keys(
         "db_key": str(keys.get("db_key") or "").strip(),
         "image_xor_key": str(keys.get("image_xor_key") or "").strip(),
         "image_aes_key": str(keys.get("image_aes_key") or "").strip(),
+        "image_key_verified": bool(keys.get("image_key_verified")),
+        "image_key_source": str(keys.get("image_key_source") or "").strip(),
+        "image_key_source_wxid_dir": str(keys.get("image_key_source_wxid_dir") or "").strip(),
+        "image_key_derived_wxid": str(keys.get("image_key_derived_wxid") or "").strip(),
+        "image_key_code": keys.get("image_key_code"),
+        "image_key_store_account": str(keys.get("image_key_store_account") or "").strip(),
         "updated_at": str(keys.get("updated_at") or "").strip(),
         "db_key_source_wxid_dir": db_key_source_wxid_dir,
         "db_key_source_db_storage_path": db_key_source_db_storage_path,
@@ -207,7 +284,7 @@ async def get_saved_keys(
         "db_key_blocked_reason": db_key_blocked_reason,
     }
     logger.info(
-        "[keys] get_saved_keys done: account=%s db_key_present=%s db_key_store_account=%s db_key_source_wxid_dir=%s blocked_reason=%s xor_key=%s aes_key=%s updated_at=%s",
+        "[keys] get_saved_keys done: account=%s db_key_present=%s db_key_store_account=%s db_key_source_wxid_dir=%s blocked_reason=%s xor_key=%s aes_key=%s image_verified=%s image_source=%s updated_at=%s",
         str(account_name or ""),
         bool(result["db_key"]),
         result["db_key_store_account"],
@@ -215,6 +292,8 @@ async def get_saved_keys(
         result["db_key_blocked_reason"],
         result["image_xor_key"],
         _summarize_aes_key(result["image_aes_key"]),
+        result["image_key_verified"],
+        result["image_key_source"],
         result["updated_at"],
     )
 
@@ -299,12 +378,12 @@ async def get_image_key(
     wxid_dir: Optional[str] = None,
 ):
     """
-    通过模拟 Next.js Server Action 协议，利用本地微信配置文件换取 AES/XOR 密钥。
+    优先使用 WeFlow 本地机制解析并验真 AES/XOR 密钥：
 
-    1. 读取 [wx_dir]/all_users/config/global_config (Blob 1)
-    2. 读 同上目录下的global_config.crc
-    3. 构造 Multipart 包发送至远程服务器
-    4. 解析返回流，自动存入本地数据库
+    1. 从 kvcomm 文件名枚举候选 code
+    2. 对候选 code 与 wxid 组合确定性派生密钥
+    3. 使用账号目录内真实 V2 图片验证候选
+    4. 本地未命中时才请求远端，并在可用模板存在时再次本地验真
     """
     try:
         logger.info(
@@ -319,21 +398,28 @@ async def get_image_key(
             wxid_dir=wxid_dir,
         )
         logger.info(
-            "[keys] get_image_key done: request_account=%s response_account=%s xor_key=%s aes_key=%s",
+            "[keys] get_image_key done: request_account=%s response_account=%s xor_key=%s aes_key=%s verified=%s source=%s",
             str(account or "").strip(),
             str(result.get("wxid") or "").strip(),
             str(result.get("xor_key") or "").strip(),
             _summarize_aes_key(str(result.get("aes_key") or "").strip()),
+            result.get("verified") is True,
+            str(result.get("source") or "").strip(),
         )
 
+        verified = result.get("verified") is True
         return {
-            "status": 0,
-            "errmsg": "ok",
+            "status": 0 if verified else -2,
+            "errmsg": "ok" if verified else "已获得候选密钥，但缺少可用于本地验真的 V2 图片",
             "data": {
                 "xor_key": result["xor_key"],
                 "aes_key": result["aes_key"],
                 "nick_name": result.get("nick_name", ""),
-                "account": result.get("wxid", "")
+                "account": result.get("wxid", ""),
+                "matched_wxid": result.get("matched_wxid", ""),
+                "source": result.get("source", ""),
+                "verified": verified,
+                "code": result.get("code"),
             }
         }
     except FileNotFoundError as e:
@@ -362,3 +448,54 @@ async def get_image_key(
             "errmsg": f"获取失败: {str(e)}",
             "data": {}
         }
+
+
+@router.post("/api/get_image_key_memory", summary="扫描微信内存获取图片密钥")
+async def get_image_key_memory(request: ImageKeyMemoryRequest):
+    """Explicitly scan WeChat process memory and accept only V2-verified keys."""
+    try:
+        logger.info(
+            "[keys] get_image_key_memory start: request_account=%s db_storage_path=%s wxid_dir=%s",
+            str(request.account or "").strip(),
+            str(request.db_storage_path or "").strip(),
+            str(request.wxid_dir or "").strip(),
+        )
+        result = await get_image_key_memory_workflow(
+            request.account,
+            db_storage_path=request.db_storage_path,
+            wxid_dir=request.wxid_dir,
+        )
+        logger.info(
+            "[keys] get_image_key_memory done: request_account=%s response_account=%s pid=%s xor_key=%s aes_key=%s",
+            str(request.account or "").strip(),
+            str(result.get("wxid") or "").strip(),
+            result.get("pid"),
+            str(result.get("xor_key") or "").strip(),
+            _summarize_aes_key(str(result.get("aes_key") or "").strip()),
+        )
+        return {
+            "status": 0,
+            "errmsg": "ok",
+            "data": {
+                "xor_key": result["xor_key"],
+                "aes_key": result["aes_key"],
+                "account": result.get("wxid", ""),
+                "matched_wxid": result.get("matched_wxid", ""),
+                "source": result.get("source", "memory_v2_verified"),
+                "verified": result.get("verified") is True,
+                "pid": result.get("pid"),
+                "encoding": result.get("encoding", ""),
+            },
+        }
+    except FileNotFoundError as error:
+        logger.exception(
+            "[keys] get_image_key_memory account directory missing: request_account=%s",
+            str(request.account or "").strip(),
+        )
+        return {"status": -1, "errmsg": f"文件缺失: {str(error)}", "data": {}}
+    except Exception as error:
+        logger.exception(
+            "[keys] get_image_key_memory failed: request_account=%s",
+            str(request.account or "").strip(),
+        )
+        return {"status": -1, "errmsg": f"内存扫描失败: {str(error)}", "data": {}}

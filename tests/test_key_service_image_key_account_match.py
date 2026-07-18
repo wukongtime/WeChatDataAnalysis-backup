@@ -248,11 +248,22 @@ class TestKeyServiceImageKeyAccountMatch(unittest.TestCase):
         ) as remote_mock:
             result = asyncio.run(key_service.get_image_key_integrated_workflow("wxid_demo_extra"))
 
-        self.assertEqual(result, remote_result)
-        remote_mock.assert_awaited_once_with("wxid_demo_extra", wxid_dir=None, db_storage_path=None)
+        self.assertEqual(result["wxid"], remote_result["wxid"])
+        self.assertEqual(result["xor_key"], remote_result["xor_key"])
+        self.assertEqual(result["aes_key"], remote_result["aes_key"])
+        self.assertEqual(result["source"], "remote_api")
+        self.assertFalse(result["verified"])
+        remote_mock.assert_awaited_once_with(
+            "wxid_demo_extra", wxid_dir=None, db_storage_path=None, persist=False
+        )
         upsert_mock.assert_not_called()
 
-    def test_local_image_keys_require_exact_account_match(self) -> None:
+    def test_exact_native_account_match_still_requires_v2_verification(self) -> None:
+        remote_result = {
+            "wxid": "wxid_demo_extra",
+            "xor_key": "0x8A",
+            "aes_key": "BBBBBBBBBBBBBBBB",
+        }
         with mock.patch.object(
             key_service,
             "try_get_local_image_keys",
@@ -274,20 +285,25 @@ class TestKeyServiceImageKeyAccountMatch(unittest.TestCase):
         ) as upsert_mock, mock.patch.object(
             key_service,
             "fetch_and_save_remote_keys",
-            new=mock.AsyncMock(side_effect=AssertionError("remote should not be called")),
-        ):
+            new=mock.AsyncMock(return_value=remote_result),
+        ) as remote_mock:
             result = asyncio.run(key_service.get_image_key_integrated_workflow("wxid_demo_extra"))
 
         self.assertEqual(result["wxid"], "wxid_demo_extra")
         self.assertEqual(result["xor_key"], "0x8A")
         self.assertEqual(result["aes_key"], "BBBBBBBBBBBBBBBB")
-        upsert_mock.assert_called_once_with(
-            account="wxid_demo_extra",
-            image_xor_key="0x8A",
-            image_aes_key="BBBBBBBBBBBBBBBB",
+        self.assertFalse(result["verified"])
+        remote_mock.assert_awaited_once_with(
+            "wxid_demo_extra", wxid_dir=None, db_storage_path=None, persist=False
         )
+        upsert_mock.assert_not_called()
 
-    def test_local_image_keys_match_xwechat_folder_suffix(self) -> None:
+    def test_suffixed_native_account_match_still_requires_v2_verification(self) -> None:
+        remote_result = {
+            "wxid": "wxid_demo_8d63",
+            "xor_key": "0x2C",
+            "aes_key": "AAAAAAAAAAAAAAAA",
+        }
         with mock.patch.object(
             key_service,
             "try_get_local_image_keys",
@@ -308,20 +324,18 @@ class TestKeyServiceImageKeyAccountMatch(unittest.TestCase):
         ) as upsert_mock, mock.patch.object(
             key_service,
             "fetch_and_save_remote_keys",
-            new=mock.AsyncMock(side_effect=AssertionError("remote should not be called")),
-        ):
+            new=mock.AsyncMock(return_value=remote_result),
+        ) as remote_mock:
             result = asyncio.run(key_service.get_image_key_integrated_workflow("wxid_demo"))
 
-        self.assertEqual(result["wxid"], "wxid_demo")
-        self.assertEqual(result["matched_wxid"], "wxid_demo_8d63")
+        self.assertEqual(result["wxid"], "wxid_demo_8d63")
         self.assertEqual(result["xor_key"], "0x2C")
         self.assertEqual(result["aes_key"], "AAAAAAAAAAAAAAAA")
-        upsert_mock.assert_called_once_with(
-            account="wxid_demo_8d63",
-            image_xor_key="0x2C",
-            image_aes_key="AAAAAAAAAAAAAAAA",
-            aliases=["wxid_demo"],
+        self.assertFalse(result["verified"])
+        remote_mock.assert_awaited_once_with(
+            "wxid_demo", wxid_dir=None, db_storage_path=None, persist=False
         )
+        upsert_mock.assert_not_called()
 
     def test_fetch_remote_keys_can_use_db_storage_path_without_decrypted_output(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -386,7 +400,11 @@ class TestKeyServiceImageKeyAccountMatch(unittest.TestCase):
             account="wxid_v4mbduwqtzpt22",
             image_xor_key="0x8A",
             image_aes_key="c3f3366e23628242",
+            image_key_verified=False,
+            image_key_source="remote_api",
         )
+        self.assertEqual(result["source"], "remote_api")
+        self.assertFalse(result["verified"])
 
 
 if __name__ == "__main__":
