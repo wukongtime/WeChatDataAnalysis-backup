@@ -130,7 +130,18 @@
             
             <!-- 提交按钮 -->
             <div class="pt-4 border-t border-[#EDEDED]">
-              <div class="flex items-center justify-center">
+              <div class="flex flex-wrap items-center justify-center gap-3">
+                <button
+                  type="button"
+                  data-testid="decrypt-step-back"
+                  @click="goBackFromCurrentStep"
+                  class="inline-flex items-center px-6 py-3 bg-white text-[#000000e6] border border-[#EDEDED] rounded-lg text-base font-medium hover:bg-gray-50 transition-all duration-200"
+                >
+                  <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+                  </svg>
+                  返回账号选择
+                </button>
                 <button
                   type="submit"
                   :disabled="loading"
@@ -270,8 +281,20 @@
           </div>
 
           <!-- 操作按钮 -->
-          <div class="flex gap-3 justify-center pt-4 border-t border-[#EDEDED]">
+          <div class="flex flex-wrap gap-3 justify-center pt-4 border-t border-[#EDEDED]">
             <button
+              type="button"
+              data-testid="decrypt-step-back"
+              @click="goBackFromCurrentStep"
+              class="inline-flex items-center px-6 py-3 bg-white text-[#000000e6] border border-[#EDEDED] rounded-lg font-medium hover:bg-gray-50 transition-all duration-200"
+            >
+              <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+              </svg>
+              上一步
+            </button>
+            <button
+              type="button"
               @click="goToMediaDecryptStep"
               :disabled="isImageKeyAcquisitionPending"
               class="inline-flex items-center px-6 py-3 bg-[#07C160] text-white rounded-lg font-medium hover:bg-[#06AD56] transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-60"
@@ -436,8 +459,20 @@
           </div>
 
           <!-- 操作按钮 -->
-          <div class="flex gap-3 justify-center pt-4 border-t border-[#EDEDED]">
+          <div class="flex flex-wrap gap-3 justify-center pt-4 border-t border-[#EDEDED]">
             <button
+              type="button"
+              data-testid="decrypt-step-back"
+              @click="goBackFromCurrentStep"
+              class="inline-flex items-center px-6 py-3 bg-white text-[#000000e6] border border-[#EDEDED] rounded-lg font-medium hover:bg-gray-50 transition-all duration-200"
+            >
+              <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+              </svg>
+              上一步
+            </button>
+            <button
+              type="button"
               @click="decryptAllImages"
               :disabled="mediaDecrypting"
               class="inline-flex items-center px-6 py-3 bg-[#91D300] text-white rounded-lg font-medium hover:bg-[#82BD00] transition-all duration-200 disabled:opacity-50"
@@ -616,12 +651,16 @@
             </details>
           </div>
 
-          <div class="flex gap-3 justify-center pt-4 border-t border-[#EDEDED]">
+          <div class="flex flex-wrap gap-3 justify-center pt-4 border-t border-[#EDEDED]">
             <button
-              @click="goBackToMediaDecryptStep"
-              :disabled="emojiDownloading"
-              class="inline-flex items-center px-6 py-3 bg-white text-[#000000e6] border border-[#EDEDED] rounded-lg font-medium hover:bg-gray-50 transition-all duration-200 disabled:opacity-50"
+              type="button"
+              data-testid="decrypt-step-back"
+              @click="goBackFromCurrentStep"
+              class="inline-flex items-center px-6 py-3 bg-white text-[#000000e6] border border-[#EDEDED] rounded-lg font-medium hover:bg-gray-50 transition-all duration-200"
             >
+              <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+              </svg>
               上一步
             </button>
             <button
@@ -733,6 +772,8 @@ const currentStep = ref(0)
 const mediaAccount = ref('')
 const activeKeyAccount = ref('')
 const isGettingDbKey = ref(false)
+let dbKeyRequestRevision = 0
+let dbKeyRequestController = null
 const guideDialog = reactive({
   open: false,
   eyebrow: '操作提示',
@@ -1219,6 +1260,43 @@ const ensureKeysForAccount = async (account) => {
   })
 }
 
+const isDbKeyRequestActive = (revision, controller) => (
+  revision === dbKeyRequestRevision
+  && controller === dbKeyRequestController
+  && !controller.signal.aborted
+)
+
+const waitForDbKeyDelay = (milliseconds, signal) => new Promise((resolve, reject) => {
+  if (signal.aborted) {
+    const error = new Error('数据库密钥获取已停止')
+    error.name = 'AbortError'
+    reject(error)
+    return
+  }
+
+  const onAbort = () => {
+    clearTimeout(timer)
+    const error = new Error('数据库密钥获取已停止')
+    error.name = 'AbortError'
+    reject(error)
+  }
+  const timer = setTimeout(() => {
+    signal.removeEventListener('abort', onAbort)
+    resolve()
+  }, milliseconds)
+  signal.addEventListener('abort', onAbort, { once: true })
+})
+
+const cancelDbKeyAcquisition = () => {
+  if (!dbKeyRequestController && !isGettingDbKey.value) return
+
+  dbKeyRequestRevision += 1
+  const controller = dbKeyRequestController
+  dbKeyRequestController = null
+  controller?.abort()
+  isGettingDbKey.value = false
+}
+
 const handleGetDbKey = async () => {
   if (isGettingDbKey.value) return
 
@@ -1238,6 +1316,9 @@ const handleGetDbKey = async () => {
   })
   if (!shouldContinue) return
 
+  const requestRevision = ++dbKeyRequestRevision
+  const requestController = new AbortController()
+  dbKeyRequestController = requestController
   isGettingDbKey.value = true
 
   error.value = ''
@@ -1248,33 +1329,41 @@ const handleGetDbKey = async () => {
     const wechatInstallPath = normalizeWechatInstallPath(formData.wechat_install_path || readStoredWechatInstallPath())
     const dbStoragePath = String(formData.db_storage_path || '').trim()
     formData.wechat_install_path = wechatInstallPath
-    const statusRes = await getWxStatus()
+    const statusRes = await getWxStatus({ signal: requestController.signal })
+    if (!isDbKeyRequestActive(requestRevision, requestController)) return
     const wxStatus = statusRes?.wx_status
 
     const applySuccessResult = (res) => {
+      if (!isDbKeyRequestActive(requestRevision, requestController)) return
       if (res.data?.db_key) {
         formData.key = res.data.db_key
       }
+      let successMessage = ''
       if (res.data?.method === 'key_v4') {
-        warning.value = '数据库解密密钥已通过 V4 内存扫描获取成功！'
+        successMessage = '数据库解密密钥已通过 V4 内存扫描获取成功！'
       } else {
-        warning.value = '数据库解密密钥已通过 Hook 获取成功！'
+        successMessage = '数据库解密密钥已通过 Hook 获取成功！'
       }
-      setTimeout(() => { if(warning.value.includes('获取成功')) warning.value = '' }, 3000)
+      warning.value = successMessage
+      setTimeout(() => {
+        if (requestRevision === dbKeyRequestRevision && warning.value === successMessage) warning.value = ''
+      }, 3000)
     }
 
     const fetchByHook = async () => {
       if (wxStatus?.is_running) {
         warning.value = '即将改用 Hook 获取数据库密钥：5秒后会关闭并重启微信，请确保微信未开启“自动登录”，并在弹窗中正常登录。'
-        await new Promise(resolve => setTimeout(resolve, 5000))
+        await waitForDbKeyDelay(5000, requestController.signal)
       } else {
         warning.value = '正在使用 Hook 获取数据库密钥，请确保微信未开启“自动登录”，并在弹窗中正常登录。'
       }
 
+      if (!isDbKeyRequestActive(requestRevision, requestController)) return null
       return await getKeys({
         wechat_install_path: wechatInstallPath,
         db_storage_path: dbStoragePath,
-        key_mode: 'hook'
+        key_mode: 'hook',
+        signal: requestController.signal
       })
     }
 
@@ -1284,8 +1373,10 @@ const handleGetDbKey = async () => {
       res = await getKeys({
         wechat_install_path: wechatInstallPath,
         db_storage_path: dbStoragePath,
-        key_mode: 'key_v4'
+        key_mode: 'key_v4',
+        signal: requestController.signal
       })
+      if (!isDbKeyRequestActive(requestRevision, requestController)) return
     } else {
       const useHook = await requestGuideDialog({
         eyebrow: '获取方式切换',
@@ -1301,12 +1392,14 @@ const handleGetDbKey = async () => {
         secondaryLabel: '返回填写路径',
         tone: 'warning'
       })
+      if (!isDbKeyRequestActive(requestRevision, requestController)) return
       if (!useHook) {
         warning.value = ''
         formErrors.db_storage_path = '请填写数据库存储路径后再使用 V4 内存扫描'
         return
       }
       res = await fetchByHook()
+      if (!isDbKeyRequestActive(requestRevision, requestController)) return
     }
 
     if (res && res.status === 0) {
@@ -1329,12 +1422,14 @@ const handleGetDbKey = async () => {
         secondaryLabel: '暂不切换',
         tone: 'warning'
       })
+      if (!isDbKeyRequestActive(requestRevision, requestController)) return
       if (!useHook) {
         error.value = 'V4 内存扫描失败，已取消 Hook 获取。'
         return
       }
 
       res = await fetchByHook()
+      if (!isDbKeyRequestActive(requestRevision, requestController)) return
       if (res && res.status === 0) {
         applySuccessResult(res)
       } else {
@@ -1346,11 +1441,15 @@ const handleGetDbKey = async () => {
       warning.value = ''
     }
   } catch (e) {
+    if (!isDbKeyRequestActive(requestRevision, requestController) || e?.name === 'AbortError') return
     console.error(e)
     error.value = '系统错误: ' + e.message
     warning.value = ''
   } finally {
-    isGettingDbKey.value = false
+    if (isDbKeyRequestActive(requestRevision, requestController)) {
+      dbKeyRequestController = null
+      isGettingDbKey.value = false
+    }
   }
 }
 
@@ -1511,6 +1610,16 @@ let dbDecryptEventSource = null
 let mediaDecryptEventSource = null
 let emojiDownloadEventSource = null
 
+const closeDbDecryptEventSource = () => {
+  try {
+    if (dbDecryptEventSource) dbDecryptEventSource.close()
+  } catch (e) {
+    // ignore
+  } finally {
+    dbDecryptEventSource = null
+  }
+}
+
 const closeMediaDecryptEventSource = () => {
   try {
     if (mediaDecryptEventSource) mediaDecryptEventSource.close()
@@ -1533,15 +1642,10 @@ const closeEmojiDownloadEventSource = () => {
 
 onBeforeUnmount(() => {
   settleGuideDialog(false)
-
-  try {
-    if (dbDecryptEventSource) dbDecryptEventSource.close()
-  } catch (e) {
-    // ignore
-  } finally {
-    dbDecryptEventSource = null
-  }
-
+  cancelDbKeyAcquisition()
+  ensureKeysRevision += 1
+  invalidateImageKeyRequests()
+  closeDbDecryptEventSource()
   closeMediaDecryptEventSource()
   closeEmojiDownloadEventSource()
 })
@@ -1671,6 +1775,8 @@ const handleDecrypt = async () => {
     dbDecryptEventSource = eventSource
 
     eventSource.onmessage = async (event) => {
+      if (dbDecryptEventSource !== eventSource) return
+
       try {
         const data = JSON.parse(event.data)
 
@@ -1745,6 +1851,8 @@ const handleDecrypt = async () => {
     }
 
     eventSource.onerror = (e) => {
+      if (dbDecryptEventSource !== eventSource) return
+
       console.error('SSE连接错误:', e)
       try {
         eventSource.close()
@@ -1998,20 +2106,77 @@ const cancelEmojiDownload = () => {
   closeEmojiDownloadEventSource()
 }
 
+const cancelDatabaseDecrypt = () => {
+  if (!loading.value) return
+
+  closeDbDecryptEventSource()
+  loading.value = false
+  dbDecryptProgress.status = 'cancelled'
+  dbDecryptProgress.message = '已停止数据库解密'
+  logDecryptDebug('decrypt:cancelled-by-back', {
+    current: dbDecryptProgress.current,
+    total: dbDecryptProgress.total
+  })
+}
+
+const confirmBackFromRunningStep = () => {
+  const runningStep = currentStep.value === 0 && loading.value
+    ? { title: '数据库仍在解密', description: '返回账号选择会停止接收当前解密进度，已经生成的文件会保留。' }
+    : currentStep.value === 0 && isGettingDbKey.value
+      ? {
+          title: '数据库密钥仍在获取',
+          description: '返回账号选择会停止当前页面等待结果；如果 Hook 已经开始，微信重启或登录流程仍可能继续完成。',
+          details: ['页面将不再接收本次密钥结果', '已经启动的 Hook 操作无法保证立即停止']
+        }
+    : currentStep.value === 2 && mediaDecrypting.value
+      ? { title: '图片仍在解密', description: '返回填写图片密钥会停止当前图片解密，已经完成的图片会保留。' }
+      : currentStep.value === 3 && emojiDownloading.value
+        ? { title: '表情仍在下载', description: '返回图片解密会停止当前下载，已经完成的表情会保留。' }
+        : null
+
+  if (!runningStep) return Promise.resolve(true)
+  return requestGuideDialog({
+    eyebrow: '确认回退',
+    title: runningStep.title,
+    description: runningStep.description,
+    details: runningStep.details || ['当前任务不会在后台继续显示进度', '稍后可以回到此步骤重新开始'],
+    note: '取消后会留在当前步骤，任务继续运行。',
+    primaryLabel: '停止并返回',
+    secondaryLabel: '继续当前任务',
+    tone: 'warning'
+  })
+}
+
+const goBackFromCurrentStep = async () => {
+  const fromStep = currentStep.value
+  if (!(await confirmBackFromRunningStep())) return
+
+  if (fromStep === 0) {
+    cancelDatabaseDecrypt()
+    cancelDbKeyAcquisition()
+    error.value = ''
+    warning.value = ''
+    await navigateTo('/detection-result')
+    return
+  }
+
+  if (fromStep === 1) {
+    ensureKeysRevision += 1
+    invalidateImageKeyRequests()
+  }
+  if (fromStep === 2) cancelMediaDecrypt()
+  if (fromStep === 3) cancelEmojiDownload()
+  error.value = ''
+  warning.value = ''
+  currentStep.value = Math.max(0, fromStep - 1)
+}
+
 const goToEmojiDownloadStep = () => {
   if (mediaDecrypting.value) return
 
   error.value = ''
   warning.value = ''
   currentStep.value = 3
-}
-
-const goBackToMediaDecryptStep = () => {
-  if (emojiDownloading.value) return
-
-  error.value = ''
-  warning.value = ''
-  currentStep.value = 2
 }
 
 // 从密钥步骤进入图片解密步骤

@@ -647,8 +647,8 @@ export const useApi = () => {
   }
 
   // 获取微信进程状态
-  const getWxStatus = async () => {
-    return await request('/wechat/status')
+  const getWxStatus = async (params = {}) => {
+    return await request('/wechat/status', params?.signal ? { signal: params.signal } : {})
   }
 
   // 获取数据库密钥
@@ -658,7 +658,7 @@ export const useApi = () => {
     if (params && params.db_storage_path) query.set('db_storage_path', params.db_storage_path)
     if (params && params.key_mode) query.set('key_mode', params.key_mode)
     const url = '/get_keys' + (query.toString() ? `?${query.toString()}` : '')
-    return await request(url)
+    return await request(url, params?.signal ? { signal: params.signal } : {})
   }
 
   // 获取图片密钥
