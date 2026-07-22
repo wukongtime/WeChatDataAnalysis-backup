@@ -28,8 +28,15 @@ const {
   cleanupOutputDirectoryBackup,
   getDefaultOutputDirPath,
   getEffectiveOutputDirPath,
+  isPathInsideOrEqual,
+  isPathLexicallyInsideOrEqual,
   normalizeDirectoryPath,
+  pathsReferToSameLocation,
 } = require("./output-dir.cjs");
+const {
+  parseDesktopSettingsText,
+  writeDesktopSettingsFileAtomic,
+} = require("./desktop-settings.cjs");
 const {
   isBackendHealthResponse,
   isWcdbSidecarHealthResponse,
@@ -427,14 +434,15 @@ function normalizePendingOutputDirValue(value) {
   }
 }
 
-function resolveOutputDir() {
+function resolveOutputDir({ ensureExists = true } = {}) {
   const dataDir = resolveDataDir();
   if (!dataDir) return null;
 
   const envOutputDir = safeNormalizeDirectory(process.env.WECHAT_TOOL_OUTPUT_DIR || "");
   // Allow dev-mode desktop runs to persist the chosen output directory too.
   // An explicit environment variable still wins so local launch overrides keep working.
-  const settingsOutputDir = safeNormalizeDirectory(loadDesktopSettings()?.outputDir || "");
+  const settings = loadDesktopSettings();
+  const settingsOutputDir = safeNormalizeDirectory(settings?.outputDir || "");
 
   let chosen = null;
   try {
@@ -448,9 +456,12 @@ function resolveOutputDir() {
   }
   if (!chosen) return null;
 
-  try {
-    fs.mkdirSync(chosen, { recursive: true });
-  } catch {}
+  const transactionPending = settings?.pendingOutputDir !== null;
+  if (ensureExists && !outputDirChangeInProgress && !transactionPending) {
+    try {
+      fs.mkdirSync(chosen, { recursive: true });
+    } catch {}
+  }
 
   syncOutputDirEnv(chosen);
   return chosen;
@@ -636,6 +647,9 @@ function ensureOutputLink() {
   const target = resolveOutputDir();
   if (!exeDir || !target) return;
   const legacyLinkPath = path.join(exeDir, "output");
+  const legacyPathOverlapsConfiguredOutput =
+    isPathLexicallyInsideOrEqual(legacyLinkPath, target) ||
+    isPathLexicallyInsideOrEqual(target, legacyLinkPath);
 
   // Ensure the real output dir exists.
   try {
@@ -644,32 +658,36 @@ function ensureOutputLink() {
 
   // Best-effort: remove a legacy junction/symlink at `exeDir/output` so uninstallers can't
   // accidentally traverse it and delete the real per-user output directory.
-  try {
-    const st = fs.lstatSync(legacyLinkPath);
-    if (st.isSymbolicLink()) {
-      try {
-        fs.unlinkSync(legacyLinkPath);
-        logMain(`[main] removed legacy output link: ${legacyLinkPath}`);
-      } catch (err) {
-        logMain(`[main] failed to remove legacy output link: ${err?.message || err}`);
-      }
-    } else if (st.isDirectory()) {
-      const entries = fs.readdirSync(legacyLinkPath);
-      if (Array.isArray(entries) && entries.length === 0) {
-        // Remove an empty real directory to reduce confusion (it will be recreated by the backend if needed).
-        fs.rmdirSync(legacyLinkPath);
+  if (legacyPathOverlapsConfiguredOutput) {
+    logMain(`[main] preserving configured output path inside install directory: ${target}`);
+  } else {
+    try {
+      const st = fs.lstatSync(legacyLinkPath);
+      if (st.isSymbolicLink()) {
+        try {
+          fs.unlinkSync(legacyLinkPath);
+          logMain(`[main] removed legacy output link: ${legacyLinkPath}`);
+        } catch (err) {
+          logMain(`[main] failed to remove legacy output link: ${err?.message || err}`);
+        }
+      } else if (st.isDirectory()) {
+        const entries = fs.readdirSync(legacyLinkPath);
+        if (Array.isArray(entries) && entries.length === 0) {
+          // Remove an empty real directory to reduce confusion (it will be recreated by the backend if needed).
+          fs.rmdirSync(legacyLinkPath);
+        } else {
+          // Do not overwrite non-empty directories to avoid data loss.
+          // Note: data stored here will be wiped on update/reinstall.
+          logMain(
+            `[main] output dir exists in install dir (not a link): ${legacyLinkPath}. real data dir output: ${target}`
+          );
+        }
       } else {
-        // Do not overwrite non-empty directories to avoid data loss.
-        // Note: data stored here will be wiped on update/reinstall.
-        logMain(
-          `[main] output dir exists in install dir (not a link): ${legacyLinkPath}. real data dir output: ${target}`
-        );
+        logMain(`[main] output path exists and is not a directory/link: ${legacyLinkPath}`);
       }
-    } else {
-      logMain(`[main] output path exists and is not a directory/link: ${legacyLinkPath}`);
+    } catch {
+      // Doesn't exist yet.
     }
-  } catch {
-    // Doesn't exist yet.
   }
 
   // Best-effort: drop a helper file next to the exe so users can find the real data.
@@ -756,7 +774,7 @@ function loadDesktopSettings() {
     mcpLanAccessEnabled: false,
     // Custom output dir; empty string means use the default dataDir/output.
     outputDir: "",
-    // Pending output dir written by the installer before the next app startup.
+    // Pending output dir written before migration so interrupted transactions can resume.
     pendingOutputDir: null,
     // Last startup/apply failure when changing output dir.
     lastOutputDirError: "",
@@ -777,7 +795,7 @@ function loadDesktopSettings() {
       return desktopSettings;
     }
     const raw = fs.readFileSync(p, { encoding: "utf8" });
-    const parsed = JSON.parse(raw || "{}");
+    const parsed = parseDesktopSettingsText(raw);
     desktopSettings = { ...defaults, ...(parsed && typeof parsed === "object" ? parsed : {}) };
     desktopSettings.backendPort = parsePort(desktopSettings.backendPort) ?? defaults.backendPort;
     desktopSettings.mcpLanAccessEnabled = !!desktopSettings.mcpLanAccessEnabled;
@@ -795,16 +813,25 @@ function loadDesktopSettings() {
   return desktopSettings;
 }
 
-function persistDesktopSettings() {
+function persistDesktopSettings({ throwOnError = false } = {}) {
   const p = getDesktopSettingsPath();
-  if (!p) return;
-  if (!desktopSettings) return;
+  if (!p || !desktopSettings) {
+    if (throwOnError) throw new Error("无法定位桌面设置文件");
+    return false;
+  }
 
   try {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(desktopSettings, null, 2), { encoding: "utf8" });
+    writeDesktopSettingsFileAtomic(p, desktopSettings);
+    return true;
   } catch (err) {
     logMain(`[main] failed to persist settings: ${err?.message || err}`);
+    if (throwOnError) {
+      const wrapped = new Error(`无法保存桌面设置：${err?.message || err}`);
+      wrapped.code = err?.code;
+      wrapped.cause = err;
+      throw wrapped;
+    }
+    return false;
   }
 }
 
@@ -817,41 +844,17 @@ function snapshotOutputDirSettings() {
   };
 }
 
-function restoreOutputDirSettings(snapshot) {
+function setPendingOutputDirSetting(nextDir, { throwOnError = false } = {}) {
   loadDesktopSettings();
-  desktopSettings.outputDir = safeNormalizeDirectory(snapshot?.outputDir || "");
-  desktopSettings.pendingOutputDir = normalizePendingOutputDirValue(snapshot?.pendingOutputDir);
-  desktopSettings.lastOutputDirError = String(snapshot?.lastOutputDirError || "").trim();
-  const effectiveOutputDir = desktopSettings.outputDir || getDefaultOutputDir() || "";
-  syncOutputDirEnv(effectiveOutputDir);
-  persistDesktopSettings();
-}
-
-function setOutputDirSetting(nextDir) {
-  loadDesktopSettings();
-  const defaultDir = getDefaultOutputDir();
-  const normalized = safeNormalizeDirectory(nextDir || "");
-  if (!normalized || (defaultDir && normalized === defaultDir)) {
-    desktopSettings.outputDir = "";
-  } else {
-    desktopSettings.outputDir = normalized;
-  }
-  syncOutputDirEnv(desktopSettings.outputDir || defaultDir || "");
-  persistDesktopSettings();
-  return desktopSettings.outputDir;
-}
-
-function setPendingOutputDirSetting(nextDir) {
-  loadDesktopSettings();
+  const previousValue = desktopSettings.pendingOutputDir;
   desktopSettings.pendingOutputDir = normalizePendingOutputDirValue(nextDir);
-  persistDesktopSettings();
+  try {
+    persistDesktopSettings({ throwOnError });
+  } catch (err) {
+    desktopSettings.pendingOutputDir = previousValue;
+    throw err;
+  }
   return desktopSettings.pendingOutputDir;
-}
-
-function clearPendingOutputDirSetting() {
-  loadDesktopSettings();
-  desktopSettings.pendingOutputDir = null;
-  persistDesktopSettings();
 }
 
 function setOutputDirLastError(message) {
@@ -859,6 +862,28 @@ function setOutputDirLastError(message) {
   desktopSettings.lastOutputDirError = String(message || "").trim();
   persistDesktopSettings();
   return desktopSettings.lastOutputDirError;
+}
+
+function commitOutputDirSettings(nextDir) {
+  loadDesktopSettings();
+  const previousSettings = snapshotOutputDirSettings();
+  const defaultDir = getDefaultOutputDir();
+  const normalized = safeNormalizeDirectory(nextDir || "");
+  desktopSettings.outputDir =
+    !normalized || (defaultDir && pathsReferToSameLocation(normalized, defaultDir)) ? "" : normalized;
+  desktopSettings.pendingOutputDir = null;
+  desktopSettings.lastOutputDirError = "";
+  syncOutputDirEnv(desktopSettings.outputDir || defaultDir || "");
+
+  try {
+    persistDesktopSettings({ throwOnError: true });
+  } catch (err) {
+    desktopSettings.outputDir = previousSettings.outputDir;
+    desktopSettings.pendingOutputDir = previousSettings.pendingOutputDir;
+    desktopSettings.lastOutputDirError = previousSettings.lastOutputDirError;
+    syncOutputDirEnv(desktopSettings.outputDir || defaultDir || "");
+    throw err;
+  }
 }
 
 function getOutputDirInfo() {
@@ -876,7 +901,8 @@ function getOutputDirInfo() {
   return {
     path: currentPath || "",
     defaultPath,
-    isDefault: !!currentPath && !!defaultPath && currentPath === defaultPath,
+    isDefault:
+      !!currentPath && !!defaultPath && pathsReferToSameLocation(currentPath, defaultPath),
     pendingPath,
     hasPending,
     lastError: String(desktopSettings.lastOutputDirError || "").trim(),
@@ -912,19 +938,23 @@ function setIgnoredUpdateVersion(version) {
 
 async function applyOutputDirChange(nextValue) {
   const defaultPath = getDefaultOutputDir();
-  const currentPath = resolveOutputDir();
+  const currentPath = resolveOutputDir({ ensureExists: false });
   if (!defaultPath || !currentPath) {
     throw new Error("无法定位 output 目录");
   }
 
   const rawText = String(nextValue ?? "").trim();
   const nextPath = rawText ? normalizeDirectoryPath(rawText) : defaultPath;
-  const previousSettings = snapshotOutputDirSettings();
+  const exeDir = app.isPackaged ? getExeDir() : null;
+  if (
+    exeDir &&
+    (isPathLexicallyInsideOrEqual(exeDir, nextPath) || isPathInsideOrEqual(exeDir, nextPath))
+  ) {
+    throw new Error("output 目录不能位于安装目录内，更新或卸载时可能导致数据丢失");
+  }
 
-  if (nextPath === currentPath) {
-    setOutputDirSetting(nextPath);
-    clearPendingOutputDirSetting();
-    setOutputDirLastError("");
+  if (pathsReferToSameLocation(nextPath, currentPath)) {
+    commitOutputDirSettings(nextPath);
     ensureOutputLink();
     const info = getOutputDirInfo();
     return {
@@ -940,13 +970,20 @@ async function applyOutputDirChange(nextValue) {
     };
   }
 
-  const wasBackendRunning = !!backendProc;
+  let wasBackendRunning = false;
   let migration = null;
+  let migrationAttempted = false;
   let settingsSwitched = false;
   let retainedBackupPath = "";
   let backupCleanupWarning = "";
 
   try {
+    logMain(`[main] output dir change requested current=${currentPath} target=${nextPath}`);
+    // Persist the target before touching either directory. A restart can then
+    // replay or recover every interruption point in the filesystem commit.
+    setPendingOutputDirSetting(nextPath, { throwOnError: true });
+    await waitForWcdbRuntimeRestartToSettle();
+    wasBackendRunning = !!backendProc;
     setOutputDirChangeProgressState({
       active: true,
       stage: "preparing",
@@ -955,9 +992,13 @@ async function applyOutputDirChange(nextValue) {
     });
 
     if (wasBackendRunning) {
-      await stopBackendAndWait({ timeoutMs: 10_000 });
+      const stopped = await stopBackendAndWait({ timeoutMs: 10_000 });
+      if (!stopped || backendProc) {
+        throw new Error("后端进程未能在 10 秒内停止，为避免日志或数据文件被占用，已取消迁移");
+      }
     }
 
+    migrationAttempted = true;
     migration = await runOutputDirWorker(
       "migrate",
       {
@@ -980,9 +1021,7 @@ async function applyOutputDirChange(nextValue) {
       currentFile: "",
     });
 
-    setOutputDirSetting(nextPath);
-    clearPendingOutputDirSetting();
-    setOutputDirLastError("");
+    commitOutputDirSettings(nextPath);
     settingsSwitched = true;
     ensureOutputLink();
 
@@ -994,7 +1033,7 @@ async function applyOutputDirChange(nextValue) {
         percent: 99,
       });
       startBackend();
-      await waitForBackend({ timeoutMs: 30_000 });
+      await waitForBackend({ timeoutMs: getBackendStartupTimeoutMs() });
     }
 
     retainedBackupPath = migration?.backupDir || "";
@@ -1019,7 +1058,7 @@ async function applyOutputDirChange(nextValue) {
     const info = getOutputDirInfo();
     const successMessage =
       (migration?.sourceWasEmpty ? "output 目录已切换" : "output 目录已迁移并切换") + backupCleanupWarning;
-    return {
+    const result = {
       success: true,
       changed: true,
       path: info.path,
@@ -1030,9 +1069,44 @@ async function applyOutputDirChange(nextValue) {
       sourceWasEmpty: !!migration?.sourceWasEmpty,
       message: successMessage,
     };
+    logMain(`[main] output dir change completed current=${currentPath} target=${info.path}`);
+    return result;
   } catch (err) {
     const message = err?.message || String(err);
     let rollbackMessage = "";
+    let rollbackCompleted = false;
+
+    // Once settings are durably committed, keep the verified target and its
+    // backup even if backend startup fails. Rolling it back under a live or
+    // slow-starting process can delete the only good copy.
+    if (migration?.changed && settingsSwitched) {
+      retainedBackupPath = migration?.backupDir || "";
+      const preservedMessage =
+        `output 目录已迁移到 ${nextPath}，但后端重启失败：${message}` +
+        (retainedBackupPath ? `；旧目录备份已保留：${retainedBackupPath}` : "");
+      setOutputDirLastError(preservedMessage);
+      ensureOutputLink();
+      throw new Error(preservedMessage);
+    }
+
+    // A worker can terminate after promoting the target and renaming the old
+    // source, but before its result message reaches this process. In that state
+    // `migration` is still null. Never recreate the missing old directory or
+    // restart the backend against it; the persisted pending target lets the
+    // next startup deterministically resume the transaction.
+    let currentDirectoryStillExists = false;
+    try {
+      currentDirectoryStillExists = fs.statSync(currentPath).isDirectory();
+    } catch {}
+    if (migrationAttempted && !migration && !currentDirectoryStillExists) {
+      syncOutputDirEnv(currentPath);
+      const recoveryError = new Error(
+        `output 目录迁移状态尚未确认：${message}；为避免写入空旧目录，请重启应用以自动恢复`
+      );
+      recoveryError.outputDirRecoveryRequired = true;
+      throw recoveryError;
+    }
+
     if (migration?.changed) {
       try {
         setOutputDirChangeProgressState({
@@ -1047,6 +1121,7 @@ async function applyOutputDirChange(nextValue) {
           backupDir: migration.backupDir,
           sourceWasEmpty: migration.sourceWasEmpty,
         });
+        rollbackCompleted = true;
       } catch (rollbackErr) {
         logMain(`[main] output dir rollback failed: ${rollbackErr?.message || rollbackErr}`);
         rollbackMessage = `；回滚失败：${rollbackErr?.message || rollbackErr}`;
@@ -1056,17 +1131,19 @@ async function applyOutputDirChange(nextValue) {
       }
     }
 
-    if (settingsSwitched) {
-      restoreOutputDirSettings(previousSettings);
-    } else {
-      syncOutputDirEnv(currentPath);
+    syncOutputDirEnv(currentPath);
+    if (!migration?.changed || rollbackCompleted) ensureOutputLink();
+
+    if (rollbackMessage) {
+      const recoveryError = new Error(`切换 output 目录失败：${message}${rollbackMessage}`);
+      recoveryError.outputDirRecoveryRequired = true;
+      throw recoveryError;
     }
-    ensureOutputLink();
 
     if (wasBackendRunning) {
       try {
         startBackend();
-        await waitForBackend({ timeoutMs: 30_000 });
+        await waitForBackend({ timeoutMs: getBackendStartupTimeoutMs() });
       } catch (restartErr) {
         throw new Error(
           `切换 output 目录失败：${message}${rollbackMessage}；且旧后端恢复失败：${restartErr?.message || restartErr}`
@@ -1074,25 +1151,24 @@ async function applyOutputDirChange(nextValue) {
       }
     }
 
-    if (rollbackMessage) {
-      throw new Error(`切换 output 目录失败：${message}${rollbackMessage}`);
-    }
     throw err;
   }
 }
 
 async function applyPendingOutputDirOnStartup() {
-  if (!app.isPackaged) return;
   loadDesktopSettings();
   if (desktopSettings.pendingOutputDir === null) return;
 
+  outputDirChangeInProgress = true;
   try {
+    logMain(`[main] applying pending output dir: ${desktopSettings.pendingOutputDir || "(default)"}`);
     await applyOutputDirChange(desktopSettings.pendingOutputDir);
   } catch (err) {
-    clearPendingOutputDirSetting();
-    setOutputDirLastError(`安装时设置的 output 目录未能应用：${err?.message || err}`);
-    ensureOutputLink();
+    setOutputDirLastError(`待处理的 output 目录未能应用：${err?.message || err}`);
     logMain(`[main] failed to apply pending output dir: ${err?.message || err}`);
+    if (err?.outputDirRecoveryRequired) throw err;
+  } finally {
+    outputDirChangeInProgress = false;
   }
 }
 
@@ -1284,7 +1360,10 @@ function runOutputDirWorker(action, payload, onProgress) {
         return;
       }
       if (message.type === "error") {
-        finish(new Error(message.error?.message || "output 目录迁移失败"));
+        const workerError = new Error(message.error?.message || "output 目录迁移失败");
+        if (message.error?.code) workerError.code = String(message.error.code);
+        if (message.error?.path) workerError.path = String(message.error.path);
+        finish(workerError);
       }
     });
 
@@ -2699,12 +2778,13 @@ function registerWindowIpc() {
       return { success: true, changed: false, port: prevPort, uiUrl: getDesktopUiUrl() };
     }
 
-    const bindHost = getBackendBindHost();
-    const ok = await isPortAvailable(nextPort, bindHost);
-    if (!ok) throw new Error(`端口 ${nextPort} 已被占用，请换一个端口`);
-
     backendPortChangeInProgress = true;
     try {
+      await waitForWcdbRuntimeRestartToSettle();
+      const bindHost = getBackendBindHost();
+      const ok = await isPortAvailable(nextPort, bindHost);
+      if (!ok) throw new Error(`端口 ${nextPort} 已被占用，请换一个端口`);
+
       setBackendPortSetting(nextPort);
       try {
         await restartBackend();
@@ -2781,6 +2861,7 @@ function registerWindowIpc() {
 
     backendPortChangeInProgress = true;
     try {
+      await waitForWcdbRuntimeRestartToSettle();
       setMcpLanAccessSetting(nextEnabled);
       try {
         await restartBackend();
@@ -2845,11 +2926,18 @@ function registerWindowIpc() {
   });
 
   ipcMain.handle("app:openOutputDir", async () => {
-    const outDir = resolveOutputDir();
+    const outputTransactionPending =
+      outputDirChangeInProgress || loadDesktopSettings()?.pendingOutputDir !== null;
+    const outDir = resolveOutputDir({ ensureExists: !outputTransactionPending });
     if (!outDir) throw new Error("无法定位 output 目录");
-    try {
-      fs.mkdirSync(outDir, { recursive: true });
-    } catch {}
+    if (outputTransactionPending && !fs.existsSync(outDir)) {
+      throw new Error("output 目录迁移待恢复，暂时无法打开目录");
+    }
+    if (!outputTransactionPending) {
+      try {
+        fs.mkdirSync(outDir, { recursive: true });
+      } catch {}
+    }
     try {
       const err = await shell.openPath(outDir);
       if (err) throw new Error(err);
@@ -2884,10 +2972,10 @@ function registerWindowIpc() {
   });
 
   ipcMain.handle("app:setOutputDir", async (_event, nextDir) => {
-    if (outputDirChangeInProgress) {
+    if (outputDirChangeInProgress || backendPortChangeInProgress || accountDataChangeInProgress) {
       return {
         success: false,
-        error: "output 目录切换中，请稍后重试",
+        error: "后端或 output 目录维护中，请稍后重试",
       };
     }
     outputDirChangeInProgress = true;
@@ -3105,7 +3193,7 @@ if (gotSingleInstanceLock) {
     stopWcdbSidecar();
     try {
       const dir = getUserDataDir();
-      const outputDir = resolveOutputDir();
+      const outputDir = resolveOutputDir({ ensureExists: false });
       if (dir) {
         const detailLines = [
           `启动失败：${err?.message || err}`,

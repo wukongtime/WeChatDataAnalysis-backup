@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { pipeline } = require("stream/promises");
 
 const SENTINEL_NAMES = [
@@ -21,6 +22,16 @@ const PROGRESS_STAGE_MESSAGES = {
   restarting: "正在重启后端并应用新的 output 目录",
   complete: "output 目录迁移完成",
 };
+
+const RETRYABLE_FILESYSTEM_ERROR_CODES = new Set([
+  "EACCES",
+  "EBUSY",
+  "EMFILE",
+  "ENFILE",
+  "ENOTEMPTY",
+  "EPERM",
+]);
+const FILESYSTEM_RETRY_DELAYS_MS = [0, 80, 200, 500, 1_000];
 
 function normalizeDirectoryPath(value) {
   const text = String(value || "").trim();
@@ -66,6 +77,45 @@ function pathExists(dirPath) {
   }
 }
 
+function resolvePathForComparison(inputPath) {
+  const absolutePath = path.resolve(inputPath);
+  const missingSegments = [];
+  let existingPath = absolutePath;
+
+  while (true) {
+    try {
+      const realPath = fs.realpathSync.native
+        ? fs.realpathSync.native(existingPath)
+        : fs.realpathSync(existingPath);
+      return path.resolve(realPath, ...missingSegments);
+    } catch (err) {
+      if (err?.code !== "ENOENT" && err?.code !== "ENOTDIR") break;
+      const parentPath = path.dirname(existingPath);
+      if (parentPath === existingPath) break;
+      missingSegments.unshift(path.basename(existingPath));
+      existingPath = parentPath;
+    }
+  }
+
+  return absolutePath;
+}
+
+function pathsReferToSameLocation(leftPath, rightPath) {
+  const left = resolvePathForComparison(leftPath);
+  const right = resolvePathForComparison(rightPath);
+  if (process.platform === "win32") {
+    return left.toLowerCase() === right.toLowerCase();
+  }
+  return left === right;
+}
+
+function isPathLexicallyInsideOrEqual(parentPath, candidatePath) {
+  const parent = path.resolve(parentPath);
+  const candidate = path.resolve(candidatePath);
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
 function isDirectory(dirPath) {
   try {
     return fs.statSync(dirPath).isDirectory();
@@ -75,8 +125,8 @@ function isDirectory(dirPath) {
 }
 
 function isPathInside(parentPath, candidatePath) {
-  const parent = path.resolve(parentPath);
-  const candidate = path.resolve(candidatePath);
+  const parent = resolvePathForComparison(parentPath);
+  const candidate = resolvePathForComparison(candidatePath);
   if (parent === candidate) return false;
   const relative = path.relative(parent, candidate);
   return !!relative && !relative.startsWith("..") && !path.isAbsolute(relative);
@@ -96,7 +146,41 @@ function collectSentinels(sourceDir) {
   return sentinels;
 }
 
-function verifyCopiedOutputTree(sourceDir, copiedDir) {
+function isPathInsideOrEqual(parentPath, candidatePath) {
+  return (
+    pathsReferToSameLocation(parentPath, candidatePath) ||
+    isPathInside(parentPath, candidatePath)
+  );
+}
+
+function compareManifestPaths(leftEntries, rightEntries, kind) {
+  if (leftEntries.length !== rightEntries.length) {
+    throw new Error(`迁移校验失败：${kind}数量不一致`);
+  }
+
+  for (let i = 0; i < leftEntries.length; i += 1) {
+    const left = leftEntries[i];
+    const right = rightEntries[i];
+    if (left.relativePath !== right.relativePath) {
+      throw new Error(`迁移校验失败：${kind}列表不一致`);
+    }
+    if (kind.includes("文件") && left.size !== right.size) {
+      throw new Error(`迁移校验失败：${left.relativePath} 大小不一致`);
+    }
+  }
+}
+
+function hashFileSha256(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = fs.createReadStream(filePath);
+    stream.on("error", reject);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
+}
+
+async function verifyCopiedOutputTree(sourceDir, copiedDir, sourceManifest = null) {
   const sentinels = collectSentinels(sourceDir);
   for (const item of sentinels) {
     const copiedPath = path.join(copiedDir, item.name);
@@ -112,6 +196,27 @@ function verifyCopiedOutputTree(sourceDir, copiedDir) {
     const copiedStat = fs.statSync(copiedPath);
     if (copiedStat.size !== item.size) {
       throw new Error(`迁移校验失败：${item.name} 大小不一致`);
+    }
+  }
+
+  const expected = sourceManifest || collectCopyManifest(sourceDir);
+  const currentSource = collectCopyManifest(sourceDir);
+  const actual = collectCopyManifest(copiedDir);
+  compareManifestPaths(expected.directories, currentSource.directories, "源目录");
+  compareManifestPaths(expected.files, currentSource.files, "源文件");
+  compareManifestPaths(currentSource.directories, actual.directories, "目录");
+  compareManifestPaths(currentSource.files, actual.files, "文件");
+
+  for (const fileEntry of currentSource.files) {
+    const sourcePath = path.join(sourceDir, fileEntry.relativePath);
+    const copiedPath = path.join(copiedDir, fileEntry.relativePath);
+    // Hash the source again after copying. The backend is normally stopped, but
+    // another process may still update a log/database between scan and verify.
+    // Reusing the copy-time hash would certify the stale copy instead.
+    const sourceHash = await hashFileSha256(sourcePath);
+    const copiedHash = await hashFileSha256(copiedPath);
+    if (sourceHash !== copiedHash) {
+      throw new Error(`迁移校验失败：${fileEntry.relativePath} 内容不一致`);
     }
   }
 }
@@ -136,6 +241,131 @@ function makeUniqueSiblingPath(basePath, suffix, now = new Date()) {
     if (!pathExists(candidate)) return candidate;
     attempt += 1;
   }
+}
+
+function listSiblingTransactionPaths(basePath, suffix) {
+  const parentDir = path.dirname(basePath);
+  const prefix = `${path.basename(basePath)}.${suffix}-`;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(parentDir, { withFileTypes: true });
+  } catch (err) {
+    if (err && err.code === "ENOENT") return [];
+    throw err;
+  }
+
+  return entries
+    .filter((entry) => String(entry?.name || "").startsWith(prefix))
+    .map((entry) => path.join(parentDir, entry.name))
+    .sort((a, b) => b.localeCompare(a));
+}
+
+function isRetryableFilesystemError(err) {
+  return RETRYABLE_FILESYSTEM_ERROR_CODES.has(String(err?.code || "").toUpperCase());
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function retryFilesystemOperation(operation) {
+  let lastError = null;
+  for (let attempt = 0; attempt < FILESYSTEM_RETRY_DELAYS_MS.length; attempt += 1) {
+    const delayMs = FILESYSTEM_RETRY_DELAYS_MS[attempt];
+    if (delayMs > 0) await sleep(delayMs);
+    try {
+      return operation();
+    } catch (err) {
+      lastError = err;
+      if (!isRetryableFilesystemError(err) || attempt === FILESYSTEM_RETRY_DELAYS_MS.length - 1) {
+        throw err;
+      }
+    }
+  }
+  throw lastError || new Error("文件系统操作失败");
+}
+
+async function removePathWithRetry(targetPath) {
+  if (!pathExists(targetPath)) return false;
+  await retryFilesystemOperation(() => {
+    fs.rmSync(targetPath, {
+      recursive: true,
+      force: true,
+      maxRetries: 2,
+      retryDelay: 100,
+    });
+  });
+  if (pathExists(targetPath)) {
+    throw new Error(`无法删除目录：${targetPath}`);
+  }
+  return true;
+}
+
+async function renamePathWithRetry(sourcePath, targetPath) {
+  await retryFilesystemOperation(() => fs.renameSync(sourcePath, targetPath));
+}
+
+function withCleanupError(originalError, cleanupError, cleanupPath) {
+  const originalMessage = originalError?.message || String(originalError);
+  const cleanupMessage = cleanupError?.message || String(cleanupError);
+  const combined = new Error(
+    `${originalMessage}；临时目录未能自动清理：${cleanupPath}（${cleanupMessage}）`
+  );
+  combined.code = originalError?.code || cleanupError?.code;
+  combined.cause = originalError;
+  return combined;
+}
+
+async function cleanupTransactionPaths(paths, keepPath = "") {
+  for (const transactionPath of paths) {
+    if (keepPath && pathsReferToSameLocation(transactionPath, keepPath)) continue;
+    await removePathWithRetry(transactionPath);
+  }
+}
+
+async function restoreInterruptedSourceDirectory(currentPath, targetPath) {
+  const backups = listSiblingTransactionPaths(currentPath, "backup");
+  if (pathExists(currentPath)) {
+    if (!isDirectory(currentPath) || hasDirectoryContents(currentPath) || backups.length === 0) {
+      return "";
+    }
+  }
+
+  const usableBackups = backups.filter((backupPath) => isDirectory(backupPath));
+  if (usableBackups.length === 0) return "";
+
+  let backupToRestore = usableBackups[0];
+  let matchedPromotedTarget = false;
+  if (targetPath && pathExists(targetPath)) {
+    if (!isDirectory(targetPath)) {
+      throw new Error("检测到中断的 output 迁移，但目标路径不是目录，已保留所有备份");
+    }
+    if (hasDirectoryContents(targetPath)) {
+      backupToRestore = "";
+      for (const candidate of usableBackups) {
+        try {
+          await verifyCopiedOutputTree(candidate, targetPath);
+          backupToRestore = candidate;
+          matchedPromotedTarget = true;
+          break;
+        } catch {}
+      }
+      if (!backupToRestore) {
+        throw new Error("检测到中断的 output 迁移，但没有与目标内容匹配的旧目录备份，已保留所有副本");
+      }
+    }
+  }
+  if (usableBackups.length > 1 && !matchedPromotedTarget) {
+    throw new Error("检测到多个中断的旧 output 备份且无法确认最新版本，已保留所有副本");
+  }
+
+  if (pathExists(currentPath)) {
+    // Older builds could recreate an empty source directory before noticing a
+    // backup from an interrupted commit. Remove only that empty directory.
+    await removePathWithRetry(currentPath);
+  }
+  await renamePathWithRetry(backupToRestore, currentPath);
+  return backupToRestore;
 }
 
 function ensureTargetIsUsable(targetDir) {
@@ -207,7 +437,12 @@ function buildProgressSnapshot({
 
 function emitProgress(onProgress, payload) {
   if (typeof onProgress !== "function") return;
-  onProgress(buildProgressSnapshot(payload));
+  try {
+    onProgress(buildProgressSnapshot(payload));
+  } catch {
+    // Progress reporting is observational. A renderer/MessagePort failure must
+    // never turn a completed filesystem commit into an ambiguous migration.
+  }
 }
 
 function sortDirectoryEntries(entries) {
@@ -380,7 +615,7 @@ async function migrateOutputDirectory({ currentDir, nextDir, now = new Date(), o
   if (!currentPath || !targetPath) {
     throw new Error("output 路径不能为空");
   }
-  if (currentPath === targetPath) {
+  if (pathsReferToSameLocation(currentPath, targetPath)) {
     return {
       changed: false,
       currentDir: currentPath,
@@ -394,7 +629,8 @@ async function migrateOutputDirectory({ currentDir, nextDir, now = new Date(), o
   }
 
   emitProgress(onProgress, { stage: "scanning" });
-  ensureTargetIsUsable(targetPath);
+
+  await restoreInterruptedSourceDirectory(currentPath, targetPath);
 
   const sourceExists = pathExists(currentPath);
   if (sourceExists && !isDirectory(currentPath)) {
@@ -403,6 +639,8 @@ async function migrateOutputDirectory({ currentDir, nextDir, now = new Date(), o
 
   const sourceWasEmpty = !sourceExists || !hasDirectoryContents(currentPath);
   if (sourceWasEmpty) {
+    ensureTargetIsUsable(targetPath);
+    await cleanupTransactionPaths(listSiblingTransactionPaths(targetPath, "migrating"));
     emitProgress(onProgress, { stage: "switching" });
     fs.mkdirSync(targetPath, { recursive: true });
     emitProgress(onProgress, { stage: "complete", itemsTransferred: 1, itemsTotal: 1 });
@@ -416,16 +654,53 @@ async function migrateOutputDirectory({ currentDir, nextDir, now = new Date(), o
   }
 
   const manifest = collectCopyManifest(currentPath);
-  const tempTarget = makeUniqueSiblingPath(targetPath, "migrating", now);
+  const staleTargets = listSiblingTransactionPaths(targetPath, "migrating");
+  let tempTarget = "";
+  let targetAlreadyPromoted = false;
+
+  if (pathExists(targetPath)) {
+    if (!isDirectory(targetPath)) {
+      throw new Error("目标 output 路径已存在且不是目录");
+    }
+    if (hasDirectoryContents(targetPath)) {
+      try {
+        await verifyCopiedOutputTree(currentPath, targetPath, manifest);
+        targetAlreadyPromoted = true;
+      } catch {
+        throw new Error("目标 output 目录已有内容，请先清空后再重试");
+      }
+    }
+  }
+
+  if (!targetAlreadyPromoted) {
+    for (const candidate of staleTargets) {
+      try {
+        if (!isDirectory(candidate)) continue;
+        await verifyCopiedOutputTree(currentPath, candidate, manifest);
+        tempTarget = candidate;
+        break;
+      } catch {}
+    }
+    await cleanupTransactionPaths(staleTargets, tempTarget);
+  } else {
+    await cleanupTransactionPaths(staleTargets);
+  }
+
+  if (!targetAlreadyPromoted && !tempTarget) {
+    tempTarget = makeUniqueSiblingPath(targetPath, "migrating", now);
+  }
   const backupDir = makeUniqueSiblingPath(currentPath, "backup", now);
+  let promotedThisRun = false;
 
   try {
-    await copyOutputTree({
-      sourceDir: currentPath,
-      targetDir: tempTarget,
-      manifest,
-      onProgress,
-    });
+    if (!targetAlreadyPromoted && !pathExists(tempTarget)) {
+      await copyOutputTree({
+        sourceDir: currentPath,
+        targetDir: tempTarget,
+        manifest,
+        onProgress,
+      });
+    }
 
     emitProgress(onProgress, {
       stage: "verifying",
@@ -434,7 +709,9 @@ async function migrateOutputDirectory({ currentDir, nextDir, now = new Date(), o
       itemsTransferred: manifest.totalItems,
       itemsTotal: manifest.totalItems,
     });
-    verifyCopiedOutputTree(currentPath, tempTarget);
+    if (!targetAlreadyPromoted) {
+      await verifyCopiedOutputTree(currentPath, tempTarget, manifest);
+    }
 
     emitProgress(onProgress, {
       stage: "switching",
@@ -443,27 +720,34 @@ async function migrateOutputDirectory({ currentDir, nextDir, now = new Date(), o
       itemsTransferred: manifest.totalItems,
       itemsTotal: manifest.totalItems,
     });
-    if (pathExists(targetPath)) {
-      fs.rmSync(targetPath, { recursive: true, force: true });
+    if (!targetAlreadyPromoted) {
+      if (pathExists(targetPath)) {
+        await removePathWithRetry(targetPath);
+      }
+      await renamePathWithRetry(tempTarget, targetPath);
+      promotedThisRun = true;
     }
 
-    fs.renameSync(currentPath, backupDir);
     try {
-      fs.renameSync(tempTarget, targetPath);
+      await renamePathWithRetry(currentPath, backupDir);
     } catch (err) {
-      try {
-        if (!pathExists(currentPath) && pathExists(backupDir)) {
-          fs.renameSync(backupDir, currentPath);
+      if (promotedThisRun && pathExists(targetPath)) {
+        try {
+          await removePathWithRetry(targetPath);
+        } catch (cleanupErr) {
+          throw withCleanupError(err, cleanupErr, targetPath);
         }
-      } catch {}
+      }
       throw err;
     }
   } catch (err) {
-    try {
-      if (pathExists(tempTarget)) {
-        fs.rmSync(tempTarget, { recursive: true, force: true });
+    if (tempTarget && pathExists(tempTarget)) {
+      try {
+        await removePathWithRetry(tempTarget);
+      } catch (cleanupErr) {
+        throw withCleanupError(err, cleanupErr, tempTarget);
       }
-    } catch {}
+    }
     throw err;
   }
 
@@ -483,34 +767,87 @@ async function migrateOutputDirectory({ currentDir, nextDir, now = new Date(), o
   };
 }
 
-function rollbackOutputDirectoryChange({ previousDir, currentDir, backupDir, sourceWasEmpty }) {
+async function rollbackOutputDirectoryChange({ previousDir, currentDir, backupDir, sourceWasEmpty }) {
   const previousPath = normalizeDirectoryPath(previousDir);
   const currentPath = normalizeDirectoryPath(currentDir);
 
-  try {
-    if (currentPath && pathExists(currentPath)) {
-      fs.rmSync(currentPath, { recursive: true, force: true });
-    }
-  } catch {}
-
   if (sourceWasEmpty) {
+    if (currentPath && pathExists(currentPath)) {
+      if (!isDirectory(currentPath) || hasDirectoryContents(currentPath)) {
+        throw new Error(`新 output 目录出现了数据，已保留该目录：${currentPath}`);
+      }
+      await removePathWithRetry(currentPath);
+    }
     return;
   }
 
   const backupPath = normalizeDirectoryPath(backupDir);
-  if (!backupPath || !pathExists(backupPath)) return;
+  if (!backupPath || !isDirectory(backupPath)) {
+    throw new Error(`旧 output 备份不存在，已保留新目录：${currentPath}`);
+  }
+
+  if (currentPath && pathExists(currentPath)) {
+    if (!isDirectory(currentPath)) {
+      throw new Error(`新 output 路径不是目录，已保留新路径和备份：${currentPath}`);
+    }
+    try {
+      await verifyCopiedOutputTree(backupPath, currentPath);
+    } catch (err) {
+      throw new Error(
+        `旧 output 备份校验失败，已保留新目录和备份：${err?.message || err}`
+      );
+    }
+  }
+
+  if (pathExists(previousPath)) {
+    if (!isDirectory(previousPath) || hasDirectoryContents(previousPath)) {
+      throw new Error(`旧 output 路径已有内容，已保留新目录和备份：${previousPath}`);
+    }
+    await removePathWithRetry(previousPath);
+  }
+
+  let stagedCurrentPath = "";
+  if (currentPath && pathExists(currentPath)) {
+    stagedCurrentPath = makeUniqueSiblingPath(currentPath, "rollback");
+    await renamePathWithRetry(currentPath, stagedCurrentPath);
+  }
 
   try {
-    if (!pathExists(previousPath)) {
-      fs.renameSync(backupPath, previousPath);
+    await renamePathWithRetry(backupPath, previousPath);
+  } catch (err) {
+    if (stagedCurrentPath && pathExists(stagedCurrentPath) && !pathExists(currentPath)) {
+      try {
+        await renamePathWithRetry(stagedCurrentPath, currentPath);
+      } catch (restoreErr) {
+        throw withCleanupError(err, restoreErr, stagedCurrentPath);
+      }
     }
-  } catch {}
+    throw err;
+  }
+
+  if (stagedCurrentPath && pathExists(stagedCurrentPath)) {
+    try {
+      await removePathWithRetry(stagedCurrentPath);
+    } catch (cleanupErr) {
+      const warning = new Error(
+        `旧 output 已恢复，但新目录副本未能自动清理：${stagedCurrentPath}（${cleanupErr?.message || cleanupErr}）`
+      );
+      warning.code = cleanupErr?.code;
+      warning.retainedPath = stagedCurrentPath;
+      throw warning;
+    }
+  }
 }
 
 function cleanupOutputDirectoryBackup(backupDir) {
   const backupPath = normalizeDirectoryPath(backupDir);
   if (!backupPath || !pathExists(backupPath)) return false;
-  fs.rmSync(backupPath, { recursive: true, force: true });
+  fs.rmSync(backupPath, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
   return !pathExists(backupPath);
 }
 
@@ -519,7 +856,10 @@ module.exports = {
   getDefaultOutputDirPath,
   getEffectiveOutputDirPath,
   hasDirectoryContents,
+  isPathInsideOrEqual,
   migrateOutputDirectory,
   normalizeDirectoryPath,
+  isPathLexicallyInsideOrEqual,
+  pathsReferToSameLocation,
   rollbackOutputDirectoryChange,
 };
