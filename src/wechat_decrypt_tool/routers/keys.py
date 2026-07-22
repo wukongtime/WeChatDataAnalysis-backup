@@ -24,13 +24,15 @@ class ImageKeyMemoryRequest(BaseModel):
     wxid_dir: Optional[str] = Field(None, description="微信原始账号目录")
 
 
-def _summarize_aes_key(value: str) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    if len(raw) <= 8:
-        return raw
-    return f"{raw[:4]}...{raw[-4:]}(len={len(raw)})"
+def _image_key_log_metadata(xor_value: object, aes_value: object) -> dict:
+    xor_raw = str(xor_value or "").strip()
+    aes_raw = str(aes_value or "").strip()
+    return {
+        "has_xor": bool(xor_raw),
+        "has_aes": bool(aes_raw),
+        "xor_length": len(xor_raw),
+        "aes_length": len(aes_raw),
+    }
 
 
 def _is_valid_image_key_pair(xor_value: object, aes_value: object) -> bool:
@@ -284,14 +286,13 @@ async def get_saved_keys(
         "db_key_blocked_reason": db_key_blocked_reason,
     }
     logger.info(
-        "[keys] get_saved_keys done: account=%s db_key_present=%s db_key_store_account=%s db_key_source_wxid_dir=%s blocked_reason=%s xor_key=%s aes_key=%s image_verified=%s image_source=%s updated_at=%s",
+        "[keys] get_saved_keys done: account=%s db_key_present=%s db_key_store_account=%s db_key_source_wxid_dir=%s blocked_reason=%s image_keys=%s image_verified=%s image_source=%s updated_at=%s",
         str(account_name or ""),
         bool(result["db_key"]),
         result["db_key_store_account"],
         result["db_key_source_wxid_dir"],
         result["db_key_blocked_reason"],
-        result["image_xor_key"],
-        _summarize_aes_key(result["image_aes_key"]),
+        _image_key_log_metadata(result["image_xor_key"], result["image_aes_key"]),
         result["image_key_verified"],
         result["image_key_source"],
         result["updated_at"],
@@ -398,11 +399,10 @@ async def get_image_key(
             wxid_dir=wxid_dir,
         )
         logger.info(
-            "[keys] get_image_key done: request_account=%s response_account=%s xor_key=%s aes_key=%s verified=%s source=%s",
+            "[keys] get_image_key done: request_account=%s response_account=%s image_keys=%s verified=%s source=%s",
             str(account or "").strip(),
             str(result.get("wxid") or "").strip(),
-            str(result.get("xor_key") or "").strip(),
-            _summarize_aes_key(str(result.get("aes_key") or "").strip()),
+            _image_key_log_metadata(result.get("xor_key"), result.get("aes_key")),
             result.get("verified") is True,
             str(result.get("source") or "").strip(),
         )
@@ -466,12 +466,11 @@ async def get_image_key_memory(request: ImageKeyMemoryRequest):
             wxid_dir=request.wxid_dir,
         )
         logger.info(
-            "[keys] get_image_key_memory done: request_account=%s response_account=%s pid=%s xor_key=%s aes_key=%s",
+            "[keys] get_image_key_memory done: request_account=%s response_account=%s pid=%s image_keys=%s",
             str(request.account or "").strip(),
             str(result.get("wxid") or "").strip(),
             result.get("pid"),
-            str(result.get("xor_key") or "").strip(),
-            _summarize_aes_key(str(result.get("aes_key") or "").strip()),
+            _image_key_log_metadata(result.get("xor_key"), result.get("aes_key")),
         )
         return {
             "status": 0,

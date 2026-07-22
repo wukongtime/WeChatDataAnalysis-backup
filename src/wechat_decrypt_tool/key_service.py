@@ -58,21 +58,16 @@ V4_DB_NAME_PRIORITY = (
 )
 
 
-def _summarize_aes_key(value: Any) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    if len(raw) <= 8:
-        return raw
-    return f"{raw[:4]}...{raw[-4:]}(len={len(raw)})"
-
-
-def _summarize_key_payload(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _key_payload_log_metadata(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     payload = payload or {}
+    xor_key = str(payload.get("xor_key", payload.get("xorKey", "")) or "").strip()
+    aes_key = str(payload.get("aes_key", payload.get("aesKey", "")) or "").strip()
     return {
         "wxid": str(payload.get("wxid") or "").strip(),
-        "xor_key": str(payload.get("xor_key") or "").strip(),
-        "aes_key": _summarize_aes_key(payload.get("aes_key")),
+        "has_xor": bool(xor_key),
+        "has_aes": bool(aes_key),
+        "xor_length": len(xor_key),
+        "aes_length": len(aes_key),
     }
 
 
@@ -764,7 +759,7 @@ def try_get_local_image_keys() -> List[Dict[str, Any]]:
         logger.info(
             "[image_key] 本地算法完成：accounts=%s results=%s",
             len(accounts),
-            [_summarize_key_payload(item) for item in results],
+            [_key_payload_log_metadata(item) for item in results],
         )
         return results
     except Exception as e:
@@ -1017,20 +1012,19 @@ async def get_image_key_integrated_workflow(
     if resolved_wxid_dir is not None:
         template_scan = await asyncio.to_thread(scan_v2_templates, resolved_wxid_dir)
         logger.info(
-            "[image_key] V2 模板扫描完成: account=%s templates=%s files_scanned=%s inferred_xor=%s fallback=%s",
+            "[image_key] V2 模板扫描完成: account=%s templates=%s files_scanned=%s inferred_xor_present=%s fallback=%s",
             canonical_account,
             len(template_scan.templates),
             template_scan.files_scanned,
-            f"0x{template_scan.inferred_xor_key:02X}" if template_scan.inferred_xor_key is not None else "",
+            template_scan.inferred_xor_key is not None,
             template_scan.used_fallback,
         )
         cached = _load_verified_image_key_cache(canonical_account, account, resolved_wxid_dir)
         if cached is not None and _verified_image_key_cache_matches_templates(cached, template_scan):
             logger.info(
-                "[image_key] 命中已验真缓存: account=%s source=%s code=%s",
+                "[image_key] 命中已验真缓存: account=%s source=%s",
                 canonical_account,
                 cached.get("cached_source"),
-                cached.get("code"),
             )
             return cached
         if cached is not None:
@@ -1117,11 +1111,9 @@ async def get_image_key_integrated_workflow(
                 code=resolution.code,
             )
             logger.info(
-                "[image_key] WeFlow 本地派生验真成功: account=%s matched_wxid=%s code=%s xor=0x%02X",
+                "[image_key] WeFlow 本地派生验真成功: account=%s matched_wxid=%s key_pair_verified=true",
                 canonical_account,
                 resolution.wxid,
-                resolution.code,
-                resolution.xor_key,
             )
             return _verified_image_key_result(
                 canonical_account=canonical_account,
@@ -1160,10 +1152,9 @@ async def get_image_key_integrated_workflow(
                     ),
                 )
                 logger.info(
-                    "[image_key] 原生候选通过 V2 验真: account=%s matched_wxid=%s xor=0x%02X",
+                    "[image_key] 原生候选通过 V2 验真: account=%s matched_wxid=%s key_pair_verified=true",
                     canonical_account,
                     matched_wxid,
-                    xor_key,
                 )
                 return _verified_image_key_result(
                     canonical_account=canonical_account,
@@ -1269,11 +1260,10 @@ async def get_image_key_memory_workflow(
         source="memory_v2_verified",
     )
     logger.info(
-        "[image_key] 内存候选通过 V2 验真: account=%s pid=%s encoding=%s xor=0x%02X",
+        "[image_key] 内存候选通过 V2 验真: account=%s pid=%s encoding=%s key_pair_verified=true",
         canonical_account,
         resolution.pid,
         resolution.encoding,
-        resolution.xor_key,
     )
 
     result = _verified_image_key_result(
@@ -1343,10 +1333,7 @@ async def fetch_and_save_remote_keys(
     logger.info(
         "[image_key] 收到远程响应：status_code=%s keys=%s nick_name=%s",
         response.status_code,
-        {
-            "xor_key": str(config.get("xorKey", config.get("xor_key", ""))),
-            "aes_key": _summarize_aes_key(config.get("aesKey", config.get("aes_key", ""))),
-        },
+        _key_payload_log_metadata(config),
         str(config.get("nickName", config.get("nick_name", ""))),
     )
 
@@ -1368,10 +1355,9 @@ async def fetch_and_save_remote_keys(
             image_key_source="remote_api",
         )
         logger.info(
-            "[image_key] 远程候选已按未验真状态保存：account=%s xor_key=%s aes_key=%s",
+            "[image_key] 远程候选已按未验真状态保存：account=%s keys=%s",
             wxid,
-            xor_hex_str,
-            _summarize_aes_key(aes_val),
+            _key_payload_log_metadata({"xor_key": xor_hex_str, "aes_key": aes_val}),
         )
 
     return {

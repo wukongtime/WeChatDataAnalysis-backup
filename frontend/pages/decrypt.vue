@@ -871,18 +871,16 @@ const imageKeyResponseMatchesContext = (responseAccount, context) => {
   const requestedDir = imageKeyAccountDirName(wxidDirFromDbStoragePath(context.dbStoragePath))
   return imageKeyAccountsMatch(canonical, context.account) || imageKeyAccountsMatch(canonical, requestedDir)
 }
-const summarizeAesForLog = (value) => {
-  const raw = String(value || '').trim()
-  if (!raw) return ''
-  if (raw.length <= 8) return raw
-  return `${raw.slice(0, 4)}...${raw.slice(-4)}(len=${raw.length})`
+const summarizeKeyStateForLog = (xorKey, aesKey) => {
+  const normalizedXor = String(xorKey || '').trim()
+  const normalizedAes = String(aesKey || '').trim()
+  return {
+    has_xor: !!normalizedXor,
+    has_aes: !!normalizedAes,
+    xor_length: normalizedXor.length,
+    aes_length: normalizedAes.length
+  }
 }
-const summarizeKeyStateForLog = (xorKey, aesKey) => ({
-  xor_key: String(xorKey || '').trim(),
-  aes_key: summarizeAesForLog(aesKey),
-  has_xor: !!String(xorKey || '').trim(),
-  has_aes: !!String(aesKey || '').trim()
-})
 const formatLogError = (error) => {
   if (!error) return ''
   if (error instanceof Error) {

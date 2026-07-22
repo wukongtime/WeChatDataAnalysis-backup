@@ -10,7 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import FileResponse
 from starlette.staticfiles import StaticFiles
 
-from .logging_config import setup_logging, get_logger
+from .logging_config import setup_logging, get_logger, install_sensitive_query_log_filter
 
 # 初始化日志系统
 setup_logging()
@@ -66,6 +66,9 @@ app.add_middleware(
 
 @app.middleware("http")
 async def _log_server_errors(request: Request, call_next):
+    # Uvicorn applies its logging config after this module is imported. Reinstall
+    # the idempotent filter before access logging runs for each request.
+    install_sensitive_query_log_filter()
     return await log_server_errors_middleware(request_logger, request, call_next)
 
 
