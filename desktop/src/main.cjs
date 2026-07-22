@@ -30,6 +30,13 @@ const {
   getEffectiveOutputDirPath,
   normalizeDirectoryPath,
 } = require("./output-dir.cjs");
+const {
+  isBackendHealthResponse,
+  isWcdbSidecarHealthResponse,
+  resolveBackendStartupTimeoutMs,
+  shouldRetryBackendOnDifferentPort,
+  shouldWaitForBackendReplacement,
+} = require("./backend-startup.cjs");
 
 const DEFAULT_BACKEND_HOST = "127.0.0.1";
 const LAN_BACKEND_HOST = "0.0.0.0";
@@ -56,6 +63,7 @@ let isQuitting = false;
 let desktopSettings = null;
 let backendPortChangeInProgress = false;
 let outputDirChangeInProgress = false;
+let accountDataChangeInProgress = false;
 let outputDirChangeProgressState = null;
 
 function normalizeTitleBarTheme(value) {
@@ -251,6 +259,13 @@ function getBackendHealthUrl() {
   const host = formatHostForUrl(getBackendAccessHost());
   const port = getBackendPort();
   return `http://${host}:${port}/api/health`;
+}
+
+function getBackendStartupTimeoutMs() {
+  return resolveBackendStartupTimeoutMs({
+    isPackaged: app.isPackaged,
+    envValue: process.env.WECHAT_TOOL_BACKEND_STARTUP_TIMEOUT_MS,
+  });
 }
 
 function getBackendUiUrl() {
@@ -559,7 +574,10 @@ async function deleteAccountDataFromDisk(account) {
   let result = null;
 
   if (wasBackendRunning) {
-    await stopBackendAndWait({ timeoutMs: 10_000 });
+    const stopped = await stopBackendAndWait({ timeoutMs: 10_000 });
+    if (!stopped) {
+      throw new Error("后端进程未能在 10 秒内停止，为避免删除仍在使用的数据，已取消操作");
+    }
   }
 
   try {
@@ -582,7 +600,7 @@ async function deleteAccountDataFromDisk(account) {
     if (wasBackendRunning) {
       try {
         startBackend();
-        await waitForBackend({ timeoutMs: 30_000 });
+        await waitForBackend({ timeoutMs: getBackendStartupTimeoutMs() });
       } catch (err) {
         restartError = err;
         logMain(`[main] failed to restart backend after deleteAccountData: ${err?.message || err}`);
@@ -1727,9 +1745,15 @@ function attachBackendStdio(proc, logPath) {
   } catch {}
 
   let stream = null;
+  const attachedAt = Date.now();
+  let outputChunks = 0;
   try {
     stream = fs.createWriteStream(logPath, { flags: "a" });
-    stream.write(`[${nowIso()}] [main] backend stdio -> ${logPath}\n`);
+    stream.on("error", (err) => {
+      logMain(`[main] child stdio log error path=${logPath}: ${err?.message || err}`);
+      stream = null;
+    });
+    stream.write(`[${nowIso()}] [main] backend stdio -> ${logPath} pid=${proc?.pid || "?"}\n`);
   } catch {
     return;
   }
@@ -1743,11 +1767,22 @@ function attachBackendStdio(proc, logPath) {
     } catch {}
   };
 
-  if (proc.stdout) proc.stdout.on("data", (d) => write("[backend:stdout]", d));
-  if (proc.stderr) proc.stderr.on("data", (d) => write("[backend:stderr]", d));
+  if (proc.stdout)
+    proc.stdout.on("data", (d) => {
+      outputChunks += 1;
+      write("[backend:stdout]", d);
+    });
+  if (proc.stderr)
+    proc.stderr.on("data", (d) => {
+      outputChunks += 1;
+      write("[backend:stderr]", d);
+    });
   proc.on("error", (err) => write("[backend:error]", err?.stack || String(err)));
   proc.on("close", (code, signal) => {
-    write("[backend:close]", `code=${code} signal=${signal}`);
+    write(
+      "[backend:close]",
+      `code=${code} signal=${signal} elapsedMs=${Date.now() - attachedAt} outputChunks=${outputChunks}`
+    );
     try {
       stream?.end();
     } catch {}
@@ -1860,8 +1895,8 @@ function stopWcdbSidecarHealthMonitor() {
 async function probeWcdbSidecarHealth(proc) {
   if (!proc || proc.exitCode != null || !wcdbSidecarUrl) return false;
   try {
-    const statusCode = await httpGet(`${wcdbSidecarUrl}/health`);
-    return statusCode >= 200 && statusCode < 500;
+    const response = await httpGet(`${wcdbSidecarUrl}/health`);
+    return isWcdbSidecarHealthResponse(response);
   } catch {
     return false;
   }
@@ -1884,6 +1919,14 @@ function startWcdbSidecarHealthMonitor(proc) {
     void probeWcdbSidecarHealth(proc)
       .then((healthy) => {
         if (generation !== wcdbSidecarHealthGeneration) return;
+        if (
+          outputDirChangeInProgress ||
+          backendPortChangeInProgress ||
+          accountDataChangeInProgress
+        ) {
+          wcdbSidecarHealthFailures = 0;
+          return;
+        }
         if (healthy) {
           wcdbSidecarHealthFailures = 0;
           return;
@@ -1917,8 +1960,35 @@ function cancelWcdbRuntimeRestart() {
   wcdbSidecarRestartTimer = null;
 }
 
+async function waitForWcdbRuntimeRestartToSettle({ timeoutMs } = {}) {
+  cancelWcdbRuntimeRestart();
+  const effectiveTimeoutMs =
+    Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : getBackendStartupTimeoutMs() + 15_000;
+  const startedAt = Date.now();
+  while (
+    wcdbSidecarRestartInProgress ||
+    (!!wcdbSidecarProc && wcdbSidecarProc.exitCode == null && wcdbSidecarProc.killed)
+  ) {
+    if (Date.now() - startedAt > effectiveTimeoutMs) {
+      throw new Error("WCDB 运行时仍在重启，暂时无法安全执行后端维护");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 function scheduleWcdbRuntimeRestart(code, signal) {
-  if (isQuitting || !backendProc || wcdbSidecarRestartTimer || wcdbSidecarRestartInProgress) return;
+  if (
+    isQuitting ||
+    outputDirChangeInProgress ||
+    backendPortChangeInProgress ||
+    accountDataChangeInProgress ||
+    !backendProc ||
+    wcdbSidecarRestartTimer ||
+    wcdbSidecarRestartInProgress
+  )
+    return;
 
   const now = Date.now();
   wcdbSidecarRestartHistory = wcdbSidecarRestartHistory.filter((timestamp) => now - timestamp < 60_000);
@@ -1932,17 +2002,28 @@ function scheduleWcdbRuntimeRestart(code, signal) {
 
   wcdbSidecarRestartTimer = setTimeout(() => {
     wcdbSidecarRestartTimer = null;
-    if (isQuitting || !backendProc || wcdbSidecarRestartInProgress) return;
+    if (
+      isQuitting ||
+      outputDirChangeInProgress ||
+      backendPortChangeInProgress ||
+      accountDataChangeInProgress ||
+      !backendProc ||
+      wcdbSidecarRestartInProgress
+    )
+      return;
     wcdbSidecarRestartInProgress = true;
 
     void (async () => {
       try {
         // A restarted sidecar has no knowledge of the backend's cached native handles.
         // Restart both processes so the next request opens a fresh WCDB account.
-        await stopBackendAndWait({ timeoutMs: 10_000 });
+        const stopped = await stopBackendAndWait({ timeoutMs: 10_000 });
+        if (!stopped) {
+          throw new Error("后端进程未能停止，无法安全恢复 WCDB 运行时");
+        }
         if (isQuitting) return;
         startBackend();
-        await waitForBackend({ timeoutMs: 30_000 });
+        await waitForBackend({ timeoutMs: getBackendStartupTimeoutMs() });
         logMain("[wcdb-sidecar] runtime restart completed");
       } catch (err) {
         logMain(`[wcdb-sidecar] runtime restart failed: ${err?.stack || String(err)}`);
@@ -2094,6 +2175,17 @@ function startBackend() {
   }
 
   const proc = backendProc;
+  let backendSpawnSucceeded = false;
+  logMain(
+    `[main] backend spawned pid=${proc?.pid || "?"} port=${env.WECHAT_TOOL_PORT} startupTimeoutMs=${getBackendStartupTimeoutMs()}`
+  );
+  proc.once("spawn", () => {
+    backendSpawnSucceeded = true;
+  });
+  proc.on("error", (err) => {
+    logMain(`[backend] process error: ${err?.stack || String(err)}`);
+    if (!backendSpawnSucceeded && backendProc === proc) backendProc = null;
+  });
   proc.on("exit", (code, signal) => {
     if (backendProc === proc) backendProc = null;
     // eslint-disable-next-line no-console
@@ -2135,37 +2227,43 @@ function stopBackend() {
 }
 
 async function stopBackendAndWait({ timeoutMs = 10_000 } = {}) {
-  if (!backendProc) return;
+  if (!backendProc) return true;
   const proc = backendProc;
 
   await new Promise((resolve) => {
     let done = false;
+    let timer = null;
+    const onExit = () => finish();
     const finish = () => {
       if (done) return;
       done = true;
+      if (timer) clearTimeout(timer);
+      try {
+        proc.removeListener("exit", onExit);
+      } catch {}
       resolve();
     };
 
-    const timer = setTimeout(finish, timeoutMs);
+    timer = setTimeout(finish, timeoutMs);
 
     try {
-      proc.once("exit", () => {
-        clearTimeout(timer);
-        finish();
-      });
+      proc.once("exit", onExit);
     } catch {}
 
     try {
       stopBackend();
     } catch {
-      clearTimeout(timer);
       finish();
     }
   });
+  return backendProc !== proc || proc.exitCode != null;
 }
 
-async function restartBackend({ timeoutMs = 30_000 } = {}) {
-  await stopBackendAndWait({ timeoutMs: 10_000 });
+async function restartBackend({ timeoutMs = getBackendStartupTimeoutMs() } = {}) {
+  const stopped = await stopBackendAndWait({ timeoutMs: 10_000 });
+  if (!stopped) {
+    throw new Error("后端进程未能在 10 秒内停止，已取消重启");
+  }
   startBackend();
   await waitForBackend({ timeoutMs });
 }
@@ -2173,9 +2271,26 @@ async function restartBackend({ timeoutMs = 30_000 } = {}) {
 function httpGet(url) {
   return new Promise((resolve, reject) => {
     const req = http.get(url, (res) => {
-      // Drain data so sockets can be reused.
-      res.resume();
-      resolve(res.statusCode || 0);
+      const chunks = [];
+      let totalBytes = 0;
+      let tooLarge = false;
+      res.on("data", (chunk) => {
+        const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        totalBytes += data.length;
+        if (totalBytes <= 64 * 1024) chunks.push(data);
+        else tooLarge = true;
+      });
+      res.on("error", reject);
+      res.on("end", () => {
+        if (tooLarge) {
+          reject(new Error("health response too large"));
+          return;
+        }
+        resolve({
+          statusCode: res.statusCode || 0,
+          body: Buffer.concat(chunks).toString("utf8"),
+        });
+      });
     });
     req.on("error", reject);
     req.setTimeout(1000, () => {
@@ -2184,13 +2299,35 @@ function httpGet(url) {
   });
 }
 
-async function waitForBackend({ timeoutMs, healthUrl } = {}) {
+async function waitForBackend({ timeoutMs, healthUrl, allowBackendReplacement = false } = {}) {
   const url = String(healthUrl || getBackendHealthUrl()).trim();
+  const effectiveTimeoutMs =
+    Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : getBackendStartupTimeoutMs();
   const startedAt = Date.now();
+  let lastProgressLogAt = startedAt;
+  logMain(
+    `[main] waiting for backend pid=${backendProc?.pid || "?"} timeoutMs=${effectiveTimeoutMs} url=${url}`
+  );
   // eslint-disable-next-line no-constant-condition
   while (true) {
     // If the backend process died, fail fast (otherwise we'd wait for the full timeout).
     if (!backendProc) {
+      // A WCDB sidecar crash intentionally replaces the backend. Do not let the
+      // short hand-off window abort another startup waiter in the main flow.
+      if (
+        shouldWaitForBackendReplacement({
+          allowBackendReplacement,
+          sidecarRestartInProgress: wcdbSidecarRestartInProgress,
+        })
+      ) {
+        if (Date.now() - startedAt > effectiveTimeoutMs) {
+          throw new Error(
+            `Backend replacement did not start in ${effectiveTimeoutMs}ms: ${url}`
+          );
+        }
+        await new Promise((r) => setTimeout(r, 300));
+        continue;
+      }
       throw new Error(`Backend process exited before becoming ready: ${url}`);
     }
     if (backendProc.exitCode != null) {
@@ -2200,12 +2337,34 @@ async function waitForBackend({ timeoutMs, healthUrl } = {}) {
     }
 
     try {
-      const code = await httpGet(url);
-      if (code >= 200 && code < 500) return;
+      const procDuringRequest = backendProc;
+      const response = await httpGet(url);
+      if (
+        isBackendHealthResponse(response) &&
+        procDuringRequest &&
+        backendProc === procDuringRequest &&
+        procDuringRequest.exitCode == null
+      ) {
+        logMain(
+          `[main] backend ready pid=${backendProc?.pid || "?"} elapsedMs=${Date.now() - startedAt} url=${url}`
+        );
+        return;
+      }
     } catch {}
 
-    if (Date.now() - startedAt > timeoutMs) {
-      throw new Error(`Backend did not become ready in ${timeoutMs}ms: ${url}`);
+    const now = Date.now();
+    const elapsedMs = now - startedAt;
+    if (now - lastProgressLogAt >= 15_000) {
+      lastProgressLogAt = now;
+      logMain(
+        `[main] backend still starting pid=${backendProc?.pid || "?"} elapsedMs=${elapsedMs} timeoutMs=${effectiveTimeoutMs} url=${url}`
+      );
+    }
+
+    if (elapsedMs > effectiveTimeoutMs) {
+      throw new Error(
+        `Backend did not become ready in ${effectiveTimeoutMs}ms (pid=${backendProc?.pid || "?"}, process was still running at timeout): ${url}`
+      );
     }
 
     await new Promise((r) => setTimeout(r, 300));
@@ -2525,6 +2684,9 @@ function registerWindowIpc() {
 
   ipcMain.handle("backend:setPort", async (_event, port) => {
     if (backendPortChangeInProgress) throw new Error("端口切换中，请稍后重试");
+    if (outputDirChangeInProgress || accountDataChangeInProgress) {
+      throw new Error("后端维护中，请稍后重试");
+    }
     if (!app.isPackaged) {
       throw new Error("开发模式不支持界面修改端口；请设置 WECHAT_TOOL_PORT 环境变量后重启");
     }
@@ -2545,12 +2707,12 @@ function registerWindowIpc() {
     try {
       setBackendPortSetting(nextPort);
       try {
-        await restartBackend({ timeoutMs: 30_000 });
+        await restartBackend();
       } catch (err) {
         // Roll back to the previous port so the UI can keep working.
         setBackendPortSetting(prevPort);
         try {
-          await restartBackend({ timeoutMs: 30_000 });
+          await restartBackend();
         } catch {}
         throw err;
       }
@@ -2597,6 +2759,9 @@ function registerWindowIpc() {
 
   ipcMain.handle("backend:setMcpLanAccess", async (_event, enabled) => {
     if (backendPortChangeInProgress) throw new Error("后端切换中，请稍后重试");
+    if (outputDirChangeInProgress || accountDataChangeInProgress) {
+      throw new Error("后端维护中，请稍后重试");
+    }
 
     const nextEnabled = !!enabled;
     const prevEnabled = getMcpLanAccessEnabled();
@@ -2618,11 +2783,11 @@ function registerWindowIpc() {
     try {
       setMcpLanAccessSetting(nextEnabled);
       try {
-        await restartBackend({ timeoutMs: 30_000 });
+        await restartBackend();
       } catch (err) {
         setMcpLanAccessSetting(prevEnabled);
         try {
-          await restartBackend({ timeoutMs: 30_000 });
+          await restartBackend();
         } catch {}
         throw err;
       }
@@ -2750,10 +2915,17 @@ function registerWindowIpc() {
   });
 
   ipcMain.handle("app:deleteAccountData", async (_event, account) => {
+    if (outputDirChangeInProgress || backendPortChangeInProgress || accountDataChangeInProgress) {
+      throw new Error("后端或 output 目录维护中，请稍后重试");
+    }
+    accountDataChangeInProgress = true;
     try {
+      await waitForWcdbRuntimeRestartToSettle();
       return await deleteAccountDataFromDisk(account);
     } catch (e) {
       throw new Error(e?.message || String(e));
+    } finally {
+      accountDataChangeInProgress = false;
     }
   });
 
@@ -2833,23 +3005,48 @@ async function main() {
   logMain(`[main] app.isPackaged=${app.isPackaged} argv=${JSON.stringify(process.argv)}`);
 
   startBackend();
+  const startupTimeoutMs = getBackendStartupTimeoutMs();
   try {
-    await waitForBackend({ timeoutMs: 30_000 });
+    await waitForBackend({ timeoutMs: startupTimeoutMs, allowBackendReplacement: true });
   } catch (err) {
     // In some environments a specific port may be blocked/reserved (WSAEACCES) or taken.
-    // Best-effort: pick a new port and retry once so the app can still start.
+    // Only change ports when the failed port cannot be bound. A PyInstaller onefile
+    // cold start leaves it available while extracting and must be given more time,
+    // not mistaken for a port conflict.
     if (app.isPackaged) {
       const prevPort = getBackendPort();
       const bindHost = getBackendBindHost();
+      const portAvailableAfterFailure = await isPortAvailable(prevPort, bindHost);
+      const backendProcessStillRunning = !!backendProc && backendProc.exitCode == null;
+      const shouldRetryPort = shouldRetryBackendOnDifferentPort({
+        isPackaged: app.isPackaged,
+        portAvailableAfterFailure,
+        backendProcessStillRunning,
+      });
+      if (!shouldRetryPort) {
+        logMain(
+          `[main] backend startup failed while port ${prevPort} remains available; not changing persisted port: ${err?.message || err}`
+        );
+        throw err;
+      }
+
       const nextPort = await chooseAvailablePort(prevPort + 1, bindHost);
       if (nextPort != null && nextPort !== prevPort) {
         logMain(`[main] backend not ready on port ${prevPort}; retrying on ${nextPort}`);
         try {
           setBackendPortSetting(nextPort);
-          await restartBackend({ timeoutMs: 30_000 });
+          await restartBackend({ timeoutMs: startupTimeoutMs });
           logMain(`[main] backend retry succeeded on port ${nextPort}`);
         } catch (retryErr) {
           logMain(`[main] backend retry failed: ${retryErr?.stack || String(retryErr)}`);
+          try {
+            setBackendPortSetting(prevPort);
+            logMain(`[main] restored backend port setting to ${prevPort} after failed retry`);
+          } catch (restoreErr) {
+            logMain(
+              `[main] failed to restore backend port ${prevPort}: ${restoreErr?.message || restoreErr}`
+            );
+          }
           throw retryErr;
         }
       } else {
