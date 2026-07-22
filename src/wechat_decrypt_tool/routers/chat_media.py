@@ -1136,6 +1136,7 @@ def _fast_probe_record_video_in_chat_attach(
 
 
 @router.get("/api/chat/avatar", summary="获取联系人头像")
+@router.head("/api/chat/avatar", include_in_schema=False)
 async def get_chat_avatar(username: str, account: Optional[str] = None, source: str = "auto"):
     if not username:
         raise HTTPException(status_code=400, detail="Missing username.")
