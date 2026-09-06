@@ -2765,7 +2765,35 @@ async def get_chat_image(
             )
         except cdn_image_service.CdnQuotaExceededError as quota_err:
             trace("cdn:quota-exceeded", detail=str(quota_err))
-            raise HTTPException(status_code=429, detail=str(quota_err))
+            quota_headers: dict[str, str] | None = None
+            try:
+                resets_at = (quota_err.quota or {}).get("resetsAt")
+                if resets_at is not None:
+                    quota_headers = {"Retry-After": str(max(0, int(int(resets_at) - time.time())))}
+            except (TypeError, ValueError):
+                quota_headers = None
+            raise HTTPException(
+                status_code=429,
+                detail={"code": "quota_exceeded", "message": str(quota_err), "quota": quota_err.quota},
+                headers=quota_headers,
+            )
+        except cdn_image_service.CdnRateLimitedError as rate_err:
+            trace("cdn:rate-limited", detail=str(rate_err))
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "rate_limited",
+                    "message": str(rate_err),
+                    "retryAfterSeconds": rate_err.retry_after,
+                },
+                headers=rate_err.headers() or None,
+            )
+        except cdn_image_service.CdnAccountFrozenError as frozen_err:
+            trace("cdn:account-frozen", detail=str(frozen_err))
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "account_frozen", "message": str(frozen_err)},
+            )
         except Exception as cdn_err:  # noqa: BLE001
             trace("cdn:error", error=str(cdn_err)[:200], explicit=bool(fetch_remote))
             return None

@@ -16,6 +16,10 @@
       @close="closeSettingsDialog"
     />
 
+    <ClientOnly v-if="route.path !== '/agreement'">
+      <PlanWindow />
+    </ClientOnly>
+
     <GuideDialog
       :open="noAccountGuideOpen"
       eyebrow="数据准备提示"

@@ -52,6 +52,7 @@ from .wcdb_realtime import WCDB_REALTIME, shutdown as _wcdb_shutdown
 from .img_helper import IMG_HELPER
 from .routers.biz import router as _biz_router
 from .routers.system import router as _system_router
+from .routers.cdn import router as _cdn_router
 
 app = FastAPI(
     title="微信数据库解密工具",
@@ -149,6 +150,7 @@ app.include_router(_general_router)
 app.include_router(_favorites_router)
 app.include_router(_record_export_router)
 app.include_router(_system_router)
+app.include_router(_cdn_router)
 
 
 # Python's MIME database inherits Windows registry overrides.  Keep the
