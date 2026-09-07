@@ -14,6 +14,7 @@
           @keydown.esc.prevent="close"
         >
           <div class="pw-grain" aria-hidden="true" />
+          <p class="pw-intro">WxCDN 媒体下载服务 · 支持图片 / 视频 / 文件 / 语音 · 兑换码联系 QQ 3434549571</p>
           <nav class="pw-index" aria-label="版本">
             <button
               v-for="t in ORDER"
@@ -343,6 +344,8 @@ onBeforeUnmount(stop)
 .pw-stack canvas.incoming { z-index: 3; clip-path: inset(0 100% 0 0); }
 .pw-stack canvas.overlay { pointer-events: none; z-index: 3; }
 .pw-line { position: absolute; top: 0; bottom: 0; width: 6px; left: 0; z-index: 4; pointer-events: none; opacity: 0; background: var(--pw-ink); mix-blend-mode: difference; }
+.pw-intro { position: relative; z-index: 8; margin: 0; padding: 14px 24px 10px; text-align: center; font-size: 16px; font-weight: 500; line-height: 1.45; letter-spacing: .03em; color: #B07A20; }
+.pw-dlg.is-dark .pw-intro { color: #F0D391; }
 .pw-dlg.is-dark .pw-line { background: #fff; mix-blend-mode: normal; }
 .pw-enter-active, .pw-leave-active { transition: opacity .22s ease; }
 .pw-enter-from, .pw-leave-to { opacity: 0; }
