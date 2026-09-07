@@ -93,8 +93,8 @@
       <button
         type="button"
         class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
-        title="高级功能"
-        aria-label="高级功能"
+        title="高级功能演示"
+        aria-label="高级功能演示"
         @click="openAdvancedFeaturesDialog"
       >
         <span class="sidebar-rail-plate advanced-features-plate w-[var(--sidebar-rail-btn)] h-[var(--sidebar-rail-btn)] rounded-md flex items-center justify-center">
