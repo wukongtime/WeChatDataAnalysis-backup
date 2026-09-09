@@ -64,6 +64,8 @@ Windows 对应后端 132 项、Vue 168 项、桌面 8 项回归通过，公共�
 ## 复验入口与证据
 
 ```sh
+export UV_MANAGED_PYTHON=true
+uv python install 3.11
 uv sync --locked --python 3.11 --extra build
 uv run python tools/verify_ai_runtime.py
 uv run pytest -q tests/test_ai*.py tests/test_local_search*.py
@@ -75,6 +77,8 @@ cd ..
 node --test desktop/tests/ai-notifications.test.cjs desktop/tests/ai-packaging.test.cjs desktop/tests/renderer-startup.test.cjs
 node tools/build_ai_smoke.cjs
 ```
+
+AI 跨平台 CI 同样设置 `UV_MANAGED_PYTHON=true` 并安装 uv 管理的 Python 3.11，使源码检查与 PyInstaller 冻结检查共用支持 SQLite 扩展的解释器。仅指定 Python 3.11 版本不足以保证此能力：macOS 上 `actions/setup-python` 提供的解释器也可能缺少 `enable_load_extension`。参见 [uv 的托管 Python 设置](https://docs.astral.sh/uv/reference/environment/#uv_managed_python)。
 
 模型已下载时，运行检查器可加 `--model-root <模型目录>` 验证真实 BGE Small 子进程推理。检查器仅生成合成数据，不读取账号和密钥。完整后端打包脚本也自动调用 `--smoke-ai`。
 
