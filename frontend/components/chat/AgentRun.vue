@@ -1,15 +1,18 @@
 <template>
   <section class="agent-reply agent-run">
+    <section class="agent-process-panel" :class="{ 'is-open': open }" aria-label="执行过程">
     <button class="agent-process-toggle" type="button" :aria-expanded="open" :aria-controls="`process-${run.id} usage-${run.id}`" :title="open ? '收起执行过程，仅显示回答' : '展开执行过程与用量'" @click="toggle">
       <i :class="statusIcon" aria-hidden="true" />
-      <span>{{ open ? (running ? '执行中' : statusLabel) : '查看执行过程' }} · {{ duration(elapsed) }}</span>
-      <small v-if="open && toolCount">{{ toolCount }} 项操作</small>
+      <span class="agent-process-title">执行过程</span>
+      <small class="agent-process-meta">{{ running ? '执行中' : statusLabel }} · {{ duration(elapsed) }}<span v-if="toolCount"> · {{ toolCount }} 项操作</span></small>
+      <span class="agent-process-disclosure">{{ open ? '收起' : '展开' }}</span>
       <i :class="open ? 'fa-solid fa-chevron-down' : 'fa-solid fa-chevron-right'" aria-hidden="true" />
     </button>
+    <div v-show="open" class="agent-process-body">
     <div :id="`process-${run.id}`" v-show="open" class="agent-process" :class="{ 'is-live': running }">
       <template v-for="item in groupedRecords" :key="item.id">
         <AgentToolCall v-if="item.kind === 'tool'" :items="item.calls" :now="now" :name-for="nameFor" />
-        <div v-else-if="item.kind === 'progress'" class="agent-progress-note" :class="{'is-superseded':item.status === 'superseded'}"><AgentAnswer :text="item.text" :citations="run.citations" :streaming="running" @locate="$emit('locate', $event)" /><small v-if="item.status === 'superseded'">已根据补充要求调整</small></div>
+        <div v-else-if="item.kind === 'progress'" class="agent-progress-note" :class="{'is-superseded':item.status === 'superseded'}"><span class="agent-progress-caption">阶段小结</span><AgentAnswer :text="item.text" :citations="run.citations" :streaming="running" @locate="$emit('locate', $event)" /><small v-if="item.status === 'superseded'">已根据补充要求调整</small></div>
         <div v-else-if="item.kind === 'supplement'" class="agent-supplement"><p>{{ item.text }}</p><small>{{ item.status === 'applied' ? '补充要求已应用' : '已收到补充要求' }}</small></div>
         <p v-else-if="item.kind === 'notice'" class="agent-process-notice" role="status">{{ item.text }}<small v-if="item.attempt"> · 第 {{ item.attempt }} 次尝试</small></p>
         <div v-else-if="item.kind === 'answer' && item.status === 'superseded'" class="agent-progress-note is-superseded"><small>旧答案已根据补充要求调整</small></div>
@@ -17,7 +20,6 @@
         <p v-else-if="!run.timeline?.length" class="agent-process-notice">{{ item.text }} · {{ duration((item.finished_at || now / 1000) - item.started_at) }}</p>
       </template>
     </div>
-    <div v-if="run.error" class="agent-error" role="alert">{{ run.error }}<details v-if="run.error_info?.diagnostic_id"><summary>诊断信息</summary><small>{{ run.error_info.category }} · {{ run.error_info.diagnostic_id }}</small></details></div>
       <details :id="`usage-${run.id}`" v-show="open" class="agent-run-metadata"><summary><i class="fa-solid fa-caret-right" aria-hidden="true" /><span>用量与读取范围<span v-if="run.usage?.calls != null"> · {{ run.usage.calls }} 次模型调用</span></span><i class="fa-solid fa-chevron-right" aria-hidden="true" /></summary><p>{{ toolCount }} 项操作<span v-if="run.usage"> · {{ run.usage.calls }} 次模型调用</span></p>
         <p v-if="running">当前步骤 {{ duration(stageElapsed) }} · 已读取 {{ run.read_count || 0 }} 条消息 · 媒体 {{ run.used?.media || 0 }}</p>
         <div v-if="run.time_range?.start != null" class="agent-query-range"><small>查询范围：{{ date(run.time_range.start) }} — {{ date(run.time_range.end) }}</small></div>
@@ -26,7 +28,11 @@
         <div v-if="run.usage" class="agent-usage"><p>输入 {{ run.usage.input_tokens }} · 输出 {{ run.usage.output_tokens }} Token</p><p v-if="run.usage.unknown">{{ run.usage.unknown }} 次调用未返回完整用量，以上为已知部分。</p><button type="button" @click="$emit('settings')">查看用量审计</button></div>
         <button v-if="run.source_count || run.analysis?.known" type="button" class="agent-materials-link" :aria-expanded="materialsOpen" @click="materialsOpen = !materialsOpen">{{ materialsOpen ? '收起详细结果' : '查看全部来源与详细结果' }}</button>
       </details>
-    <div v-if="run.answer" class="agent-final-answer"><small v-if="!running && run.status !== 'completed'">回答尚未完成</small><AgentAnswer :text="run.answer" :citations="run.citations" :streaming="running" @locate="$emit('locate', $event)" /><details v-if="run.coverage_warnings?.length" class="agent-coverage-note"><summary><i class="fa-regular fa-circle-question" aria-hidden="true"></i>部分资料未读取 · 查看说明</summary><p v-for="warning in run.coverage_warnings" :key="warning">{{ warning }}</p></details></div>
+    <AgentMaterials v-if="materialsOpen" v-show="open" :run="run" :name-for="nameFor" @close="materialsOpen = false" @locate="$emit('locate', $event)" />
+    </div>
+    </section>
+    <div v-if="run.error" class="agent-error" role="alert">{{ run.error }}<details v-if="run.error_info?.diagnostic_id"><summary>诊断信息</summary><small>{{ run.error_info.category }} · {{ run.error_info.diagnostic_id }}</small></details></div>
+    <div v-if="run.answer" class="agent-final-answer"><h3 class="agent-answer-heading">{{ run.status === 'completed' ? '最终回答' : running ? '正在回答' : '未完成的回答' }}</h3><AgentAnswer :text="run.answer" :citations="run.citations" :streaming="running" @locate="$emit('locate', $event)" /><details v-if="run.coverage_warnings?.length" class="agent-coverage-note"><summary><i class="fa-regular fa-circle-question" aria-hidden="true"></i>部分资料未读取 · 查看说明</summary><p v-for="warning in run.coverage_warnings" :key="warning">{{ warning }}</p></details></div>
     <div v-if="running" class="agent-stream-status" role="status"><span class="agent-status-dot" aria-hidden="true"></span><span class="agent-shimmer">{{ run.stage || '正在查找与分析' }}</span><time>{{ duration(stageElapsed) }}</time></div>
     <p v-if="running && stageElapsed >= 30" class="agent-wait-note">这一步仍在处理中，可随时补充要求或停止。</p>
     <div v-if="run.choices?.length" class="agent-choices"><button v-for="choice in run.choices" :key="choice.username" type="button" @click="$emit('choose', choice)">{{ choice.name }}<small>{{ choice.username }}</small></button></div>
@@ -34,7 +40,7 @@
 
     <AgentEvidence v-if="evidenceOpen && (run.citations?.length || run.answer)" :run="run" @locate="$emit('locate', $event)" />
 
-    <AgentMaterials v-if="materialsOpen" v-show="open" :run="run" :name-for="nameFor" @close="materialsOpen = false" @locate="$emit('locate', $event)" />
+
 
   </section>
 </template>

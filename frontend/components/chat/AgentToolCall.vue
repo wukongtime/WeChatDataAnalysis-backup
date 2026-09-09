@@ -39,7 +39,8 @@ import { computed, ref } from 'vue'
 const props = defineProps({ items: { type: Array, required: true }, now: Number, nameFor: { type: Function, default: () => '' } })
 const first = computed(() => props.items[0])
 const grouped = computed(() => props.items.length > 1)
-const expanded = ref(grouped.value)
+// 过程面板展开时先显示操作摘要，逐次读取明细由用户按需展开。
+const expanded = ref(false)
 // 合并记录仍显露失败、运行或暂停状态，不能把部分完成显示为全部成功。
 const status = computed(() => ['failed', 'running', 'paused', 'cancelled', 'interrupted', 'superseded'].find(status => props.items.some(item => item.status === status)) || first.value.status)
 const icon = computed(() => status.value === 'running' ? 'fa-solid fa-spinner fa-spin' : status.value === 'failed' ? 'fa-solid fa-circle-exclamation' : status.value !== 'completed' ? 'fa-regular fa-circle-pause' : first.value.action?.includes('search') ? 'fa-solid fa-magnifying-glass' : first.value.action === 'analyze_media' ? 'fa-regular fa-images' : 'fa-regular fa-file-lines')

@@ -295,3 +295,30 @@ html[data-theme=dark] .agent-panel .agent-markdown .agent-ref { background:#173c
   .agent-tool-query { max-width:85px; }
   .agent-tool-attempt-row { column-gap:12px; }
 }
+
+
+/* 用共同容器界定过程范围，正文在容器之外形成独立阅读起点。 */
+.agent-process-panel { --ag-muted:color-mix(in srgb,var(--app-text-primary,#191919) 68%,var(--ag-bg)); background:var(--ag-soft); border:1px solid var(--ag-border); border-radius:12px; margin-bottom:24px; }
+.agent-process-panel > .agent-process-toggle { width:100%; margin:0; padding:13px 16px!important; gap:10px; border-radius:12px; }
+.agent-process-title { color:var(--app-text-primary); font-weight:600; white-space:nowrap; }
+.agent-process-toggle .agent-process-meta { margin:0; font-size:12px; font-weight:400; }
+.agent-process-disclosure { margin-left:auto; font-size:12px; white-space:nowrap; }
+.agent-process-panel.is-open > .agent-process-toggle { border-radius:12px 12px 0 0; border-bottom:1px solid var(--ag-border); }
+.agent-process-body { padding:8px 16px 12px; }
+.agent-process-body .agent-tool { margin:2px 0; padding:0 8px; font-size:13px; }
+.agent-process-body .agent-tool-title { color:var(--ag-muted); }
+.agent-process-body .agent-tool[open] { background:var(--ag-bg); }
+.agent-process-body .agent-tool > summary { gap:10px; }
+.agent-process-body .agent-progress-note { margin:14px 8px; padding:2px 0 2px 12px; border-left:2px solid var(--ag-border); color:var(--ag-muted); }
+.agent-process-body .agent-progress-caption { display:block; margin-bottom:5px; color:var(--ag-muted); font-size:12px; font-weight:600; }
+.agent-panel .agent-process-body .agent-progress-note .agent-markdown { font-size:13px; line-height:1.7; color:var(--ag-muted); }
+.agent-process-body .agent-process-notice { margin:10px 8px; font-size:12px; line-height:1.65; }
+.agent-process-body .agent-run-metadata { margin:12px 8px 0; padding-top:10px; border-top:1px solid var(--ag-border); }
+.agent-answer-heading { margin:0 0 12px; font-size:14px; line-height:1.5; font-weight:600; color:var(--app-text-primary); }
+.agent-panel .agent-final-answer .agent-markdown { font-size:15px; line-height:1.85; }
+@container (max-width:480px) {
+  .agent-process-panel > .agent-process-toggle { padding:12px!important; gap:8px; }
+  .agent-process-toggle .agent-process-meta { order:2; flex-basis:100%; margin-left:24px; white-space:normal; text-align:left; }
+  .agent-process-body { padding:6px 8px 10px; }
+  .agent-process-body .agent-tool { padding:0 6px; }
+}

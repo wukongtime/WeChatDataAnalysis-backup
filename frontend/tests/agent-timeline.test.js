@@ -14,7 +14,7 @@ const setup = (extra={}) => mount(AgentRun,{attachTo:document.body,props:{run:ba
 describe('Agent 执行对话流',()=>{
   it('完成后默认只显示回答，展开可查看过程和用量，再次收起一起隐藏', async () => {
     const w = setup({run:{...base(),status:'completed',elapsed_seconds:141,answer:'约饭定在周三',usage:{calls:6,input_tokens:100,output_tokens:20}}})
-    expect(w.find('.agent-process-toggle').text()).toContain('查看执行过程')
+    expect(w.find('.agent-process-toggle').text()).toContain('执行过程')
     expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('false')
     expect(w.find('.agent-process').isVisible()).toBe(false)
     expect(w.find('.agent-run-metadata').element.style.display).toBe('none')
@@ -33,12 +33,30 @@ describe('Agent 执行对话流',()=>{
     expect(w.find('.agent-run-metadata').element.style.display).toBe('none')
     w.unmount()
   })
-  it('重复读取默认展示逐次时间线，缓存命中不重复计数，折叠状态保留', async () => {
+  it('过程与回答有独立区域，阶段小结有标签，未完成回答不会标为最终回答', async () => {
+    const w = setup({run:{...base(),answer:'正在整理的回答'}})
+    const process = w.find('.agent-process-panel')
+    expect(process.attributes('aria-label')).toBe('执行过程')
+    expect(process.find('.agent-progress-caption').text()).toBe('阶段小结')
+    expect(process.find('.agent-run-metadata').exists()).toBe(true)
+    expect(process.find('.agent-final-answer').exists()).toBe(false)
+    expect(w.find('.agent-answer-heading').text()).toBe('正在回答')
+    await w.setProps({run:{...base(),answer:'尚未完成',status:'failed',error:'请求失败'}})
+    expect(w.find('.agent-answer-heading').text()).toBe('未完成的回答')
+    await w.find('.agent-process-toggle').trigger('click')
+    expect(w.find('.agent-error').isVisible()).toBe(true)
+    expect(w.find('.agent-final-answer').isVisible()).toBe(true)
+    w.unmount()
+  })
+  it('重复读取默认只显示摘要，展开保留逐次记录，缓存不重复计数且折叠状态保留', async () => {
     const a = {id:'a',kind:'tool',action:'read_context',username:'friend',status:'completed',result:{returned:21},started_at:100,finished_at:102}
     const b = {...a,id:'b',cached:true}
     const r = {...base(),timeline:[a,b]}
     const w = setup({run:r})
     const group = w.find('.agent-tool')
+    expect(group.element.open).toBe(false)
+    group.element.open = true
+    await group.trigger('toggle')
     expect(group.element.open).toBe(true)
     expect(w.find('.agent-tool > summary').text()).toContain('21 条消息 · 含 1 次复用')
     expect(w.findAll('.agent-tool-attempt-row').map(x=>x.text())).toEqual(['首次读取21 条 · 2秒','复用已读结果无需重复读取'])
