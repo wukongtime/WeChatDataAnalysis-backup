@@ -27,6 +27,23 @@ dependencies = [
     "packaging",
     "httpx",
     "watchfiles>=1.1.0",
+    "langchain-core>=1.0,<2",
+    "langchain-openai>=1.0,<2",
+    "langchain-anthropic>=1.0,<2",
+    "langgraph>=1.0,<2",
+    "langgraph-checkpoint-sqlite>=3.0,<4",
+    "pypdf>=5.0",
+    "pypdfium2>=4.30",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    "python-pptx>=1.0",
+    "Pillow>=10.0",
+    "huggingface-hub==1.27.0",
+    "onnxruntime==1.28.0; sys_platform != 'darwin'",
+    # macOS 固定使用同时提供 Apple Silicon / Intel、macOS 13+ wheel 的 CPU 版本。
+    "onnxruntime==1.23.2; sys_platform == 'darwin'",
+    "tokenizers==0.23.1",
+    "sqlite-vec==0.1.9",
 ]
 
 [project.optional-dependencies]

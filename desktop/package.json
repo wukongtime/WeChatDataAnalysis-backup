@@ -165,6 +165,7 @@
     "cross-env": "^10.1.0",
     "electron": "^40.0.0",
     "electron-builder": "26.15.3",
+    "electron-winstaller": "5.4.0",
     "png-to-ico": "^3.0.1"
   }
 }

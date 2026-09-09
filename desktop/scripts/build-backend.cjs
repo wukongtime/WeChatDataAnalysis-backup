@@ -1,3 +1,4 @@
+const { aiPackagingArgs, runPackagedAiSmoke } = require('./ai-packaging.cjs');
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -652,6 +653,7 @@ function main() {
     "opencc",
     "--collect-all",
     "watchfiles",
+    ...aiPackagingArgs(repoRoot),
     entry,
   ];
 
@@ -687,6 +689,7 @@ function main() {
   );
   runPackagedOpenccSmoke(packagedBackend);
   runPackagedWatchfilesSmoke(packagedBackend);
+  runPackagedAiSmoke(packagedBackend);
 
   // Keep native dependencies outside the onefile extraction directory so the
   // broker and client library have stable paths at runtime.

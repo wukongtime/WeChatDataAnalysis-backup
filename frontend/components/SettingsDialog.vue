@@ -4,7 +4,8 @@
     class="settings-dialog theme-scope fixed inset-0 z-[20000] flex items-center justify-center bg-black/40 px-2 py-2 backdrop-blur-md sm:px-4 sm:py-8"
     @click.self="handleClose"
   >
-    <div class="settings-dialog-panel flex h-[80vh] min-h-[380px] w-full max-w-[880px] overflow-hidden rounded-[10px] border border-[#e2e2e2] bg-white shadow-2xl">
+    <!-- 所有栏目共用尺寸，避免滚动更新当前栏目时弹窗跳动。 -->
+    <div class="settings-dialog-panel flex h-[88vh] min-h-[380px] w-full max-w-[1000px] overflow-hidden rounded-[10px] border border-[#e2e2e2] bg-white shadow-2xl">
       <!-- Sidebar -->
       <aside class="hidden w-[160px] shrink-0 flex-col bg-[#fcfcfc] border-r border-[#eeeeee] sm:flex">
         <div class="mt-4 mb-2 flex items-center px-4 gap-2">
@@ -249,6 +250,10 @@
                 <ErrorNotice v-if="desktopLogFileError" :message="desktopLogFileError" compact manual class="mt-1.5 text-[11px] text-red-600" />
               </div>
             </div>
+          </section>
+
+          <section ref="aiSectionRef">
+            <AiSettings v-if="open" />
           </section>
 
           <section ref="voiceSectionRef">
@@ -744,6 +749,7 @@ const { openPlanWindow } = usePlanWindow()
 
 const settingNavItems = [
   { key: 'desktop', label: '桌面行为', hint: '启动 / 关闭 / 端口' },
+  { key: 'ai', label: 'AI 服务', hint: '模型 / 密钥 / 默认能力' },
   { key: 'voice', label: '语音转文字', hint: 'CPU / NVIDIA GPU' },
   { key: 'mcp', label: 'MCP 接入', hint: '局域网 / Skill / 工具' },
   { key: 'keys', label: '数据库与密钥', hint: '密钥查看 / 复制' },
@@ -758,6 +764,7 @@ const contentScrollRef = ref(null)
 const desktopSectionRef = ref(null)
 const desktopLogFileRef = ref(null)
 const voiceSectionRef = ref(null)
+const aiSectionRef = ref(null)
 const mcpSectionRef = ref(null)
 const keysSectionRef = ref(null)
 const startupSectionRef = ref(null)
@@ -1068,6 +1075,7 @@ const refreshDesktopOutputDirProgress = async () => {
 
 const sectionElements = computed(() => [
   { key: 'desktop', el: desktopSectionRef.value },
+  { key: 'ai', el: aiSectionRef.value },
   { key: 'voice', el: voiceSectionRef.value },
   { key: 'mcp', el: mcpSectionRef.value },
   { key: 'keys', el: keysSectionRef.value },
@@ -1082,14 +1090,21 @@ const scrollToSection = (key) => {
   const target = sectionElements.value.find((item) => item.key === key)?.el
   activeSection.value = key
   if (!scrollHost || !target) return
+  // offsetTop 相对定位祖先计算，会把设置页固定标题栏的高度重复计入。
+  const targetTop = scrollHost.scrollTop + target.getBoundingClientRect().top - scrollHost.getBoundingClientRect().top
   scrollHost.scrollTo({
-    top: Math.max(0, target.offsetTop - 10),
+    top: Math.max(0, targetTop - 10),
     behavior: 'smooth',
   })
 }
 
 const scrollToFocusTarget = async () => {
   const focusTarget = String(props.focusTarget || '').trim()
+  if (focusTarget === 'ai' || focusTarget === 'local-search') {
+    await nextTick()
+    scrollToSection('ai')
+    return
+  }
   if (focusTarget === 'voice') {
     await nextTick()
     scrollToSection('voice')
@@ -1124,10 +1139,11 @@ const onContentScroll = () => {
     }
   }
   const position = scrollHost.scrollTop + 120
+  const hostTop = scrollHost.getBoundingClientRect().top
   let current = settingNavItems[0].key
   for (const section of sectionElements.value) {
     if (!section.el) continue
-    if (section.el.offsetTop <= position) current = section.key
+    if (scrollHost.scrollTop + section.el.getBoundingClientRect().top - hostTop <= position) current = section.key
   }
   activeSection.value = current
 }

@@ -13,6 +13,23 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 
+@pytest.fixture
+def ai_file_diagnostics(tmp_path, monkeypatch):
+    """使用真正的文件 sink，内存测量不包含 pytest 无限累积的捕获记录。"""
+    from wechat_decrypt_tool.ai import diagnostics
+    # 独立实例避免 pytest 在 call 阶段给已注册 logger 再挂捕获 handler。
+    logger = logging.Logger(diagnostics.logger.name, logging.INFO)
+    monkeypatch.setattr(diagnostics, 'logger', logger)
+    path = tmp_path / 'ai-diagnostics.log'
+    handler = logging.FileHandler(path, encoding='utf-8')
+    logger.handlers, logger.propagate = [handler], False
+    logger.setLevel(logging.INFO)
+    try:
+        yield path
+    finally:
+        handler.close()
+
+
 def _reset_test_file_logging() -> None:
     loggers = [logging.getLogger()]
     loggers.extend(

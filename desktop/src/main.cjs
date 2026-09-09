@@ -3,6 +3,7 @@ const {
   BrowserWindow,
   Menu,
   Tray,
+  Notification,
   nativeImage,
   ipcMain,
   globalShortcut,
@@ -44,6 +45,7 @@ const {
   shouldRetryBackendOnDifferentPort,
 } = require("./backend-startup.cjs");
 const { applyNativeCoreRuntimePolicy } = require("./native-core-runtime.cjs");
+const { loadWithRedirect } = require("./renderer-startup.cjs");
 const {
   ENV_INTEGRITY_NATIVE_PATH,
   ENV_MACOS_DB_KEY_BUNDLE,
@@ -67,6 +69,8 @@ const DESKTOP_TITLEBAR_HEIGHT = 32;
 let backendProc = null;
 let resolvedDataDir = null;
 let mainWindow = null;
+let aiNotifications = null;
+let aiDiagnostics = null;
 let mainWindowLaunchPromise = null;
 let initialStartupPromise = null;
 let tray = null;
@@ -2564,7 +2568,7 @@ async function loadWithRetry(win, url) {
     attempt += 1;
     logMain(`[main] loadWithRetry attempt=${attempt} url=${url}`);
     try {
-      await win.loadURL(url);
+      await loadWithRedirect(win, url);
       logMain(`[main] loadWithRetry success attempt=${attempt} elapsedMs=${Date.now() - startedAt} url=${url}`);
       return;
     } catch (err) {
@@ -2805,6 +2809,14 @@ function getWrappedBatch(rawId) {
 }
 
 function registerWindowIpc() {
+  ipcMain.handle('ai:diagnosticFallback', (event, entries) => {
+    if (event.sender !== mainWindow?.webContents) return false;
+    return require('./ai-diagnostics.cjs').writeFallback(entries, logMain);
+  });
+  ipcMain.handle('ai:takeNavigation', (event) => {
+    if (event.sender !== mainWindow?.webContents) return null;
+    return aiNotifications?.takeTarget() || null;
+  });
   const getWin = (event) => BrowserWindow.fromWebContents(event.sender);
 
   ipcMain.handle("window:minimize", (event) => {
@@ -3503,6 +3515,21 @@ async function main() {
 
   await ensureMainWindowReady();
 
+  const { createAiNotifications } = require('./ai-notifications.cjs');
+  aiDiagnostics = require('./ai-diagnostics.cjs').createAiDiagnostics({ getPort: getBackendPort, log: logMain });
+  aiNotifications = createAiNotifications({
+    diagnostics: aiDiagnostics,
+    Notification,
+    getPort: getBackendPort,
+    dataDir: app.getPath('userData'),
+    navigate: async (target) => {
+      await ensureMainWindowReady();
+      requestMainWindow('ai-notification');
+      mainWindow?.webContents.send('ai:navigate', target);
+    },
+  });
+  aiNotifications.start();
+
   // Auto-check updates once after the first UI load (packaged builds only).
   checkForUpdatesOnStartup();
 }
@@ -3527,6 +3554,8 @@ app.on("will-quit", () => {
 });
 
 app.on("before-quit", () => {
+  aiNotifications?.stop();
+  aiDiagnostics?.stop();
   isQuitting = true;
   destroyTray();
   stopBackend();

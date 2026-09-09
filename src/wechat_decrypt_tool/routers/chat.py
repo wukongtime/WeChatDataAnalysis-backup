@@ -4527,6 +4527,10 @@ def delete_chat_account(account: str):
         pass
     account_dirs_to_remove = list(dict.fromkeys(account_dirs_to_remove))
 
+    from ..ai.service import get_ai_service
+    for cleanup_name in cleanup_account_names:
+        get_ai_service().purge_account(cleanup_name)
+
     # Best-effort: close realtime connections first, otherwise Windows may keep db files locked.
     for cleanup_name in cleanup_account_names:
         try:
@@ -8258,8 +8262,19 @@ async def search_chat_messages(
     session_limit: int = 200,
     per_chat_scan: int = 200,
     scan_limit: int = 20000,
+    retrieval_mode: str = 'keyword',
+    search_ticket: Optional[str] = None,
 ):
     source_requested = _normalize_chat_source(source)
+
+    if retrieval_mode not in {'keyword', 'hybrid'}:
+        raise HTTPException(400, '不支持的检索方式')
+    requested_hybrid = retrieval_mode == 'hybrid'
+    if requested_hybrid:
+        from ..local_search.service import get_local_search
+        local_config = get_local_search().config(_resolve_account_dir(account).name)
+        if not local_config['enabled'] or not local_config.get('active'):
+            retrieval_mode = 'keyword'
 
     response = await _search_chat_messages_via_fts(
         request,
@@ -8268,8 +8283,8 @@ async def search_chat_messages(
         username=username,
         sender=sender,
         session_type=session_type,
-        limit=limit,
-        offset=offset,
+        limit=200 if retrieval_mode == 'hybrid' else limit,
+        offset=0 if retrieval_mode == 'hybrid' else offset,
         start_time=start_time,
         end_time=end_time,
         render_types=render_types,
@@ -8289,6 +8304,28 @@ async def search_chat_messages(
                     "message": "Chat search index is built from the local decrypted SQLite snapshot.",
                 },
             )
+    if retrieval_mode == 'hybrid':
+        from ..local_search.service import get_local_search
+        from ..chat_export_service import get_chat_export_targets_preview
+        account_id = _resolve_account_dir(account).name
+        targets = await asyncio.to_thread(get_chat_export_targets_preview, account=account_id,
+            include_hidden=include_hidden, include_official=include_official)
+        usernames = [x['username'] for x in targets['targets'] if not username or x['username'] == username]
+        if session_type == 'group': usernames = [u for u in usernames if u.endswith('@chatroom')]
+        elif session_type == 'single': usernames = [u for u in usernames if not u.endswith('@chatroom')]
+        combined = await get_local_search().hybrid(account_id, response, q, usernames, start_time, end_time,
+            sender, render_types.split(',') if render_types else None, offset, limit, search_ticket)
+        if combined.get('retrievalMode') == 'keyword':
+            # 降级后恢复原关键词分页，不能在仅有 200 条的召回窗口中继续切片。
+            fallback = await _search_chat_messages_via_fts(request, q=q, account=account, username=username,
+                sender=sender, session_type=session_type, limit=limit, offset=offset,
+                start_time=start_time, end_time=end_time, render_types=render_types,
+                include_hidden=include_hidden, include_official=include_official,
+                source=source_requested, allow_native_enrichment=allow_native_enrichment)
+            combined = {**fallback, 'retrievalMode': 'keyword', 'coverage': combined['coverage']}
+        return combined
+    if requested_hybrid and isinstance(response,dict):
+        response = {**response, 'retrievalMode':'keyword','coverage':{'message':'本地语义检索尚未就绪，当前展示关键词结果'}}
     return response
 
 

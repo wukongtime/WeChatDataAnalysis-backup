@@ -213,6 +213,12 @@ npm run dev
 - API服务(默认): http://localhost:10392 （可通过环境变量 WECHAT_TOOL_PORT 修改）
 - API文档(默认): http://localhost:10392/docs
 
+## 聊天 AI 总结与关注提醒
+
+在「设置 → AI 服务」配置模型后，点击聊天右上角 AI，可按条数或时间批量总结群聊与好友消息，并设置定时总结、消息阈值和 AI 语义关注提醒。支持图片、常见文档分析及桌面通知。详见 [使用与开发说明](docs/chat-ai.md)。
+
+可在「设置 → AI 服务 → 本地检索」按账号开启可选的语义检索，使用 Hugging Face 固定版本模型，支持 CPU 与 NVIDIA GPU 自动回退。使用方法、下载来源和兼容性实测见 [本地语义检索说明](docs/local-semantic-search.md)。
+
 ## MCP 服务
 
 设置页中的“AI 接入提示词”会包含 endpoint 和 Bearer token，可直接复制给客户端作为接入指令。

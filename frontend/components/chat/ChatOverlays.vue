@@ -138,6 +138,12 @@
 
           <!-- 搜索输入区域（整合所有筛选条件） -->
           <div class="search-sidebar-input-section">
+            <div class="search-session-type-row" role="group" aria-label="搜索方式">
+              <button type="button" class="search-session-type-btn" :class="{'search-session-type-btn-active':messageSearchMode==='keyword'}" @click="changeSearchMode('keyword')">关键词</button>
+              <button type="button" class="search-session-type-btn" :class="{'search-session-type-btn-active':messageSearchMode==='hybrid'}" @click="changeSearchMode('hybrid')">智能搜索</button>
+              <button type="button" class="search-session-type-btn" @click="openLocalSearchSettings">本地检索设置</button>
+            </div>
+            <p v-if="messageSearchCoverage" class="px-1 py-2 text-[11px] text-[var(--app-text-secondary)]" role="status">{{ messageSearchCoverage }}</p>
             <!-- 第一行：范围 + 输入框 + 搜索按钮 -->
             <div class="search-input-combined" :class="{ 'search-input-combined-focused': searchInputFocused }">
               <!-- 左侧：范围切换 -->
@@ -400,7 +406,7 @@
                     <span v-if="messageSearchIndexProgressText" class="sidebar-status-detail">（{{ messageSearchIndexProgressText }}）</span>
                   </template>
                   <template v-else>
-                    找到 <strong>{{ messageSearchTotal }}</strong> 条结果
+                    {{ messageSearchMode === 'hybrid' ? '召回' : '找到' }} <strong>{{ messageSearchTotal }}</strong> {{ messageSearchMode === 'hybrid' ? '条相关候选' : '条结果' }}
                   </template>
                 </div>
                 <button
@@ -462,7 +468,9 @@
                     <div v-else class="sidebar-result-sender">
                       {{ hit.isSent ? '我' : '' }}
                     </div>
-                    <div class="sidebar-result-content" v-html="highlightKeyword(hit.snippet || hit.content || hit.title || '', messageSearchQuery)"></div>
+                    <div v-if="hit.matchMethods?.includes('semantic')" class="sidebar-result-content">{{ hit.snippet || hit.content || hit.title || '' }}</div>
+                    <div v-else class="sidebar-result-content" v-html="highlightKeyword(hit.snippet || hit.content || hit.title || '', messageSearchQuery)"></div>
+                    <span v-if="hit.matchMethods" class="text-[10px] text-[var(--app-accent)]">{{ hit.matchMethods.includes('semantic') ? (hit.matchMethods.includes('keyword') ? '关键词＋语义匹配' : '语义相关（按意思找到）') : '关键词匹配' }}</span>
                   </div>
                 </div>
               </div>
