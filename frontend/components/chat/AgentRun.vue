@@ -2,7 +2,6 @@
   <section class="agent-reply agent-run">
     <section class="agent-process-panel" :class="{ 'is-open': open, 'is-running': running }" aria-label="执行过程">
     <button class="agent-process-toggle" type="button" :aria-expanded="open" :aria-controls="`process-${run.id} usage-${run.id}`" :title="open ? '收起执行过程，仅显示回答' : '展开执行过程与用量'" @click="toggle">
-      <i v-if="!running" :class="statusIcon" aria-hidden="true" />
       <span class="agent-process-title">执行过程</span>
       <small v-if="running" class="agent-process-meta">执行中 · {{ duration(elapsed) }}</small>
       <small v-else class="agent-process-meta">{{ statusLabel }} · {{ duration(elapsed) }}<span v-if="toolCount"> · {{ toolCount }} 项操作</span></small>
@@ -91,7 +90,6 @@ const duration = value => { const n=Math.max(0,Math.floor(value || 0)); return n
 const stageOutcome = status => ({running:'进行中',completed:'已完成',failed:'未完成',superseded:'已调整',cancelled:'已停止',paused:'已暂停',incomplete:'未完成'}[status] || '已结束')
 const date = value => value ? new Date(value*1000).toLocaleString() : '不限'
 const statusLabel = computed(()=>({completed:'已完成',failed:'本次处理未完成',budget:'本轮查找已暂停',cancelled:'已停止',interrupted:'可继续处理',needs_input:'需要补充信息'}[props.run.status] || '正在处理'))
-const statusIcon = computed(() => props.run.status === 'completed' ? 'fa-solid fa-circle-check' : props.run.status === 'failed' ? 'fa-solid fa-circle-exclamation' : 'fa-regular fa-circle-pause')
 const toggle = () => { open.value = !open.value }
 const copy = async () => { try { await navigator.clipboard.writeText(props.run.answer); copied.value=true } catch { copied.value=false } }
 </script>

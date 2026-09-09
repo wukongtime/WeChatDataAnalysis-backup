@@ -135,7 +135,6 @@ html[data-theme="dark"] .agent-thread-management .is-destructive, html[data-them
 .agent-result-actions { display:flex; gap:9px; margin-top:12px; }
 /* 执行概览置于顶部；操作行保持正文阅读轴，详情按需展开。 */
 .agent-process-toggle { display:flex; width:fit-content; max-width:100%; align-items:center; flex-wrap:wrap; gap:10px; color:var(--ag-muted)!important; padding:4px 0!important; margin:0 0 6px; font-size:13px!important; line-height:1.6; text-align:left; }
-.agent-process-toggle > i:first-child { width:16px; font-size:15px; }
 .agent-process-toggle small { margin-left:2px; white-space:nowrap; font-size:12px; }
 .agent-process-toggle > i:last-child { font-size:10px; }
 .agent-process { padding:0; margin:0 0 4px; }
@@ -312,7 +311,6 @@ html[data-theme=dark] .agent-panel .agent-markdown .agent-ref { background:#173c
 .agent-process-panel { --ag-muted:color-mix(in srgb,var(--app-text-primary,#191919) 68%,var(--ag-bg)); width:100%; max-width:100%; background:transparent; border:0; border-radius:0; margin-bottom:18px; }
 .agent-process-panel > .agent-process-toggle { display:flex; width:fit-content; max-width:100%; margin:0; padding:4px 0!important; gap:8px; border:0; border-radius:4px; min-height:30px; background:transparent; }
 .agent-process-title { color:var(--ag-muted); font-weight:400; font-size:12px; white-space:nowrap; }
-.agent-process-panel .agent-process-toggle > i:first-child { font-size:12px; width:14px; }
 .agent-process-toggle .agent-process-meta { margin:0; font-size:12px; font-weight:400; white-space:normal; }
 .agent-process-disclosure { display:none; }
 .agent-process-body { margin:6px 0 0 7px; border-left:1px solid var(--ag-border); padding:2px 0 4px 10px; background:transparent; }
