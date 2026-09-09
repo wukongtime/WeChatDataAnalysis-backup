@@ -13,6 +13,17 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 
+@pytest.fixture(autouse=True)
+def offline_model_catalog(monkeypatch, request):
+    """业务测试不访问公网；目录测试单独使用模拟 HTTP 验证刷新与缓存。"""
+    if request.node.path.name == 'test_model_catalog.py':
+        return
+    from wechat_decrypt_tool.ai.model_catalog import ModelCatalog
+    async def refresh(self):
+        pass
+    monkeypatch.setattr(ModelCatalog, 'refresh', refresh)
+
+
 @pytest.fixture
 def ai_file_diagnostics(tmp_path, monkeypatch):
     """使用真正的文件 sink，内存测量不包含 pytest 无限累积的捕获记录。"""

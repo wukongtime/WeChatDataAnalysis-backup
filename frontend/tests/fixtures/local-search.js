@@ -2,12 +2,12 @@ import { createApp, ref, computed } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import Preview from './LocalSearchPreview.vue'
 import LocalSearchSettings from '../../components/LocalSearchSettings.vue'
-import AgentSettings from '../../components/AgentSettings.vue'
 import { useChatAccountsStore } from '../../stores/chatAccounts'
 import '@fortawesome/fontawesome-free/css/all.min.css'
 import '../../assets/css/ai-settings.css'
 // 独立交互验收页，只使用虚构数据，不连接用户账号或模型服务。
-Object.assign(globalThis,{ref,computed,process:{client:false},useApiBase:()=>'/unused',useRoute:()=>({params:{username:'team'}}),useSettingsDialog:()=>({focusTarget:ref('local-search')})})
+Object.assign(globalThis,{ref,computed,process:{client:false},useApiBase:()=>'/unused',useRoute:()=>({params:{username:'team'}}),useSettingsDialog:()=>({focusTarget:ref(new URLSearchParams(location.search).has('models') ? '' : 'local-search')})})
+const modelMetadata = { id:'preview-model', name:'演示模型', source:'models.dev', provider_id:'deepseek', provider_name:'DeepSeek', logo_url:'https://models.dev/logos/deepseek.svg', vision:false, tool_call:true, reasoning:true, temperature:true, structured_output:true, attachment:false, open_weights:true, modalities:{input:['text'],output:['text']}, limit:{context:128000,output:8192}, cost:{input:0.28,output:0.42,cache_read:0.028}, knowledge:'2025-01', release_date:'2025-01-01',last_updated:'2026-09-09' }
 const models=[
 {id:'bge-small-zh',name:'BGE Small 中文',description:'轻量中文，适合低配置电脑',recommended:true,repo:'Xenova/bge-small-zh-v1.5',revision:'75c43b069aac4d136ba6bc1122f995fedcfd2781',license:'MIT',size:95401750,downloaded:true},
 {id:'bge-base-zh',name:'BGE Base 中文',description:'中文进阶，资源占用更高',repo:'Xenova/bge-base-zh-v1.5',revision:'71e50dc531959f9e04ebf190ea25b00261a0a186',license:'MIT',size:407503264,downloaded:false},
@@ -44,9 +44,9 @@ globalThis.useAiApi=()=>({request:async(path,options={})=>{
   if(path.startsWith('/local-search/index/pause')){jobs[0].status='paused';jobs[0].updated=Date.now()/1000}
   if(path.startsWith('/local-search/index/resume')){jobs[0].status='done';jobs[0].finished=Date.now()/1000}
   if(path.startsWith('/local-search/models/') && path.includes('/download')){const m=models.find(x=>path.includes(x.id));m.job={status:'running',stage:'downloading',bytes:0,total:m.size};setTimeout(()=>{m.downloaded=true;m.job={status:'done',stage:'done'}},1500)}
-  if(path==='/settings')return {profiles:[{id:'preview',name:'日常对话',provider:'deepseek',model:'已连接的模型',vision:false}],presets:[],defaults:{text:'preview'}}
-  if(path==='/agent/settings')return {moderate:{tools:12,models:24,media:8,seconds:300},deep:{tools:36,models:72,media:24,seconds:900}}
+  if(path==='/settings')return {profiles:[{id:'preview',name:'日常对话',provider:'deepseek',model:'preview-model',protocol:'openai',base_url:'https://api.deepseek.com/v1',vision:false,context_window:128000,model_metadata:modelMetadata}],presets:[],defaults:{text:'preview'}}
+  if(path==='/models')return {models:['preview-model'],model_details:[modelMetadata]}
   return []
 }})
 const pinia=createPinia();setActivePinia(pinia);useChatAccountsStore().selectedAccount='演示账号'
-createApp(Preview).use(pinia).component('LocalSearchSettings',LocalSearchSettings).component('AgentSettings',AgentSettings).mount('#app')
+createApp(Preview).use(pinia).component('LocalSearchSettings',LocalSearchSettings).mount('#app')

@@ -94,6 +94,11 @@ class AgentModel:
     async def call(self, profile, messages, account, *, decision=False, on_delta=None, validate=None):
         key = (profile.get('base_url'), profile.get('protocol'), profile['model'], profile['id'], profile.get('revision'))
         phase = 'decision' if decision else 'answer'
+        capabilities = profile.get('model_metadata', {})
+        if capabilities.get('tool_call') is False:
+            self.no_tools.add(key)
+        if capabilities.get('structured_output') is False:
+            self.no_json.add(key)
         corrections, token_limit = [], None
         for attempt in range(3):
             request = [*messages, *corrections]

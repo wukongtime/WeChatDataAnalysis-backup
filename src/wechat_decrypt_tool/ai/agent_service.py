@@ -20,16 +20,12 @@ from pydantic import BaseModel, Field
 
 from .agent_model import AgentModel, AgentFailure, ActionFormatError, agent_feedback
 from .agent_timeline import AgentTimeline
-from .agent_schemas import AgentAction, AgentSettings, AgentControl
+from .agent_schemas import AgentAction, AgentControl
 from .agent_tools import ChatTools
 from .providers import ProviderFailure, audit_task_id, model_attempt_hook, public_profile
 from .agent_workspace import Workspace, Evidence
 from .agent_context import AgentContext, ContextIntent
-from .agent_budget import ContextOverflow, active_budget, check_request
-
-
-class BudgetReached(AgentControl):
-    pass
+from .agent_budget import ContextOverflow, active_budget, check_request, input_limit
 
 
 class Revised(AgentControl):
@@ -66,7 +62,8 @@ class AgentService(AgentContext, AgentTimeline):
         self.readers = {}
 
     def settings(self):
-        return AgentSettings.model_validate(self.store.get('agent_settings', 'global') or {}).model_dump()
+        # 兼容旧客户端读取；历史额度不再参与执行。
+        return {'unlimited': True, 'context_source': 'models.dev'}
 
     def thread(self, id, account):
         record = self.store.get('agent_thread', id)
@@ -103,18 +100,14 @@ class AgentService(AgentContext, AgentTimeline):
         run = self.run(id)
         if self.stopping or run['status'] not in ACTIVE:
             raise asyncio.CancelledError()
-        if time.time() >= run['deadline']:
-            raise BudgetReached('已达到本轮运行时间上限，已有资料已保留。')
         return run
 
     def spend(self, id, kind, amount=1):
         run = self.guard(id)
         used = run['used']
-        if used.get(kind, 0) + amount > run['limits'][kind]:
-            raise BudgetReached('已达到本轮查找额度，已有资料已保留。')
         used[kind] = used.get(kind, 0) + amount
         self.update(id, used=used)
-        diagnostic_event('agent.budget.consumed', run_id=id, kind=kind, count=used[kind], total=run['limits'][kind])
+        diagnostic_event('agent.usage.consumed', run_id=id, kind=kind, count=used[kind])
 
     @observed('agent.create_thread', id_field='thread_id')
     async def create_thread(self, account, username, title):
@@ -153,6 +146,7 @@ class AgentService(AgentContext, AgentTimeline):
             supplement = run and run['status'] in ACTIVE
             if not supplement:
                 previous_id = run['id'] if run else ''
+                await self.ai.models.metadata.refresh()
                 profile = self.ai.models.resolve(data.get('profile_id', ''))
                 vision = {}
                 try:
@@ -162,16 +156,15 @@ class AgentService(AgentContext, AgentTimeline):
                         raise
                     if profile.get('vision'):
                         vision = profile
-                limits = self.settings()[data.get('effort', 'moderate')]
                 now = time.time()
                 run = self.store.put('agent_run', dict(account=account, thread_id=id, status='queued', stage='等待执行',
                     trace_id=diagnostic_context.get().get('trace_id') or new_id(),
-                    created=now, started_at=now, deadline=now + limits['seconds'], elapsed_seconds=0, segment_started=now,
-                    limits=limits, used={'tools': 0, 'models': 0, 'media': 0}, version=1, applied_version=0,
+                    created=now, started_at=now, elapsed_seconds=0, segment_started=now,
+                    used={'tools': 0, 'models': 0, 'media': 0}, version=1, applied_version=0,
                     profile=public_profile(profile), vision=public_profile(vision) if vision else {},
                     observations=[], activity=[], answer='', error='', time_range={}, read_count=0, finished_at=None,
                     cutoff=int(now), effort=data.get('effort', 'moderate'), request_ids=[data['request_id']], scope_input_index=0,
-                    input_budget=self.settings()['input_budget'], scope_revision=thread['scope_revision']))
+                    input_budget=input_limit(profile), scope_revision=thread['scope_revision']))
                 if previous_id:
                     self.workspace.inherit(previous_id,run['id'])
                     # 新运行的首个接口快照也必须遵守当前授权，不能等模型解析完成才过滤。
@@ -220,8 +213,10 @@ class AgentService(AgentContext, AgentTimeline):
             if run['status'] in ACTIVE:
                 return run
             now = time.time()
+            await self.ai.models.metadata.refresh()
+            profile = self.ai.models.resolve(run['profile']['id'])
             self.update(id, status='queued', error='', error_info=None, finished_at=None, segment_started=now,
-                        deadline=now + run['limits']['seconds'], used={'tools': 0, 'models': 0, 'media': 0})
+                        profile=public_profile(profile), input_budget=input_limit(profile), context_retries=0)
             self.launch(id)
             return self.run(id)
 
@@ -400,10 +395,11 @@ class AgentService(AgentContext, AgentTimeline):
         except ContextOverflow:
             current = self.run(id)
             retries = current.get('context_retries',0)
-            if retries >= 2 or current.get('input_budget',12000) <= 4096:
+            capacity = self.budget(current)
+            if retries >= 2 or capacity <= 4096:
                 raise ProviderFailure('当前模型窗口不足以完成此步骤，资料和进度已保留；请调整模型或缩小问题后重试。')
-            self.update(id,input_budget=max(4096,current.get('input_budget',12000)//2),context_retries=retries+1,context_status='compacting',pending_actions=[])
-            diagnostic_event('agent.context.reduced', level=logging.WARNING, run_id=id, previous_budget=current.get('input_budget',12000), input_budget=max(4096,current.get('input_budget',12000)//2), attempt=retries+1)
+            self.update(id,input_budget=max(4096,capacity//2),context_retries=retries+1,context_status='compacting',pending_actions=[])
+            diagnostic_event('agent.context.reduced', level=logging.WARNING, run_id=id, previous_budget=capacity, input_budget=max(4096,capacity//2), attempt=retries+1)
             return {'done':False}
         except Revised:
             diagnostic_event('agent.input.superseded', run_id=id, version=self.run(id)['version'])
@@ -582,7 +578,10 @@ class AgentService(AgentContext, AgentTimeline):
             self.store.put('agent_thread', thread)
 
     def citations(self, run):
-        requested = list(dict.fromkeys(re.findall(r'\[\[([^\]]+)\]\]',run.get('answer',''))))
+        # 过程消息也会引用较早读到的资料，不能只返回最终答案和前 20 条来源。
+        texts = [run.get('answer', '')] + [item.get('text', '') for item in run.get('timeline', []) if item.get('kind') == 'progress']
+        pattern = r'\[\[([a-fA-F0-9]{24})\]\]|[（(\[]\s*source\s*[:：]\s*([a-fA-F0-9]{24})\s*[）)\]]'
+        requested = list(dict.fromkeys((a or b).lower() for text in texts for a, b in re.findall(pattern, text, re.I)))
         requested += [s['source'] for s in (run.get('answer_context') or {}).get('sources',[])]
         values = {x['source']:self.public_source(x) for x in run['evidence'].rows(limit=20)}
         for source in requested[:200]:
@@ -620,26 +619,26 @@ class AgentService(AgentContext, AgentTimeline):
             run = self.guard(id)
             if run['applied_version'] and run['version'] != run['applied_version'] and run.get('applying_version') != run['version']:
                 raise Revised()
-            active_budget.set(run.get('input_budget',12000))
+            active_budget.set(run.get('input_budget') or input_limit(self.profile(run)))
             self.spend(id, 'models')
         hook = model_attempt_hook.set(before_model)
-        budget_token = active_budget.set(self.run(id).get('input_budget',12000))
+        budget_token = active_budget.set(self.budget(self.run(id)))
         feedback = agent_feedback.set(lambda data: self.model_feedback(id, data))
         try:
             self.update(id, status='running')
             graph = StateGraph(State)
             graph.add_node('step', self.step)
             graph.add_edge(START, 'step')
-            graph.add_conditional_edges('step', lambda s: END if s.get('done') else 'step')
+            graph.add_edge('step', END)
             async with AsyncSqliteSaver.from_conn_string(str(self.store.root / 'agent_checkpoints.sqlite3')) as saver:
                 compiled = graph.compile(checkpointer=saver)
                 with tracing_context(enabled=False):
-                    async with asyncio.timeout(max(.1, self.run(id)['deadline'] - time.time())):
-                        # 节点仅存 run ID；完整证据与补充版本由业务记录持久化，恢复不重发用户消息。
-                        await compiled.ainvoke({'run_id': id, 'done': False}, {'configurable': {'thread_id': id}, 'recursion_limit': 1000, 'callbacks': []})
-        except (BudgetReached, TimeoutError) as exc:
-            diagnostic_event('agent.budget.paused', error=exc, run_id=id)
-            self.finish(id, 'budget', str(exc) or '已达到本轮运行时间上限，点击继续查找。')
+                    # 每步单独提交检查点，不受图递归次数或整轮运行时长限制。
+                    while True:
+                        self.guard(id)
+                        state = await compiled.ainvoke({'run_id': id, 'done': False}, {'configurable': {'thread_id': id}, 'callbacks': []})
+                        if state.get('done'):
+                            break
         except asyncio.CancelledError:
             saved = self.store.get('agent_run', id)
             if saved and saved['status'] in ACTIVE:

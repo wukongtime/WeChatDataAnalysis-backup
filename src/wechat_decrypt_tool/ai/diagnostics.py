@@ -272,7 +272,7 @@ def observed(name, *, id_field=None, execution=False):
             return values, fields
         def failed(error):
             control = isinstance(error, asyncio.CancelledError) or type(error).__name__ in {
-                'TaskCancelled', 'BudgetReached', 'Revised', 'AgentControl'} or getattr(error, 'category', '') == 'cancelled'
+                'TaskCancelled', 'Revised', 'AgentControl'} or getattr(error, 'category', '') == 'cancelled'
             event(name + ('.interrupted' if control else '.failed'),
                   level=logging.INFO if control else logging.WARNING if type(error).__name__=='ContextOverflow' else logging.ERROR, error=error)
         if inspect.iscoroutinefunction(function):

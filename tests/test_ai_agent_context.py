@@ -79,7 +79,7 @@ def test_overview_cannot_answer_before_every_chat_and_page(service,mode):
         assert all('关键变化'+str(i) in result['answer'] for i in (0,60,120))
         assert all('[['+s+']]' in result['answer'] for item in findings['items'] for s in item['sources'])
         if mode=='list':assert result['answer'].startswith('已保存 **6 条分析发现**')
-        assert max(counts['requests'])<12000
+        assert max(counts['requests']) < service.budget(service.run(task['id']))
         assert 'evidence' not in service.store.get('agent_run',task['id'])
     asyncio.run(run())
 
@@ -103,20 +103,11 @@ def test_statistics_exact_and_names_do_not_merge_across_chats(service):
     asyncio.run(run())
 
 
-def test_budget_resume_does_not_repeat_completed_segments(service):
+def test_all_segments_complete_without_quota_pauses(service):
     async def run():
         counts=setup_analysis(service,total=121)
         service.store.put('agent_settings',{'moderate':{'tools':1,'models':400,'media':8,'seconds':300}},id='global')
         _,task=await submit(service,'最近三天聊了什么')
-        await service.workers[task['id']]
-        assert service.run(task['id'])['status']=='budget'
-        first=counts['extract']
-        await service.resume(task['id'],'account')
-        await service.workers[task['id']]
-        assert service.run(task['id'])['status']=='budget'
-        assert service.tools.calls==[('friend',0),('friend',50)]
-        assert counts['extract']>first
-        await service.resume(task['id'],'account')
         await service.workers[task['id']]
         assert service.run(task['id'])['status']=='completed'
         assert service.tools.calls==[('friend',0),('friend',50),('friend',100)]
@@ -214,7 +205,7 @@ def test_window_error_reduces_pending_segment_instead_of_resending_same_payload(
         _,task=await submit(service,'最近三天聊了什么')
         await service.workers[task['id']]
         result=service.run(task['id'])
-        assert result['input_budget']==6000
+        assert result['input_budget']==16384
         assert result['status']=='completed',result.get('error')
         assert retried[0] < failed[0]
     asyncio.run(run())

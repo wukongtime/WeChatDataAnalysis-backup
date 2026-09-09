@@ -44,6 +44,28 @@ def test_all_presets_can_be_created_read_and_edited(tmp_path):
         asyncio.run(run())
 
 
+def test_manual_capabilities_survive_save_reload_and_runtime_resolution(tmp_path):
+    service = AIService(AIStore(tmp_path))
+    service.models.metadata.data = {'openai':{'name':'OpenAI','models':{'fixture':{
+        'limit':{'context':128000,'output':16384},'modalities':{'input':['text','image']},'tool_call':True}}}}
+    app = FastAPI(); app.include_router(ai.router)
+    body = {'provider':'openai','name':'测试','model':'fixture','base_url':'https://api.openai.com/v1',
+            'model_overrides':{'context_window':64000,'vision':False,'tool_call':False}}
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app,client=('127.0.0.1',1)),base_url='http://localhost') as client:
+            created = await client.post('/api/ai/profiles',json=body)
+            assert created.status_code == 200, created.text
+            saved = created.json()
+            assert saved['context_window'] == 64000 and saved['vision'] is False
+            loaded = (await client.get('/api/ai/settings')).json()['profiles'][0]
+            assert loaded['model_overrides']['tool_call'] is False
+            assert service.models.resolve(saved['id'])['model_metadata']['tool_call'] is False
+            restored = await client.put('/api/ai/profiles/'+saved['id'],json={**body,'model_overrides':{}})
+            assert restored.json()['context_window'] == 128000 and restored.json()['vision'] is True
+    with patch.object(ai,'get_ai_service',return_value=service):
+        asyncio.run(run())
+
+
 def test_local_only_profiles_masking_and_defaults(tmp_path):
     service = AIService(AIStore(tmp_path))
     app = FastAPI(); app.include_router(ai.router)

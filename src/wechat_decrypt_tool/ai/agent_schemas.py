@@ -4,21 +4,13 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator, model_valida
 
 
 class AgentControl(RuntimeError):
-    """预算与补充指令造成的流程切换，不属于供应商错误。"""
+    """停止与补充指令造成的流程切换，不属于供应商错误。"""
     pass
 
 
-class Limits(BaseModel):
-    tools: int = Field(12, ge=1, le=200)
-    models: int = Field(24, ge=1, le=400)
-    media: int = Field(8, ge=1, le=200)
-    seconds: int = Field(300, ge=30, le=3600)
-
-
 class AgentSettings(BaseModel):
-    moderate: Limits = Field(default_factory=Limits)
-    deep: Limits = Field(default_factory=lambda: Limits(tools=36, models=72, media=24, seconds=900))
-    input_budget: int = Field(12000, ge=2048, le=1000000)
+    # 仅用于接收旧客户端请求，忽略历史额度字段。
+    pass
 
 
 class ThreadInput(BaseModel):

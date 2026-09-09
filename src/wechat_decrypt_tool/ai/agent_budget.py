@@ -18,14 +18,21 @@ def size(value):
 
 
 def input_limit(profile):
-    limit = active_budget.get() or profile.get('input_budget', 12000)
     window = profile.get('context_window')
+    limit = active_budget.get() or profile.get('input_budget') or window or 32768
     if window:
         limit = min(limit, max(512, int(window) - output_limit(profile) - 512))
+    upstream_input = profile.get('model_metadata', {}).get('limit', {}).get('input')
+    if isinstance(upstream_input, int) and upstream_input > 0:
+        limit = min(limit, upstream_input)
     return int(limit)
 
 
 def output_limit(profile):
+    output = profile.get('model_metadata', {}).get('limit', {}).get('output')
+    if isinstance(output, int) and output > 0:
+        # 输入输出共享窗口时，为请求正文留出空间。
+        return min(output, max(256, int(profile.get('context_window') or output * 2) // 2))
     return min(4096, max(256, int(profile.get('context_window') or 32768) // 4))
 
 

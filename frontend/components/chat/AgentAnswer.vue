@@ -15,8 +15,8 @@
 </template>
 <script setup>
 import { computed, inject, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
-import MarkdownIt from 'markdown-it'
-const props = defineProps({ text: { type: String, default: '' }, citations: { type: Array, default: () => [] } })
+import { renderAgentMarkdown } from '~/utils/agentMarkdown'
+const props = defineProps({ text: { type: String, default: '' }, citations: { type: Array, default: () => [] }, streaming: Boolean })
 const emit = defineEmits(['locate'])
 const navigation = inject('agentSourceNavigation', null)
 const answer = ref(null), preview = ref(null), selected = ref(null)
@@ -24,14 +24,7 @@ const previewId = `agent-source-${useId()}`
 const selectedNumber = ref(0), locating = ref(false), located = ref(false), locateError = ref('')
 let trigger = null, observer = null, revision = 0
 // 原始 HTML、远程图片和自动链接均禁用；只渲染本地已核验的来源按钮。
-const md = new MarkdownIt({ html: false, linkify: false, breaks: true })
-md.renderer.rules.image = () => '[图片]'
-md.renderer.rules.link_open = () => '<span>'
-md.renderer.rules.link_close = () => '</span>'
-const rendered = computed(() => {
-  const ids = [...new Set([...props.text.matchAll(/\[\[([a-f0-9]{24})\]\]/g)].map(m => m[1]))]
-  return md.render(props.text).replace(/\[\[([a-f0-9]{24})\]\]/g, (_, id) => props.citations.some(c => c.source === id) ? `<button type="button" class="agent-ref" data-source="${id}" aria-haspopup="dialog" aria-expanded="false" aria-label="查看来源 ${ids.indexOf(id) + 1}">${ids.indexOf(id) + 1}</button>` : '[来源待核实]')
-})
+const rendered = computed(() => renderAgentMarkdown(props.text, props.citations, props.streaming))
 const closePreview = (restoreFocus = false) => {
   ++revision
   observer?.disconnect(); observer = null

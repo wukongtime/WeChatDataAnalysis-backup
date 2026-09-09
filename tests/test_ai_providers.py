@@ -36,7 +36,9 @@ def test_model_payload_formats_and_capabilities():
     entries = [" new-model ", {"model": "new-model"}, {"name": "picture", "input_modalities": ["text", "image"]}, {"id": "text", "capabilities": {"vision": False}}, None, {"id": ""}]
     expected = [{"id": "new-model", "vision": None}, {"id": "picture", "vision": True}, {"id": "text", "vision": False}]
     for payload in (entries, {"data": entries}, {"models": entries}, {"items": {"data": entries}}):
-        assert parse_model_catalog(payload) == expected
+        parsed = parse_model_catalog(payload)
+        assert [{key: item[key] for key in ('id', 'vision')} for item in parsed] == expected
+        assert parsed[1]['modalities']['input'] == ['text', 'image']
     assert parse_model_catalog({"error": "unauthorized"}) == []
 
 
@@ -54,6 +56,26 @@ def test_anthropic_catalog_pagination_and_auth(tmp_path, monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
     result = asyncio.run(ModelService(AIStore(tmp_path)).models({"base_url": "https://example.com", "protocol": "anthropic", "api_key": "dummy"}))
     assert result == ["first", "next"] and len(requests) == 2
+
+
+def test_catalog_returns_and_persists_upstream_capabilities(tmp_path, monkeypatch):
+    import httpx
+    original = httpx.AsyncClient
+    def respond(request):
+        return httpx.Response(200, json={'data':[{'id':'fixture','context_length':64000,
+            'top_provider':{'max_completion_tokens':8000},'architecture':{'input_modalities':['text']},
+            'supported_parameters':['temperature','tools']}]})
+    monkeypatch.setattr(httpx,'AsyncClient',lambda **kwargs:original(transport=httpx.MockTransport(respond),**kwargs))
+    models = ModelService(AIStore(tmp_path))
+    models.metadata.data = {'openai':{'models':{'fixture':{'reasoning':True,
+        'limit':{'context':128000,'output':16384},'modalities':{'input':['text','image']}}}}}
+    profile = {'id':'selected','model':'fixture','provider':'openai','protocol':'openai','base_url':'https://api.example/v1'}
+    detail = asyncio.run(models.catalog(profile))[0]
+    assert detail['limit'] == {'context':64000,'output':8000}
+    assert detail['vision'] is False and detail['tool_call'] is True
+    assert detail['structured_output'] is False
+    models.store.put('profile',profile,id='selected')
+    assert models.resolve('selected')['context_window'] == 64000
 
 
 @pytest.mark.parametrize("preset", PRESETS, ids=lambda p: p["provider"])

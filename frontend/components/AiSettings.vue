@@ -13,7 +13,6 @@
         <i class="fa-solid" :class="tab.icon" aria-hidden="true"></i><span class="ais-tab-copy"><strong>{{ tab.label }}</strong><small>{{ tab.hint }}</small></span>
       </button>
     </div>
-    <AgentSettings v-if="activeTab === 'agent'" id="ais-agent" role="tabpanel" aria-labelledby="ais-agent-tab" />
     <LocalSearchSettings v-if="activeTab === 'local'" id="ais-local" role="tabpanel" aria-labelledby="ais-local-tab" />
     <p v-if="error" role="alert" class="ais-feedback is-error">{{ error }}</p>
     <p v-if="notice" role="status" class="ais-feedback is-success"><i class="fa-solid fa-circle-check" aria-hidden="true"></i>{{ notice }}</p>
@@ -31,7 +30,7 @@
       <div class="ais-service-list">
         <button v-for="p in profiles" :key="p.id" type="button" class="ais-service-card" :disabled="busy" :aria-label="`编辑 ${p.name}`" @click="edit(p)">
           <AiProviderIcon :provider="p.provider" />
-          <span class="ais-service-copy"><strong>{{ p.name }}</strong><small>{{ p.model }}</small></span>
+          <span class="ais-service-copy"><strong>{{ p.name }}</strong><small>{{ p.model }}</small><small v-if="p.context_window">上下文 {{ formatNumber(p.context_window) }} tokens</small></span>
           <span v-if="p.vision" class="ais-tag">支持图片</span><i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
         </button>
         <div v-if="!profiles.length" class="ais-empty"><i class="fa-solid fa-plug" aria-hidden="true"></i><h4>连接你的第一个 AI 服务</h4><p>选择服务商，填写密钥，即可获取可用模型。</p></div>
@@ -39,7 +38,7 @@
       <p class="ais-footnote">密钥仅保存在本机。分析内容将发送至你选择的服务。</p>
 
       <Teleport to="body">
-      <div v-if="dialogStep" class="ais-dialog-overlay" @click.self="closeDialog" @keydown.stop="onDialogKeydown">
+      <div v-if="dialogStep" class="ais-dialog-overlay" @pointerdown="onBackdropPointerDown" @pointerup="onBackdropPointerUp" @pointercancel="backdropPressed = false" @click="onBackdropClick" @keydown.stop="onDialogKeydown">
       <section ref="dialogPanel" class="ai-settings ais-dialog" :class="{ 'ais-provider-picker': dialogStep === 'providers' }" role="dialog" aria-modal="true" aria-labelledby="ais-dialog-title" tabindex="-1">
         <header class="ais-dialog-heading"><div><h3 id="ais-dialog-title">{{ dialogStep === 'providers' ? '选择 AI 服务' : editId ? '编辑 AI 服务' : '添加 AI 服务' }}</h3><p>{{ dialogStep === 'providers' ? '选择服务商，也可以连接兼容接口的自定义服务。' : '连接服务后，从上游获取并选择可用模型。' }}</p></div><button type="button" class="ais-icon-button" aria-label="关闭服务弹窗" :disabled="busy" @click="closeDialog"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button></header>
         <template v-if="dialogStep === 'providers'">
@@ -79,21 +78,27 @@
             <p v-if="modelError" role="alert" class="ais-feedback is-error">{{ modelError }}</p>
             <template v-if="!manualModel">
               <div class="ais-model-controls">
-                <UiSelect v-model="form.model" label="选择模型" mono :disabled="modelsLoading || !models.length" :options="modelOptions" :placeholder="modelsLoading ? '正在加载模型…' : isLocalService ? '启动本地服务后，从上游获取模型' : '填写密钥后，从上游获取模型'" @change="selectModel" />
-                <label v-if="models.length" class="ais-model-search"><span class="ais-sr-only">搜索模型</span><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><input v-model="modelSearch" type="search" placeholder="搜索上游返回的模型" /></label>
+                <UiSelect v-model="form.model" label="选择模型" mono searchable search-placeholder="搜索模型" :disabled="modelsLoading || !models.length" :options="modelOptions" :placeholder="modelsLoading ? '正在加载模型…' : isLocalService ? '启动本地服务后，从上游获取模型' : '填写密钥后，从上游获取模型'" @change="selectModel" />
               </div>
-              <p v-if="modelSearch && !filteredModels.length" class="ais-muted">没有匹配的模型，试试其他名称。</p>
             </template>
-            <label v-else>模型名称<input v-model.trim="form.model" class="ais-mono" required placeholder="上游不支持获取列表时手动填写" /></label>
+            <label v-else>模型名称<input v-model.trim="form.model" class="ais-mono" required placeholder="上游不支持获取列表时手动填写" @blur="fetchMetadata" /></label>
             <label class="ais-manual"><input v-model="manualModel" type="checkbox" />手动输入（备用）</label>
-            <label>模型上下文窗口（可选）<input v-model.number="form.context_window" type="number" min="4096" max="10000000" placeholder="已知时填写 Token 数，留空不猜测" /></label>
+            <div class="ais-section-heading"><h5>模型能力</h5><button v-if="hasOverrides" type="button" class="ais-refresh" @click="restoreAutomatic">恢复自动识别</button></div>
+            <p class="ais-muted">模型能力将自动识别，你也可以按需调整。</p>
+            <label>模型上下文窗口（tokens） · {{ capabilitySource('context_window') }}<input v-model.number="form.context_window" type="number" min="4096" max="10000000" placeholder="自动识别，或手动填写" @input="setOverride('context_window', $event.target.value ? Number($event.target.value) : null)" /></label>
           </div>
 
           <label class="ais-vision">
             <span class="ais-vision-icon"><i class="fa-regular fa-image" aria-hidden="true"></i></span>
-            <span class="ais-vision-copy"><strong>此模型支持图片理解</strong><small>用于图片与扫描文档；请确认所选模型支持视觉输入。</small></span>
-            <input v-model="form.vision" class="ais-switch" type="checkbox" role="switch" />
+            <span class="ais-vision-copy"><strong>此模型支持图片理解</strong><small>{{ capabilitySource('vision') }} · 可手动调整，用于图片与扫描文档。</small></span>
+            <input v-model="form.vision" class="ais-switch" type="checkbox" role="switch" @change="setOverride('vision', $event.target.checked)" />
           </label>
+          <details class="ais-capability-options"><summary>其他能力与参数</summary>
+            <label>最大输出（tokens） · {{ capabilitySource('max_output_tokens') }}<input :value="form.model_overrides.max_output_tokens ?? selectedMetadata?.limit?.output ?? ''" type="number" min="1" max="10000000" placeholder="自动识别，或手动填写" @input="setOverride('max_output_tokens', $event.target.value ? Number($event.target.value) : null)" /></label>
+            <label v-for="field in editableCapabilities" :key="field.key">{{ field.label }}<UiSelect :model-value="overrideChoice(field.key)" :label="field.label" :options="capabilityOptions(field.key)" @update:model-value="setOverride(field.key, $event === 'auto' ? null : $event === 'yes')" /></label>
+            <AiModelMetadata v-if="selectedMetadata" :metadata="selectedMetadata" />
+            <p v-else class="ais-muted">暂未获取到参考参数，使用上方手动配置。</p>
+          </details>
           </div>
         </div>
         <footer class="ais-editor-footer">
@@ -132,7 +137,7 @@
 </template>
 
 <script setup>
-import AgentSettings from './AgentSettings.vue'
+import AiModelMetadata from './AiModelMetadata.vue'
 import LocalSearchSettings from './LocalSearchSettings.vue'
 import AiProviderIcon from './AiProviderIcon.vue'
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
@@ -142,7 +147,6 @@ const activeTab = ref('config')
 const settingsTabs = [
   {id:'config',label:'模型服务',hint:'连接与默认模型',icon:'fa-plug'},
   {id:'local',label:'本地检索',hint:'按意思查找聊天',icon:'fa-magnifying-glass'},
-  {id:'agent',label:'Agent',hint:'对话与查找偏好',icon:'fa-comment-dots'},
   {id:'usage',label:'用量记录',hint:'调用明细与消耗',icon:'fa-chart-simple'},
 ]
 function navigateTabs(event,id){
@@ -186,9 +190,24 @@ const filteredPresets = computed(() => {
 })
 const dialogStep = ref(''), dialogPanel = ref(null)
 let returnFocus = null
+let backdropPressed = false
+// 拖选文字时，浏览器可能把弹窗内按下、遮罩上松开的 click 派发到遮罩。
+// 只有按下和松开都发生在遮罩上的主键点击才关闭弹窗。
+const onBackdropPointerDown = event => {
+  backdropPressed = event.button === 0 && event.isPrimary !== false && event.target === event.currentTarget
+}
+const onBackdropPointerUp = event => {
+  backdropPressed = backdropPressed && event.target === event.currentTarget
+}
+const onBackdropClick = event => {
+  const shouldClose = backdropPressed && event.target === event.currentTarget
+  backdropPressed = false
+  if (shouldClose) closeDialog()
+}
 const focusDialog = () => nextTick(() => dialogPanel.value?.focus())
 const closeDialog = () => {
   if (busy.value) return
+  backdropPressed = false
   dialogStep.value = ''; key.value = ''; error.value = ''
   invalidateModels()
   nextTick(() => { if (returnFocus?.isConnected) returnFocus.focus() })
@@ -225,7 +244,7 @@ const exportAudit = () => {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 const defaults = reactive({ text: '', vision: '' })
-const blank = () => ({ provider: 'deepseek', name: 'DeepSeek', protocol: 'openai', base_url: 'https://api.deepseek.com/v1', model: '', vision: false, context_window: null })
+const blank = () => ({ provider: 'deepseek', name: 'DeepSeek', protocol: 'openai', base_url: 'https://api.deepseek.com/v1', model: '', vision: false, context_window: null, model_overrides: {} })
 const form = reactive(blank())
 // 切换预设后明确清空凭据，不让后端复用原配置的密钥。
 const credentialsReset = ref(false)
@@ -233,23 +252,57 @@ const isLocalService = computed(() => {
   if (!['ollama', 'lmstudio'].includes(form.provider)) return false
   try { return ['localhost', '127.0.0.1', '[::1]'].includes(new URL(form.base_url).hostname) } catch { return false }
 })
-const manualModel = ref(false), modelSearch = ref(''), modelDetails = ref([]), modelError = ref(''), modelsLoading = ref(false)
-const filteredModels = computed(() => models.value.filter(m => m.toLowerCase().includes(modelSearch.value.trim().toLowerCase())))
+const manualModel = ref(false), modelDetails = ref([]), modelError = ref(''), modelsLoading = ref(false)
+const manualMetadata = ref(null)
+const selectedMetadata = computed(() => {
+  const detail = modelDetails.value.find(x => x.id === form.model && x.source)
+  return detail || (manualMetadata.value?.id === form.model ? manualMetadata.value : null)
+})
+const hasOverrides = computed(() => Object.values(form.model_overrides).some(value => value != null))
+const editableCapabilities = [{key:'tool_call',label:'工具调用'},{key:'structured_output',label:'结构化输出'},{key:'reasoning',label:'推理'},{key:'temperature',label:'温度参数'},{key:'attachment',label:'附件输入'}]
+const overrideChoice = key => form.model_overrides[key] == null ? 'auto' : form.model_overrides[key] ? 'yes' : 'no'
+const capabilityOptions = key => [{value:'auto',label:`自动（${selectedMetadata.value?.[key] === true ? '支持' : selectedMetadata.value?.[key] === false ? '不支持' : '未知'}）`},{value:'yes',label:'支持'},{value:'no',label:'不支持'}]
+const capabilitySource = key => {
+  if (form.model_overrides[key] != null) return '手动设置'
+  const known = key === 'context_window' ? selectedMetadata.value?.limit?.context : key === 'max_output_tokens' ? selectedMetadata.value?.limit?.output : selectedMetadata.value?.[key]
+  return known == null ? '未识别' : '自动识别'
+}
+const setOverride = (key, value) => {
+  if (value == null) { delete form.model_overrides[key]; selectModel() }
+  else form.model_overrides[key] = value
+}
+const restoreAutomatic = async () => {
+  form.model_overrides = {}; form.context_window = null; form.vision = false
+  await fetchMetadata(); selectModel(false)
+}
+let metadataRequest = 0
+const fetchMetadata = async () => {
+  const request = ++metadataRequest
+  if (!form.model) { manualMetadata.value = null; return }
+  try {
+    const params = new URLSearchParams({ provider: form.provider, model: form.model, base_url: form.base_url, protocol: form.protocol })
+    const data = await api.request(`/model-metadata?${params}`)
+    if (request !== metadataRequest) return
+    manualMetadata.value = data.metadata || null
+    if (manualMetadata.value) selectModel()
+  } catch { if (request === metadataRequest) manualMetadata.value = null }
+}
+watch(() => form.model, () => { metadataRequest++; manualMetadata.value = null; form.context_window = null; form.vision = false; form.model_overrides = {} }, { flush: 'sync' })
 const modelOptions = computed(() => {
-  const options = filteredModels.value.map(model => ({ value: model, label: model, description: modelDetails.value.find(x => x.id === model)?.vision === true ? '支持图片理解' : '' }))
+  const options = models.value.map(model => ({ value: model, label: model, description: modelDetails.value.find(x => x.id === model)?.vision === true ? '支持图片理解' : '' }))
   if (form.model && !options.some(option => option.value === form.model)) options.unshift({ value: form.model, label: form.model, description: models.value.includes(form.model) ? '当前选择' : '未在上游列表中确认', disabled: true })
   return options
 })
 let modelRequest = 0, fetchedSignature = ''
 const discoverySignature = () => JSON.stringify([editId.value, form.base_url, form.protocol, key.value])
 const invalidateModels = () => {
-  modelRequest++; modelsLoading.value = false; models.value = []; modelDetails.value = []
-  modelError.value = ''; modelSearch.value = ''; fetchedSignature = ''
+  modelRequest++; metadataRequest++; manualMetadata.value = null; modelsLoading.value = false; models.value = []; modelDetails.value = []
+  modelError.value = ''; fetchedSignature = ''
 }
 watch([editId, () => form.base_url, () => form.protocol, key], () => {
   invalidateModels(); form.model = ''; form.vision = false
 }, { flush: 'sync' })
-onBeforeUnmount(() => { modelRequest++; key.value = '' })
+onBeforeUnmount(() => { modelRequest++; metadataRequest++; key.value = '' })
 const action = async (fn) => {
   if (busy.value) return
   busy.value = true; error.value = ''; notice.value = ''
@@ -266,6 +319,8 @@ const edit = (p) => {
   dialogStep.value = 'edit'; error.value = ''; notice.value = ''; focusDialog()
   invalidateModels(); editId.value = p.id; key.value = ''; credentialsReset.value = false; manualModel.value = false
   Object.assign(form, p); form.model = p.model; form.vision = p.vision
+  form.model_overrides = { ...(p.model_overrides || {}) }
+  manualMetadata.value = p.automatic_metadata || p.model_metadata || null
   void getModels()
 }
 const applyPreset = () => {
@@ -275,23 +330,26 @@ const applyPreset = () => {
   invalidateModels(); form.model = ''; form.vision = false
 }
 const save = () => action(async () => {
+  if (manualModel.value) await fetchMetadata()
   const body = { ...form, context_window: form.context_window || null, api_key: key.value.trim() || (editId.value && !credentialsReset.value ? null : '') }
   await api.request(editId.value ? `/profiles/${editId.value}` : '/profiles', { method: editId.value ? 'PUT' : 'POST', body })
   await load(); key.value = ''; dialogStep.value = ''; invalidateModels(); notice.value = '配置已保存'
   nextTick(() => returnFocus?.isConnected && returnFocus.focus())
 })
 const saveDefaults = () => action(async () => { await api.request('/defaults', { method: 'PUT', body: defaults }); notice.value = '默认模型已保存' })
-const selectModel = () => {
-  const detail = modelDetails.value.find(x => x.id === form.model)
+const selectModel = (keepSaved = true) => {
+  const detail = selectedMetadata.value || modelDetails.value.find(x => x.id === form.model)
   const saved = profiles.value.find(x => x.id === editId.value)
-  form.vision = typeof detail?.vision === 'boolean' ? detail.vision : (saved?.model === form.model ? saved.vision : false)
+  const sameSaved = keepSaved && saved?.model === form.model && saved?.base_url === form.base_url && saved?.protocol === form.protocol
+  form.vision = form.model_overrides.vision ?? (typeof detail?.vision === 'boolean' ? detail.vision : (sameSaved && saved.model_overrides?.vision == null ? saved.vision : false))
+  form.context_window = form.model_overrides.context_window ?? detail?.limit?.context ?? (sameSaved && saved.model_overrides?.context_window == null ? saved.context_window : null) ?? null
 }
 const getModels = async () => {
   if (busy.value || modelsLoading.value) return
   const request = ++modelRequest, signature = discoverySignature()
   modelsLoading.value = true; modelError.value = ''
   try {
-    const data = await api.request('/models', { method: 'POST', body: { base_url: form.base_url, protocol: form.protocol, api_key: key.value.trim() || (credentialsReset.value ? '' : null), profile_id: editId.value } })
+    const data = await api.request('/models', { method: 'POST', body: { provider: form.provider, base_url: form.base_url, protocol: form.protocol, api_key: key.value.trim() || (credentialsReset.value ? '' : null), profile_id: editId.value } })
     // 切换配置或修改凭据后，迟到的响应不能覆盖当前模型列表。
     if (request !== modelRequest) return
     models.value = data.models || []; modelDetails.value = data.model_details || []; fetchedSignature = signature
@@ -301,6 +359,8 @@ const getModels = async () => {
       selectModel()
     } else if (!models.value.includes(form.model)) {
       modelError.value = '已保存模型未出现在上游列表中，请重新选择，或启用手动输入保留。'
+    } else {
+      selectModel()
     }
   } catch (e) {
     if (request === modelRequest) modelError.value = isLocalService.value ? `${e.message}。请检查本地服务是否已启动、地址和端口是否正确；启用鉴权时请填写密钥，也可使用手动输入。` : e.message

@@ -51,15 +51,28 @@ def get_record(kind, id, account=None):
 
 
 @router.get("/settings")
-def settings():
+async def settings():
     service = get_ai_service()
-    return {"presets": PRESETS, "profiles": [public_profile(p) for p in service.store.list("profile")],
+    await service.models.metadata.refresh()
+    return {"presets": PRESETS, "profiles": [public_profile(service.models.metadata.enrich(p)) for p in service.store.list("profile")],
             "defaults": service.store.get("defaults", "global") or {"text": "", "vision": ""}}
+
+
+@router.get('/model-metadata')
+async def model_metadata(provider: str, model: str, base_url: str = '', protocol: str = 'openai'):
+    catalog = get_ai_service().models.metadata
+    await catalog.refresh()
+    return {'metadata': catalog.automatic({'provider': provider, 'model': model, 'base_url': base_url, 'protocol': protocol})}
 
 
 def write_profile(body, id=None):
     service = get_ai_service()
     profile = body.model_dump()
+    # 旧客户端没有来源标记时，明确传入的配置仍视为用户设置。
+    if 'model_overrides' not in body.model_fields_set:
+        profile['model_overrides'] = {key: profile[key] for key in ('vision', 'context_window')
+                                      if key in body.model_fields_set and profile[key] is not None}
+    profile = service.models.metadata.enrich(profile)
     try:
         validate_url(profile["base_url"])
     except ValueError as exc:
@@ -77,12 +90,14 @@ def write_profile(body, id=None):
 
 
 @router.post("/profiles")
-def create_profile(body: ProviderInput):
+async def create_profile(body: ProviderInput):
+    await get_ai_service().models.metadata.refresh()
     return write_profile(body)
 
 
 @router.put("/profiles/{id}")
-def update_profile(id: str, body: ProviderInput):
+async def update_profile(id: str, body: ProviderInput):
+    await get_ai_service().models.metadata.refresh()
     return write_profile(body, id)
 
 
@@ -105,7 +120,7 @@ def delete_profile(id: str):
 def save_defaults(body: Defaults):
     for key, value in body.model_dump().items():
         if value:
-            profile = get_record("profile", value)
+            profile = get_ai_service().models.metadata.enrich(get_record("profile", value))
             if key == "vision" and not profile["vision"]:
                 raise HTTPException(422, "默认视觉模型必须启用图片能力")
     saved = get_ai_service().store.put('defaults', body.model_dump(), id='global')
@@ -142,7 +157,7 @@ async def draft_models(body: ModelListInput):
 async def test_profile(id: str):
     diagnostic_event('profile.connection.started', profile_id=id)
     try:
-        profile = get_record("profile", id)
+        profile = get_ai_service().models.metadata.enrich(get_record("profile", id))
         images = None
         if profile.get("vision"):
             import io

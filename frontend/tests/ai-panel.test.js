@@ -212,7 +212,7 @@ describe('全局 AI 设置', () => {
     expect(call[1].body).not.toHaveProperty('model')
     expect(call[1].body).not.toHaveProperty('name')
     expect(wrapper.find('[role=combobox][aria-label="选择模型"]').text()).toContain('future-image')
-    expect(wrapper.find('input[type=search]').exists()).toBe(true)
+    expect(wrapper.find('input[type=search]').exists()).toBe(false)
     expect(wrapper.findAll('button').find(b => b.text() === '保存配置').attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })

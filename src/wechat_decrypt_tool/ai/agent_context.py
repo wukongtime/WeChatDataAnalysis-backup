@@ -42,14 +42,14 @@ class Background(BaseModel):
 
 class AgentContext:
     def budget(self, run):
-        token=active_budget.set(run.get('input_budget', self.settings()['input_budget']))
+        token=active_budget.set(run.get('input_budget') or input_limit(self.profile(run)))
         try:return input_limit(self.profile(run))
         finally:active_budget.reset(token)
 
     @observed('agent.context.context_call', id_field='run_id')
     async def context_call(self, id, prompt, schema):
         run = self.guard(id)
-        token = active_budget.set(run.get('input_budget', self.settings()['input_budget']))
+        token = active_budget.set(run.get('input_budget') or input_limit(self.profile(run)))
         try:
             result = await self.ai.models.invoke(self.profile(run), prompt, schema, account=run['account'])
             self.context_guard(run)

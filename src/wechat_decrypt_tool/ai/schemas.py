@@ -4,6 +4,17 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 
+class ModelOverrides(BaseModel):
+    context_window: int | None = Field(default=None, ge=4096, le=10000000)
+    max_output_tokens: int | None = Field(default=None, ge=1, le=10000000)
+    vision: bool | None = None
+    tool_call: bool | None = None
+    structured_output: bool | None = None
+    reasoning: bool | None = None
+    temperature: bool | None = None
+    attachment: bool | None = None
+
+
 class ProviderInput(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     provider: Literal[
@@ -16,6 +27,7 @@ class ProviderInput(BaseModel):
     model: str = Field(min_length=1, max_length=200)
     vision: bool = False
     context_window: int | None = Field(default=None, ge=4096, le=10000000)
+    model_overrides: ModelOverrides = Field(default_factory=ModelOverrides)
 
 
 class Defaults(BaseModel):
@@ -25,6 +37,7 @@ class Defaults(BaseModel):
 
 class ModelListInput(BaseModel):
     # 拉取模型不要求先填写配置名称和模型名称。
+    provider: str = ''
     base_url: str = Field(min_length=1, max_length=2048)
     protocol: Literal["openai", "anthropic"] = "openai"
     api_key: str | None = Field(default=None, max_length=4096)

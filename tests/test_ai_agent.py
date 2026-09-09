@@ -9,7 +9,8 @@ import pytest
 from fastapi import FastAPI
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from wechat_decrypt_tool.ai.agent_service import AgentService, BudgetReached, Revised
+from wechat_decrypt_tool.ai.agent_service import AgentService, Revised
+from wechat_decrypt_tool.ai.agent_schemas import AgentControl
 from wechat_decrypt_tool.ai.agent_schemas import AgentAction
 from wechat_decrypt_tool.ai.providers import ModelService, ProviderFailure, model_attempt_hook
 from wechat_decrypt_tool.ai.service import AIService
@@ -101,6 +102,25 @@ def test_graph_followup_preserves_evidence_and_citations(service):
         assert b'never-persist-this' not in data
         fresh = await service.create_thread('account', 'friend', '新的对话')
         assert fresh['messages'] == []
+    asyncio.run(run())
+
+
+def test_progress_citations_include_verified_sources_beyond_preview(service):
+    async def run():
+        _, task = await submit(service)
+        await service.workers[task['id']]
+        messages = {f'{i:024x}': {'source': f'{i:024x}', 'username': 'friend', 'anchor': str(i),
+                    'time': int(time.time()), 'text': f'原文 {i}', 'media': {}} for i in range(35)}
+        service.update(task['id'], evidence=messages, answer='', answer_context={})
+        # 选择默认预览之外的来源，避免前 20 条恰好掩盖过程引用缺失。
+        preview = {item['source'] for item in service.citations(service.run(task['id']))}
+        extra = [source for source in messages if source not in preview][:3]
+        service.timeline_item(task['id'], 'progress', f'周三 (source: {extra[0]})，核对 [[{extra[1]}]]，确认（source：{extra[2]}），未知 (source: {"f" * 24})')
+        result = service.public_run(task['id'], 'account')
+        sources = {item['source']: item for item in result['citations']}
+        assert all(source in sources for source in extra)
+        assert sources[extra[0]]['text'] == messages[extra[0]]['text']
+        assert 'f' * 24 not in sources
     asyncio.run(run())
 
 
@@ -209,18 +229,21 @@ def test_supplement_received_while_waiting_and_no_duplicate_worker(service):
     asyncio.run(run())
 
 
-def test_budget_stop_and_resume(service):
+def test_old_quotas_do_not_stop_agent(service):
     async def run():
         service.store.put('agent_settings', {'moderate': {'tools': 1, 'models': 24, 'media': 8, 'seconds': 300}}, id='global')
         service.model.actions = [AgentAction(action='read_messages', username='friend'), AgentAction(action='read_messages', username='friend')]
         thread, task = await submit(service)
         await service.workers[task['id']]
         saved = service.run(task['id'])
-        assert saved['status'] == 'budget'
+        assert saved['status'] == 'completed'
         assert SOURCE in saved['evidence']
-        await service.resume(task['id'], 'account')
-        await service.workers[task['id']]
-        assert service.run(task['id'])['status'] == 'completed'
+        assert saved['used']['tools'] == 2
+        # 即使旧记录保存了已过期的时间和很小的额度，也只累计实际用量。
+        service.update(task['id'], status='running', deadline=0, limits={'tools':1,'models':1,'media':1})
+        for kind in ('tools', 'models', 'media'):
+            service.spend(task['id'], kind, 10000)
+            assert service.run(task['id'])['used'][kind] >= 10000
     asyncio.run(run())
 
 
@@ -264,7 +287,7 @@ def test_router_settings_submit_and_account_guard(service):
             assert 'never-persist-this' not in sent.text
             await service.workers[sent.json()['id']]
             settings = await client.get('/api/ai/agent/settings')
-            assert settings.json()['deep']['tools'] == 36
+            assert settings.json()['unlimited'] is True
             assert (await client.get('/api/ai/agent/settings', headers={'Origin':'https://untrusted.example'})).status_code == 403
     with patch.object(ai_agent, 'get_agent_service', return_value=service), patch.object(ai_agent, 'account_name', side_effect=lambda x: x):
         asyncio.run(run())
@@ -285,7 +308,7 @@ def test_scope_shrink_during_run_does_not_reapply_previous_expansion(service):
     asyncio.run(run())
 
 
-def test_media_budget_resume_reuses_completed_pages(service):
+def test_media_interruption_resume_reuses_completed_pages(service):
     from wechat_decrypt_tool.ai import media
     async def run():
         calls = []
@@ -303,10 +326,10 @@ def test_media_budget_resume_reuses_completed_pages(service):
             nonlocal used
             if not cached:
                 if used >= 2:
-                    raise BudgetReached('limit')
+                    raise AgentControl('用户停止')
                 used += 1
         with patch.object(media, 'resolve_media', return_value=(b'fixture','.pdf')), patch.object(media, 'iter_document', side_effect=parts):
-            with pytest.raises(BudgetReached):
+            with pytest.raises(AgentControl):
                 await service.ai.media.enrich('account', message, {}, profile, lambda:None, unit)
             assert len(calls) == 2
             used = 0

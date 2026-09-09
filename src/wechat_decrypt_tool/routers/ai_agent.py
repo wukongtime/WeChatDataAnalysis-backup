@@ -25,7 +25,8 @@ def settings():
 
 @router.put('/settings')
 def update_settings(body: AgentSettings):
-    return get_agent_service().store.put('agent_settings', body.model_dump(), id='global')
+    # 旧版本写入请求保持兼容，但不再保存或启用人工额度。
+    return get_agent_service().settings()
 
 
 @router.get('/threads')

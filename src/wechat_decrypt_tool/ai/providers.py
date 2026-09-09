@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel
+from .model_catalog import ModelCatalog
 
 audit_task_id = ContextVar("ai_audit_task_id", default="")
 model_attempt_hook = ContextVar("ai_model_attempt_hook", default=None)
@@ -90,6 +91,39 @@ def parse_model_catalog(payload):
         elif isinstance(item.get("capabilities"), dict) and isinstance(item["capabilities"].get("vision"), bool):
             vision = item["capabilities"]["vision"]
         result[id] = {"id": id, "vision": vision}
+        detail = result[id]
+        # 兼容常见 /models 返回字段；只采纳明确值，未知字段不覆盖目录资料。
+        capabilities = item.get('capabilities') if isinstance(item.get('capabilities'), dict) else {}
+        declared_modalities = item.get('modalities') if isinstance(item.get('modalities'), dict) else {}
+        architecture = item.get('architecture') if isinstance(item.get('architecture'), dict) else {}
+        for direction in ('input', 'output'):
+            values = declared_modalities.get(direction, item.get(f'{direction}_modalities', architecture.get(f'{direction}_modalities')))
+            if isinstance(values, list) and values and all(isinstance(v, str) for v in values):
+                detail.setdefault('modalities', {})[direction] = values
+                if direction == 'input':
+                    detail['vision'] = 'image' in values
+        for key in ('vision', 'tool_call', 'reasoning', 'structured_output', 'temperature', 'attachment'):
+            value = item.get(key, capabilities.get(key))
+            if isinstance(value, bool):
+                detail[key] = value
+        supported = item.get('supported_parameters')
+        if isinstance(supported, list) and all(isinstance(v, str) for v in supported):
+            for key, names in {'tool_call': ('tools',), 'structured_output': ('structured_outputs',),
+                               'reasoning': ('reasoning', 'reasoning_effort'), 'temperature': ('temperature',)}.items():
+                detail.setdefault(key, any(name in supported for name in names))
+        limits = item.get('limit') if isinstance(item.get('limit'), dict) else {}
+        top = item.get('top_provider') if isinstance(item.get('top_provider'), dict) else {}
+        for key, values in {
+            'context': (limits.get('context'), item.get('context_window'), item.get('context_length'), top.get('context_length')),
+            'input': (limits.get('input'), item.get('max_input_tokens')),
+            'output': (limits.get('output'), item.get('max_output_tokens'), top.get('max_completion_tokens')),
+        }.items():
+            value = next((v for v in values if type(v) is int and 0 < v <= 10000000), None)
+            if value is not None:
+                detail.setdefault('limit', {})[key] = value
+        for key in ('name', 'description'):
+            if isinstance(item.get(key), str) and item[key] and item[key] != id:
+                detail[key] = item[key]
     return list(result.values())
 
 
@@ -97,6 +131,7 @@ class ModelService:
     def __init__(self, store):
         self.store = store
         self.semaphore = asyncio.Semaphore(2)
+        self.metadata = ModelCatalog(store.root, store)
 
     def resolve(self, id="", vision=False):
         defaults = self.store.get("defaults", "global") or {}
@@ -104,6 +139,7 @@ class ModelService:
         result = self.store.get("profile", id)
         if not result:
             raise ProviderFailure("请先在设置 → AI 服务中配置默认模型")
+        result = self.metadata.enrich(result)
         if vision and not result.get("vision"):
             raise ProviderFailure("当前配置不支持图片，请选择视觉模型")
         return result
@@ -115,7 +151,8 @@ class ModelService:
                       timeout=90, max_retries=0, callbacks=[])
         if profile["protocol"] == "anthropic":
             from langchain_anthropic import ChatAnthropic
-            return ChatAnthropic(base_url=model_base_url(profile["base_url"]).removesuffix("/v1"), max_tokens=4096, **common)
+            from .agent_budget import output_limit
+            return ChatAnthropic(base_url=model_base_url(profile["base_url"]).removesuffix("/v1"), max_tokens=output_limit(profile), **common)
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(base_url=model_base_url(profile["base_url"]), **common)
 
@@ -124,6 +161,7 @@ class ModelService:
 
     @observed('model.catalog')
     async def catalog(self, profile):
+        await self.metadata.refresh()
         validate_url(profile["base_url"])
         base = model_base_url(profile["base_url"])
         headers = {"Accept": "application/json"}
@@ -145,7 +183,8 @@ class ModelService:
                     diagnostic_event('model.catalog.page.finished', index=page, count=len(result), http_status=response.status_code,
                                      duration_ms=(time.monotonic()-page_started)*1000)
                     if profile["protocol"] != "anthropic" or not isinstance(payload, dict) or not payload.get("has_more"):
-                        return list(result.values())
+                        self.metadata.remember(profile, list(result.values()))
+                        return [item | (self.metadata.automatic(profile, item['id']) or {}) for item in result.values()]
                     cursor = payload.get("last_id")
                     if not isinstance(cursor, str) or not cursor or cursor in cursors:
                         raise ProviderFailure("上游模型列表分页异常，请重试")
@@ -177,7 +216,8 @@ class ModelService:
         for data in images or []:
             content.append({"type": "image_url", "image_url": {"url": data}})
         messages = [SystemMessage(content=system), HumanMessage(content=content)]
-        native_output = bool(schema and profile.get("protocol") == "anthropic")
+        native_output = bool(schema and profile.get("protocol") == "anthropic"
+                             and profile.get('model_metadata', {}).get('structured_output') is not False)
         for attempt in range(3):
             if active_budget.get():check_request(profile,messages,schema.model_json_schema() if native_output else None)
             hook = model_attempt_hook.get()
