@@ -9,11 +9,19 @@ const base = () => ({id:'run1',status:'running',stage:'搜索聊天记录',segme
   {id:'note',seq:2,revision:1,kind:'progress',text:'找到两次报价，继续核对修改。',status:'completed',started_at:103},
   {id:'tool2',seq:3,revision:1,kind:'tool',text:'读取后续消息',status:'running',started_at:103},
 ],answer:'',citations:[]})
-const setup = (extra={}) => mount(AgentRun,{props:{run:base(),now:105000,nearBottom:true,latest:true,viewState:reactive({}),...extra}})
+const setup = (extra={}) => mount(AgentRun,{attachTo:document.body,props:{run:base(),now:105000,nearBottom:true,latest:true,viewState:reactive({}),...extra}})
 
 describe('Agent 执行对话流',()=>{
-  it('完成概览在过程前，用量折叠在答案前，收起过程不隐藏答案', async () => {
+  it('完成后默认只显示回答，展开可查看过程和用量，再次收起一起隐藏', async () => {
     const w = setup({run:{...base(),status:'completed',elapsed_seconds:141,answer:'约饭定在周三',usage:{calls:6,input_tokens:100,output_tokens:20}}})
+    expect(w.find('.agent-process-toggle').text()).toContain('查看执行过程')
+    expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('false')
+    expect(w.find('.agent-process').isVisible()).toBe(false)
+    expect(w.find('.agent-run-metadata').element.style.display).toBe('none')
+    expect(w.find('.agent-final-answer').isVisible()).toBe(true)
+    await w.find('.agent-process-toggle').trigger('click')
+    expect(w.find('.agent-process').isVisible()).toBe(true)
+    expect(w.find('.agent-run-metadata').element.style.display).not.toBe('none')
     const text = w.text()
     expect(w.find('.agent-process-toggle').text()).toContain('已完成 · 2分21秒')
     expect(text.indexOf('已完成 · 2分21秒')).toBeLessThan(text.indexOf('搜索报价'))
@@ -22,6 +30,7 @@ describe('Agent 执行对话流',()=>{
     expect(w.find('.agent-run-metadata > summary').text()).toContain('6 次模型调用')
     await w.find('.agent-process-toggle').trigger('click')
     expect(w.find('.agent-final-answer').isVisible()).toBe(true)
+    expect(w.find('.agent-run-metadata').element.style.display).toBe('none')
     w.unmount()
   })
   it('重复读取默认展示逐次时间线，缓存命中不重复计数，折叠状态保留', async () => {
@@ -55,16 +64,27 @@ describe('Agent 执行对话流',()=>{
     expect(w.find('.agent-stream-status').text()).toContain('搜索聊天记录')
     w.unmount()
   })
-  it('按顺序显示工具和关键进展，完成保留简洁记录并可手动收起',async()=>{
+  it('按顺序显示工具和关键进展，完成后默认收起并可重新展开',async()=>{
     const w=setup()
     expect(w.text().indexOf('搜索报价')).toBeLessThan(w.text().indexOf('找到两次报价'))
     expect(w.text().indexOf('找到两次报价')).toBeLessThan(w.text().indexOf('读取后续消息'))
     await w.setProps({run:{...base(),status:'completed',answer:'最终报价为100元',elapsed_seconds:5}})
-    expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('true')
+    expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('false')
     expect(w.find('.agent-final-answer').text()).toContain('最终报价')
     await w.find('.agent-process-toggle').trigger('click')
-    expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('false')
+    expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('true')
     w.unmount()
+  })
+  it('用户主动展开后，完成更新不覆盖选择；没有最终回答时不自动隐藏过程', async () => {
+    const w = setup()
+    await w.find('.agent-process-toggle').trigger('click')
+    await w.find('.agent-process-toggle').trigger('click')
+    await w.setProps({run:{...base(),status:'completed',answer:'最终回答'}})
+    expect(w.find('.agent-process').isVisible()).toBe(true)
+    w.unmount()
+    const empty = setup({run:{...base(),status:'completed',answer:''}})
+    expect(empty.find('.agent-process').isVisible()).toBe(true)
+    empty.unmount()
   })
   it('完成与滚动不覆盖用户主动收起的状态',async()=>{
     const w=setup({nearBottom:false})
@@ -117,9 +137,12 @@ describe('Agent 执行对话流',()=>{
     expect(merged[0].status).toBe('completed')
     expect(merged[1].revision).toBe(2)
   })
-  it('历史完成轮次显示简洁记录，兼容旧步骤',()=>{
+  it('历史完成轮次默认收起，兼容旧步骤',async()=>{
     const w=setup({run:{id:'old',status:'completed',activity:[{id:'a',text:'原来的读取步骤',status:'completed',started_at:100,finished_at:103}],answer:'历史回答'}})
-    expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('true')
+    expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('false')
+    expect(w.find('.agent-process').isVisible()).toBe(false)
+    await w.find('.agent-process-toggle').trigger('click')
+    expect(w.find('.agent-process').isVisible()).toBe(true)
     expect(w.text()).toContain('原来的读取步骤')
     w.unmount()
   })

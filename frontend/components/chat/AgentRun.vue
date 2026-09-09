@@ -1,12 +1,12 @@
 <template>
   <section class="agent-reply agent-run">
-    <button class="agent-process-toggle" type="button" :aria-expanded="open" :title="`${toolCount} 项操作`" @click="toggle">
+    <button class="agent-process-toggle" type="button" :aria-expanded="open" :aria-controls="`process-${run.id} usage-${run.id}`" :title="open ? '收起执行过程，仅显示回答' : '展开执行过程与用量'" @click="toggle">
       <i :class="statusIcon" aria-hidden="true" />
-      <span>{{ running ? '执行中' : statusLabel }} · {{ duration(elapsed) }}</span>
-      <small v-if="toolCount">{{ toolCount }} 项操作</small>
+      <span>{{ open ? (running ? '执行中' : statusLabel) : '查看执行过程' }} · {{ duration(elapsed) }}</span>
+      <small v-if="open && toolCount">{{ toolCount }} 项操作</small>
       <i :class="open ? 'fa-solid fa-chevron-down' : 'fa-solid fa-chevron-right'" aria-hidden="true" />
     </button>
-    <div v-show="open" class="agent-process" :class="{ 'is-live': running }">
+    <div :id="`process-${run.id}`" v-show="open" class="agent-process" :class="{ 'is-live': running }">
       <template v-for="item in groupedRecords" :key="item.id">
         <AgentToolCall v-if="item.kind === 'tool'" :items="item.calls" :now="now" :name-for="nameFor" />
         <div v-else-if="item.kind === 'progress'" class="agent-progress-note" :class="{'is-superseded':item.status === 'superseded'}"><AgentAnswer :text="item.text" :citations="run.citations" :streaming="running" @locate="$emit('locate', $event)" /><small v-if="item.status === 'superseded'">已根据补充要求调整</small></div>
@@ -18,7 +18,7 @@
       </template>
     </div>
     <div v-if="run.error" class="agent-error" role="alert">{{ run.error }}<details v-if="run.error_info?.diagnostic_id"><summary>诊断信息</summary><small>{{ run.error_info.category }} · {{ run.error_info.diagnostic_id }}</small></details></div>
-      <details class="agent-run-metadata"><summary><i class="fa-solid fa-caret-right" aria-hidden="true" /><span>用量与读取范围<span v-if="run.usage?.calls != null"> · {{ run.usage.calls }} 次模型调用</span></span><i class="fa-solid fa-chevron-right" aria-hidden="true" /></summary><p>{{ toolCount }} 项操作<span v-if="run.usage"> · {{ run.usage.calls }} 次模型调用</span></p>
+      <details :id="`usage-${run.id}`" v-show="open" class="agent-run-metadata"><summary><i class="fa-solid fa-caret-right" aria-hidden="true" /><span>用量与读取范围<span v-if="run.usage?.calls != null"> · {{ run.usage.calls }} 次模型调用</span></span><i class="fa-solid fa-chevron-right" aria-hidden="true" /></summary><p>{{ toolCount }} 项操作<span v-if="run.usage"> · {{ run.usage.calls }} 次模型调用</span></p>
         <p v-if="running">当前步骤 {{ duration(stageElapsed) }} · 已读取 {{ run.read_count || 0 }} 条消息 · 媒体 {{ run.used?.media || 0 }}</p>
         <div v-if="run.time_range?.start != null" class="agent-query-range"><small>查询范围：{{ date(run.time_range.start) }} — {{ date(run.time_range.end) }}</small></div>
         <div v-if="run.analysis?.known" class="agent-coverage-note"><p>已读取 {{ run.read_count || 0 }} 条 · 已分析 {{ run.analysis.analyzed || 0 }} 条 · {{ run.analysis.complete ? '范围处理完成' : '范围尚未处理完成' }}</p><p v-for="c in run.analysis.coverage" :key="c.username">{{ nameFor(c.username) }}：读取 {{ c.read }} 条，分析 {{ c.analyzed }} 条 · {{ c.complete ? '已处理完成' : '待继续' }}<span v-if="c.warning"> · {{ c.warning }}</span></p><p>已生成 {{ run.analysis.segments }} 个分段结果，{{ run.analysis.findings }} 条分析发现。</p></div>
@@ -34,7 +34,7 @@
 
     <AgentEvidence v-if="evidenceOpen && (run.citations?.length || run.answer)" :run="run" @locate="$emit('locate', $event)" />
 
-    <AgentMaterials v-if="materialsOpen" :run="run" :name-for="nameFor" @close="materialsOpen = false" @locate="$emit('locate', $event)" />
+    <AgentMaterials v-if="materialsOpen" v-show="open" :run="run" :name-for="nameFor" @close="materialsOpen = false" @locate="$emit('locate', $event)" />
 
   </section>
 </template>
@@ -51,7 +51,8 @@ defineEmits(['locate','choose','continue','settings'])
 const copied = ref(false), evidenceOpen = ref(false)
 const materialsOpen = ref(false)
 const running = computed(() => ['queued','running'].includes(props.run.status))
-const open = computed({get:()=>props.viewState[props.run.id] ?? true,set:v=>{props.viewState[props.run.id]=v}})
+// 成功且已有回答时默认聚焦结果；显式展开或收起的选择优先于默认状态。
+const open = computed({get:()=>props.viewState[props.run.id] ?? !(props.run.status === 'completed' && props.run.answer?.trim()),set:v=>{props.viewState[props.run.id]=v}})
 const records = computed(() => (props.run.timeline?.length ? props.run.timeline : (props.run.activity || []).map(x=>({...x,kind:'status'}))).filter(x=>(x.kind !== 'answer' || x.status === 'superseded') && !(running.value && ['status','progress'].includes(x.kind) && x.text === props.run.stage)).sort((a,b)=>(a.seq||0)-(b.seq||0)))
 const groupedRecords = computed(() => groupTimelineTools(records.value))
 const toolCount = computed(() => records.value.filter(x=>x.kind==='tool').length)
