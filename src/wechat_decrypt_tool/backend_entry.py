@@ -87,6 +87,10 @@ def _run_sns_wasm_smoke() -> None:
 
 
 def main() -> None:
+    if "--smoke-ai" in sys.argv[1:]:
+        from wechat_decrypt_tool.ai.runtime_check import check_runtime
+        print(json.dumps(check_runtime(), ensure_ascii=True))
+        return
     if "--smoke-opencc" in sys.argv[1:]:
         _run_opencc_smoke()
         return
@@ -103,7 +107,8 @@ def main() -> None:
 
     host, _ = read_effective_backend_host(default=default_backend_host())
     port, _ = read_effective_backend_port(default=10392)
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    # 保留应用已经安装的文件 handler 和脱敏过滤器。
+    uvicorn.run(app, host=host, port=port, log_level="info", log_config=None)
 
 
 if __name__ == "__main__":

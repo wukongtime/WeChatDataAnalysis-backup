@@ -259,13 +259,32 @@ test("tracked Windows source pin selects the exact immutable public Release asse
   assert.equal(
     publicReleaseUrl(trackedPin),
     "https://github.com/LifeArchiveProject/WeChatDataAnalysis/releases/download/" +
-      "windows-source-runtime-20260817-7795dced-32004006556/" +
-      "wechatdataanalysis-windows-source-runtime-x64-v1.tar.gz"
+      "v2.4.0/WeChatDataAnalysis-2.4.0-Setup.exe"
   );
-  assert.equal(trackedPin.assetSha256, "5e7eeb7e824616aa462f5cbb5b21369516014b5a323c41b6456d71ec1d860ec9");
-  assert.equal(trackedPin.runtimeManifestSha256, "e6902d4a6d3536ff96e2d58bff5af5287bec216423d1f2c224b29c16dc3cb0d9");
-  assert.equal(trackedPin.expiresAtUnix, 1790838083);
+  assert.equal(trackedPin.assetSha256, "c924347408a94947588b54bf26352ced396513d3bef9386595c36a8210c1410a");
+  assert.equal(trackedPin.nativeFiles["wechatdb_native_build.json"], "27b41c72953587300cad6922176c7288949e9d636bd22be59da930a589c0fb03");
+  assert.equal(trackedPin.expiresAtUnix, 1792680288);
 });
+
+test("安装包组件缓存逐文件校验，并保持源码只读策略", () => withTempRoot(root => {
+  const directory = path.join(root, "runtime");
+  fs.mkdirSync(path.join(directory, "native-core"), { recursive: true });
+  for (const [relative, bytes] of PAYLOADS) fs.writeFileSync(path.join(directory, relative), bytes);
+  const pin = { schemaVersion: 3, platform: "win32", architecture: "x64", publisherRepository: PIN.publisherRepository,
+    releaseTag: "v2.4.0", assetName: "WeChatDataAnalysis-2.4.0-Setup.exe", assetSha256: sha256(ARCHIVE_CONTENT),
+    buildId: NATIVE_MANIFEST.buildId, expiresAtUnix: EXPIRES_AT_UNIX,
+    nativeFiles: Object.fromEntries([...PAYLOADS].map(([name, bytes]) => [path.basename(name), sha256(bytes)])) };
+  assert.equal(validateWindowsSourceRuntimeDirectory(directory, pin, { nowUnix: NOW_UNIX }).policy.artifactState, "source-public");
+  const dll = path.join(directory, "native-core", "wechatdb_client.dll");
+  fs.appendFileSync(dll, "modified");
+  assert.throws(() => validateWindowsSourceRuntimeDirectory(directory, pin, { nowUnix: NOW_UNIX }), /摘要不匹配/);
+  fs.writeFileSync(dll, PAYLOADS.get("native-core/wechatdb_client.dll"));
+  const manifest = { ...NATIVE_MANIFEST, readOnlyBuild: false, wechatActions: ["write"] };
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  fs.writeFileSync(path.join(directory, "native-core/wechatdb_native_build.json"), bytes);
+  pin.nativeFiles["wechatdb_native_build.json"] = sha256(bytes);
+  assert.throws(() => validateWindowsSourceRuntimeDirectory(directory, pin, { nowUnix: NOW_UNIX }), /restricted source-public/);
+}));
 
 test("generic source bootstrap wires the verified Windows directory without macOS-only variables", () =>
   withTempRoot((root) => {

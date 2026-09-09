@@ -1,4 +1,5 @@
 import { reportServerError } from '~/lib/server-error-logging'
+import { aiDiagnostics, aiTrace } from '~/utils/aiDiagnostics'
 import {
   getLatestResourceTiming,
   isChatPerfLoggingEnabled,
@@ -49,9 +50,17 @@ export const useApi = () => {
   // 基础请求函数
   const request = async (url, options = {}) => {
     const fetchOptions = { ...options }
+    const aiScoped = !!fetchOptions.aiDiagnostic || /(?:retrieval_mode|retrievalMode)=hybrid/.test(url)
+    delete fetchOptions.aiDiagnostic
+    const aiTraceId = aiScoped ? aiTrace() : ''
+    if (aiScoped) {
+      const headers = new Headers(fetchOptions.headers || undefined)
+      headers.set('X-WCDA-AI-Trace', aiTraceId)
+      fetchOptions.headers = headers
+    }
     const perfTraceId = String(fetchOptions.perfTraceId || '').trim()
     delete fetchOptions.perfTraceId
-    const perfEnabled = !!perfTraceId && isChatPerfLoggingEnabled()
+    const perfEnabled = !aiScoped && !!perfTraceId && isChatPerfLoggingEnabled()
     const resourceUrl = perfEnabled ? resolveResourceTimingUrl(baseURL, url) : ''
     const sentEpochMs = perfEnabled ? Date.now() : 0
     const requestStartedAt = perfEnabled ? nowPerfMs() : 0
@@ -76,6 +85,12 @@ export const useApi = () => {
         baseURL,
         ...fetchOptions,
         async onResponseError({ response }) {
+          if (aiScoped) {
+            const error = new Error('AI 资料请求失败')
+            error.status = error.statusCode = response.status
+            error.diagnostic_id = response.headers?.get?.('X-WCDA-AI-Diagnostic')
+            throw error
+          }
           if (response.status >= 400 && response.status < 500) {
             const fallback = response.status === 400
               ? '请求参数错误'
@@ -100,6 +115,14 @@ export const useApi = () => {
       chatAccounts.applySourceResponse(response)
       return response
     } catch (error) {
+      if (aiScoped) {
+        aiDiagnostics(baseURL).record('request.failed', { origin: 'frontend', trace_id: aiTraceId, diagnostic_id: error?.diagnostic_id,
+          http_status: error?.status || error?.statusCode, component: 'source', method: options.method || 'GET' })
+        const safe = new Error('AI 资料请求失败')
+        safe.status = safe.statusCode = error?.status || error?.statusCode
+        safe.trace_id = aiTraceId; safe.diagnostic_id = error?.diagnostic_id
+        throw safe
+      }
       requestError = String(error?.message || error?.name || 'request failed')
       if (!isAbortRequestError(error)) {
         console.error('API请求错误:', error)
@@ -266,6 +289,8 @@ export const useApi = () => {
 
   const searchChatMessages = async (params = {}) => {
     const query = new URLSearchParams()
+    if (params.retrieval_mode) query.set('retrieval_mode', params.retrieval_mode)
+    if (params.search_ticket) query.set('search_ticket', params.search_ticket)
     if (params && params.account) query.set('account', params.account)
     if (params && params.q) query.set('q', params.q)
     if (params && params.username) query.set('username', params.username)
@@ -331,7 +356,7 @@ export const useApi = () => {
     if (params && params.after != null) query.set('after', String(params.after))
     if (params && params.source) query.set('source', params.source)
     const url = '/chat/messages/around' + (query.toString() ? `?${query.toString()}` : '')
-    return await request(url)
+    return await request(url, { aiDiagnostic: !!params.ai_diagnostic })
   }
 
   // 聊天记录日历热力图：某月每日消息数

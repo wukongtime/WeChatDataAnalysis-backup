@@ -548,9 +548,24 @@ def managed_native_core_operation(
     *,
     database_root: Path | None = None,
     export_only: bool = False,
+    prefer_export_only: bool = False,
 ) -> NativeCoreManagedOperation:
+    """持有进程租约；prefer_export_only 允许导出复用数据库模式，export_only 则严格限定模式。"""
     global _active_operations
     with _lock:
+        if prefer_export_only:
+            if export_only or database_root is not None:
+                raise NativeCoreProtocolError(
+                    "prefer_export_only cannot be combined with export_only or database_root."
+                )
+            # 数据库模式也支持导出。复用现有进程，避免签名、加解密与读取并发时
+            # 强制切换模式；没有存活进程时才启动不需要数据库目录的仅导出模式。
+            # 模式选择与租约递增共用同一把锁，防止中途被其他操作替换进程。
+            export_only = (
+                _process is None
+                or _process.poll() is not None
+                or _owned_database_disabled
+            )
         endpoint = ensure_native_core_broker(
             database_root=database_root,
             export_only=export_only,

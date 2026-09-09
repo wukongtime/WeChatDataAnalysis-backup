@@ -66,6 +66,7 @@ app.router.route_class = PathFixRoute
 # Enable CORS for React frontend
 app.add_middleware(
     CORSMiddleware,
+    expose_headers=['X-WCDA-AI-Trace', 'X-WCDA-AI-Diagnostic'],
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
@@ -128,6 +129,12 @@ async def _record_content_free_product_events(request: Request, call_next):
 app.add_middleware(ChatRequestPerfMiddleware, logger=request_logger)
 
 
+from .routers.ai import router as _ai_router
+app.include_router(_ai_router)
+from .routers.ai_agent import router as _ai_agent_router
+app.include_router(_ai_agent_router)
+from .routers.local_search import router as _local_search_router
+app.include_router(_local_search_router)
 app.include_router(_health_router)
 app.include_router(_admin_router)
 app.include_router(_account_archive_export_router)
@@ -275,6 +282,8 @@ async def _startup_native_core() -> None:
 
 @app.on_event("startup")
 async def _startup_background_jobs() -> None:
+    from .ai.lifecycle import start_services
+    await start_services()
     try:
         WCDB_REALTIME.start_background_prime()
     except Exception:
@@ -295,6 +304,8 @@ async def _startup_background_jobs() -> None:
 
 @app.on_event("shutdown")
 async def _shutdown_wcdb_realtime() -> None:
+    from .ai.lifecycle import stop_services
+    await stop_services()
     try:
         CHAT_REALTIME_AUTOSYNC.stop()
     except Exception:
@@ -347,4 +358,4 @@ if __name__ == "__main__":
     configure_native_core_entrypoint()
     host = os.environ.get("WECHAT_TOOL_HOST", default_backend_host())
     port, _ = read_effective_backend_port(default=10392)
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, log_config=None)

@@ -64,6 +64,13 @@ contextBridge.exposeInMainWorld("wechatDesktop", {
   // Marker used by the frontend to distinguish the Electron desktop shell from the pure web build.
   __brand: "WeChatDataAnalysisDesktop",
   platform: process.platform,
+  takeAiNavigation: () => ipcRenderer.invoke('ai:takeNavigation'),
+  aiDiagnosticFallback: (entries) => ipcRenderer.invoke('ai:diagnosticFallback', entries),
+  onAiNavigate: (callback) => {
+    const listener = (_event, target) => callback(target);
+    ipcRenderer.on('ai:navigate', listener);
+    return () => ipcRenderer.removeListener('ai:navigate', listener);
+  },
   windowControlsMode: "overlay",
   minimize: () => ipcRenderer.invoke("window:minimize"),
   toggleMaximize: () => ipcRenderer.invoke("window:toggleMaximize"),
