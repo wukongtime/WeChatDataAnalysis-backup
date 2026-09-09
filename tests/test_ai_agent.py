@@ -358,3 +358,23 @@ def test_provider_streaming_revised_signal_is_not_retried(service):
         assert len(audit) == 1
         assert audit[0]['status'] == 'interrupted'
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('status', ['queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted'])
+def test_thread_list_includes_latest_run_status_without_payload(service, status):
+    service.store.put('agent_thread', dict(account='account', username='friend', latest_run='latest', messages=['private'], memory='private'), id='thread-status')
+    service.store.put('agent_run', dict(account='account', thread_id='thread-status', status=status, answer='private answer', timeline=['private']), id='latest')
+    with patch.object(ai_agent, 'get_agent_service', return_value=service), patch.object(ai_agent, 'account_name', side_effect=lambda value: value):
+        row = ai_agent.threads('account', 'friend')[0]
+        assert row['latest_run_status'] == status
+        assert not {'messages', 'memory', 'answer', 'timeline'} & row.keys()
+        assert ai_agent.threads('account', 'other') == []
+
+
+@pytest.mark.parametrize('latest', [None, {'account': 'other', 'thread_id': 'thread-status'}, {'account': 'account', 'thread_id': 'other-thread'}])
+def test_thread_list_does_not_reuse_missing_or_unrelated_run(service, latest):
+    service.store.put('agent_thread', dict(account='account', username='friend', latest_run='latest'), id='thread-status')
+    if latest:
+        service.store.put('agent_run', dict(latest, status='running'), id='latest')
+    with patch.object(ai_agent, 'get_agent_service', return_value=service), patch.object(ai_agent, 'account_name', side_effect=lambda value: value):
+        assert ai_agent.threads('account')[0]['latest_run_status'] == ''

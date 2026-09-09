@@ -61,6 +61,42 @@ def setup_analysis(service, mode='overview', total=121):
     return counts
 
 
+def test_recent_message_count_reaches_reader_and_completes_exact_scope(service):
+    async def run():
+        setup_analysis(service)
+        original = service.ai.models.invoke
+        async def invoke(profile, prompt, schema=None, **kwargs):
+            if schema is ContextIntent:
+                return {'mode':'overview','start':0,'end':int(time.time()),'message_count':100,
+                        'objective':'总结最近100条消息'}
+            return await original(profile, prompt, schema, **kwargs)
+        service.ai.models.invoke = invoke
+        from contextlib import asynccontextmanager
+        calls = []
+        @asynccontextmanager
+        async def open_pages(account, username, start, end, offset, checkpoint, count=None):
+            calls.append((start, offset, count))
+            position = offset
+            async def read():
+                nonlocal position
+                messages = [{'source':hashlib.md5(str(i).encode()).hexdigest()[:24], 'anchor':str(i),
+                    'username':username,'time':end-100+i,'sender':'甲','kind':'text','text':f'关键消息{i}' if i in (0,60,99) else '日常消息'}
+                    for i in range(position, min(position+50, count))]
+                position += len(messages)
+                return {'messages':messages,'has_more':position<count,'source':'realtime'}
+            yield read
+        service.tools.open_pages = open_pages
+        _, task = await submit(service, '请总结一下最近100条消息再说什么')
+        await service.workers[task['id']]
+        result = service.public_run(task['id'], 'account')
+        assert result['status'] == 'completed', result.get('error')
+        assert calls == [(None, 0, 100)]
+        assert result['read_count'] == result['analysis']['analyzed'] == 100
+        assert result['analysis']['complete']
+        assert any(x['kind']=='status' and x['text']=='正在读取聊天记录' and x['status']=='completed' for x in result['timeline'])
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('mode',['overview','timeline','list'])
 def test_overview_cannot_answer_before_every_chat_and_page(service,mode):
     async def run():

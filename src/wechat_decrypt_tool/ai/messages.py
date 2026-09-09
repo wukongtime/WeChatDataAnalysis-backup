@@ -92,13 +92,14 @@ def iter_message_pages(account, username, start, end, count=None, require_realti
             return _iter_rows_for_conversation(account_dir=account_dir, conv_username=username,
                 start_time=window_start, end_time=window_end, source=source, rt_conn=connection, checkpoint=checkpoint)
 
-        if count and start is None:
+        if count:
             # 从最近一天向前扩展窗口，避免“最近 100 条”遍历多年全部消息。
             selected_rows, window_end, span = [], end, 86400
             window_seen = set()
             last_window_check = 0
-            while len(selected_rows) < count and window_end >= 0:
-                window_start = max(0, window_end - span + 1)
+            lower_bound = start or 0
+            while len(selected_rows) < count and window_end >= lower_bound:
+                window_start = max(lower_bound, window_end - span + 1)
                 batch = deque(maxlen=count)
                 for row in read_rows(window_start, window_end):
                     if checkpoint and time.monotonic() - last_window_check > 0.1:

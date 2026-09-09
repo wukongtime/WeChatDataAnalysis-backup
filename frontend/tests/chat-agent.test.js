@@ -4,15 +4,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ChatAgentPanel from '../components/chat/ChatAgentPanel.vue'
 import AgentAnswer from '../components/chat/AgentAnswer.vue'
 
-let state, threads, runs, request, seq
+let state, threads, runs, request, seq, eventCallbacks
 beforeEach(() => {
-  state = ref({selected:{},drafts:{},pinned:{}}); threads = {}; runs = {}; seq = 0
+  state = ref({selected:{},drafts:{},pinned:{}}); threads = {}; runs = {}; seq = 0; eventCallbacks = {}
   request = vi.fn(async (path, options = {}) => {
     if (path === '/settings') return {profiles:[]}
     if (path === '/conversations') return [{username:'first',name:'会话一'},{username:'second',name:'会话二'}]
     if (path === '/agent/threads') {
       if (options.method === 'POST') { const id = `thread${++seq}`; return threads[id] = {id, ...options.body, scope:[options.body.username], messages:[], latest_run:''} }
-      return Object.values(threads).filter(t => !options.query?.username || t.username === options.query.username)
+      return Object.values(threads).filter(t => !options.query?.username || t.username === options.query.username).map(t=>({...t,latest_run_status:runs[t.latest_run]?.status || ''}))
     }
     const [, , , id, action] = path.split('/')
     if (path.startsWith('/agent/threads/')) {
@@ -35,7 +35,7 @@ beforeEach(() => {
     }
     return []
   })
-  vi.stubGlobal('useAiApi', () => ({request,events:()=>()=>{},agentEvents:()=>()=>{}}))
+  vi.stubGlobal('useAiApi', () => ({request,events:()=>()=>{},agentEvents:(account,callback)=>{eventCallbacks[account]=callback;return ()=>{}}}))
   vi.stubGlobal('useSettingsDialog', () => ({openDialog:vi.fn()}))
   vi.stubGlobal('useState', () => state)
 })
@@ -43,6 +43,57 @@ const mountPanel = () => mount(ChatAgentPanel, {attachTo:document.body,props:{ac
 const send = async (wrapper,text) => { await wrapper.find('textarea').setValue(text); await wrapper.find('[aria-label="发送问题"], [aria-label="发送补充要求"]').trigger('click'); await flushPromises() }
 
 describe('聊天 Agent', () => {
+  it('切换会话后保留后台转圈，事件结束只更新对应任务，旧任务不覆盖新任务', async () => {
+    threads.a={id:'a',title:'会话 A',username:'first',scope:['first'],messages:[],latest_run:'ra'}
+    threads.b={id:'b',title:'会话 B',username:'second',scope:['second'],messages:[],latest_run:'rb'}
+    runs.ra={id:'ra',thread_id:'a',status:'running',timeline:[]}
+    runs.rb={id:'rb',thread_id:'b',status:'queued',timeline:[]}
+    const w=mountPanel();await flushPromises()
+    await w.find('[aria-label="展开大视图"]').trigger('click');await flushPromises()
+    const a=w.findAll('.agent-thread-item')[0],b=w.findAll('.agent-thread-item')[1]
+    expect(a.find('.agent-thread-running').exists()).toBe(true)
+    expect(b.find('.agent-thread-running').exists()).toBe(true)
+    const spinner=a.find('.agent-thread-running').element
+    await b.find('.agent-thread-select').trigger('click');await flushPromises()
+    expect(a.find('.agent-thread-running').element).toBe(spinner)
+    expect(w.find('.agent-thread-title').text()).toBe('会话 B')
+    eventCallbacks.acc({run_id:'ra',status:'completed'});await flushPromises()
+    expect(a.find('.agent-thread-running').exists()).toBe(false)
+    expect(b.find('.agent-thread-running').exists()).toBe(true)
+    runs.ra2={id:'ra2',thread_id:'a',status:'running',timeline:[]};threads.a.latest_run='ra2'
+    await w.find('[aria-label="刷新会话列表"]').trigger('click');await flushPromises()
+    eventCallbacks.acc({run_id:'ra',status:'failed'});await flushPromises()
+    expect(a.find('.agent-thread-running').exists()).toBe(true)
+    const original=request.getMockImplementation();let resolveList
+    request.mockImplementation((path,options)=>path==='/agent/threads'&&!options.query?.username?new Promise(resolve=>{resolveList=resolve}):original(path,options))
+    await w.find('[aria-label="刷新会话列表"]').trigger('click')
+    eventCallbacks.acc({run_id:'ra2',status:'completed'});await flushPromises()
+    resolveList([{...threads.a,latest_run_status:'running'},{...threads.b,latest_run_status:'queued'}]);await flushPromises()
+    expect(a.find('.agent-thread-running').exists()).toBe(false)
+    w.unmount()
+  })
+  it('未收到事件时静默轮询后台完成状态，失败不清除正在运行的指示', async () => {
+    vi.useFakeTimers({toFake:['setInterval','clearInterval','Date']})
+    const original=request.getMockImplementation()
+    let w
+    try {
+      threads.a={id:'a',title:'后台任务',username:'first',scope:['first'],messages:[],latest_run:'ra'}
+      threads.b={id:'b',title:'浏览其他会话',username:'second',scope:['second'],messages:[]}
+      runs.ra={id:'ra',thread_id:'a',status:'running',timeline:[]}
+      w=mountPanel();await flushPromises()
+      await w.find('[aria-label="展开大视图"]').trigger('click');await flushPromises()
+      await w.findAll('.agent-thread-select')[1].trigger('click');await flushPromises()
+      request.mockImplementation((path,options)=>path==='/agent/threads'&&!options.query?.username?Promise.reject(new Error('暂时离线')):original(path,options))
+      await vi.advanceTimersByTimeAsync(6000);await flushPromises()
+      expect(w.find('.agent-thread-running').exists()).toBe(true)
+      expect(w.find('.agent-thread-error').exists()).toBe(false)
+      request.mockImplementation(async (path,options)=>{const result=await original(path,options);return path==='/agent/threads'&&!options.query?.username?result.reverse():result});runs.ra.status='completed'
+      await vi.advanceTimersByTimeAsync(6000);await flushPromises()
+      expect(w.find('.agent-thread-running').exists()).toBe(false)
+      expect(w.find('.agent-thread-title').text()).toBe('浏览其他会话')
+      expect(w.findAll('.agent-thread-select').map(item=>item.text())).toEqual(['后台任务会话一','浏览其他会话会话二'])
+    } finally { w?.unmount();vi.useRealTimers() }
+  })
   it('展开即展示会话列表，可搜索、跨会话切换，并保留各自草稿', async () => {
     threads.a={id:'a',title:'报价确认',username:'first',scope:['first'],messages:[]}
     threads.b={id:'b',title:'南京出行',username:'second',scope:['second'],messages:[]}

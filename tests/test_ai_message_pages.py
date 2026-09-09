@@ -110,6 +110,20 @@ def test_stream_reads_source_once_and_matches_messages(message_source, total):
     assert state['scanned'] == len(state['rows'])
 
 
+@pytest.mark.parametrize('start', [None, 0, 90])
+@pytest.mark.parametrize('total', [0, 27, 100, 231])
+def test_recent_count_pages_only_latest_unique_messages(message_source, start, total):
+    message_source(total)
+    pages = list(iter_message_pages('a', 'chat', start, 200, count=100, page_size=50))
+    messages = [m for page in pages for m in page['messages']]
+    assert len(messages) == min(total, 100)
+    assert {int(m['anchor']) for m in messages} == set(range(max(1, total-99), total+1))
+    assert pages[-1]['has_more'] is False
+    if total > 50:
+        resumed = list(iter_message_pages('a', 'chat', start, 200, count=100, page_size=50, page_offset=50))
+        assert [m for page in resumed for m in page['messages']] == messages[50:]
+
+
 def test_legacy_page_matches_stream_and_closes_early(message_source):
     state = message_source(250)
     expected = list(iter_message_pages('a', 'chat', 0, 200))

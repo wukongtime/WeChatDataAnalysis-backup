@@ -29,7 +29,7 @@ def normalize(account, username, raw, name=''):
 
 class ChatTools:
     @asynccontextmanager
-    async def open_pages(self, account, username, start, end, offset, checkpoint):
+    async def open_pages(self, account, username, start, end, offset, checkpoint, count=None):
         """整次运行复用同一消息流；SQLite 游标在专用线程推进和关闭。"""
         from .messages import iter_message_pages
         closing = threading.Event()
@@ -37,7 +37,7 @@ class ChatTools:
             if closing.is_set(): raise RuntimeError('读取已停止')
             checkpoint()
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='agent-reader')
-        stream = iter_message_pages(account,username,start,end,page_offset=offset,page_size=50,
+        stream = iter_message_pages(account,username,start,end,count=count,page_offset=offset,page_size=50,
             max_batch_chars=12000,checkpoint=check)
         loop = asyncio.get_running_loop()
         try:
@@ -72,10 +72,10 @@ class ChatTools:
                 'data_source': 'snapshot_index', 'start': start, 'end': end}
 
     @observed('agent.read.read')
-    async def read(self, account, username, start, end, offset):
+    async def read(self, account, username, start, end, offset, count=None):
         # 直接复用范围读取器，固定截止时间。分页按稳定来源排序，避免同秒消息遗漏。
         from .messages import read_messages
-        result = await asyncio.to_thread(read_messages, account, username, start, end, None, page_offset=offset)
+        result = await asyncio.to_thread(read_messages, account, username, start, end, count, page_offset=offset)
         # 数据渠道与单条消息编号分开命名，避免模型把 realtime 当作消息引用。
         result['data_source'] = result.pop('source', 'auto')
         values = result['messages']

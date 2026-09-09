@@ -1,5 +1,5 @@
 <template>
-  <div class="preview-toolbar"><strong>AI 助手 · 交互预览</strong><button @click="height = height === 800 ? 560 : 800">{{ height }}px 高度</button><button @click="dark = !dark; applyTheme()">{{ dark ? '浅色' : '深色' }}</button><button @click="reset">恢复示例</button><button @click="streamDemo">流式演示</button><span>本页使用示例数据，不调用模型</span></div>
+  <div class="preview-toolbar"><strong>AI 助手 · 交互预览</strong><button @click="height = height === 800 ? 560 : 800">{{ height }}px 高度</button><button @click="dark = !dark; applyTheme()">{{ dark ? '浅色' : '深色' }}</button><button @click="reset">恢复示例</button><button @click="streamDemo">流式演示</button><button @click="stepsDemo">分段步骤示例</button><button @click="finishDemo">完成示例</button><span>本页使用示例数据，不调用模型</span></div>
   <main class="preview-stage" :style="{ height: height + 'px', maxHeight: 'calc(100dvh - 112px)' }"><div class="preview-chat"><h2>南京出行</h2><p>在右侧查看 AI 助手，点击引用核对原文。</p><p v-if="located" role="status">已定位：{{ located.text }}</p></div><ChatAgentPanel :key="seed" account="preview" :contact="contact" :contacts="contacts" :prepare-source="prepare" :locate-source="locate" @close="closed = true" v-if="!closed" /><button v-else @click="closed = false">打开 AI 助手</button></main>
   <p class="preview-note">交互：模型选择、读取范围、跟随 / 固定、历史、工具、输入框、引用、展开 / 收起。示例对话仅用于验证布局。</p>
 </template>
@@ -36,7 +36,7 @@ const baseRun=()=>({id:'run1',status:'completed',elapsed_seconds:18,answer,citat
 ]})
 const makeRun = () => {
   const result = baseRun()
-  if (designPreview) Object.assign(result, { elapsed_seconds:141, coverage_warnings:[], timeline:[
+  if (designPreview) Object.assign(result, { elapsed_seconds:141, coverage_warnings:['部分图片未读取，回答仅依据已读取的聊天记录。'], timeline:[
     {id:'t1',kind:'tool',seq:1,status:'completed',text:'搜索了聊天记录',action:'search_messages',query:'约饭',username:'sample',started_at:1,finished_at:3,result:{returned:21,retrieval_mode:'hybrid'}},
     {id:'t2',kind:'tool',seq:2,status:'completed',text:'读取了上下文',action:'read_context',username:'sample',started_at:3,finished_at:5,result:{returned:21}},
     {id:'t3',kind:'tool',seq:3,status:'completed',text:'读取了上下文',action:'read_context',username:'sample',started_at:5,finished_at:5,cached:true,result:{returned:21}},
@@ -61,7 +61,7 @@ window.useAiApi=()=>({agentEvents:(_account,callback)=>{onAgentEvent=callback;re
   if(path==='/settings')return {profiles:[{id:'local',name:'我的文本模型',model:'text-model'},{id:'vision',name:'视觉模型',vision:true,model:'vision-model'}]}
   if(path==='/agent/threads') {
     if(options.method==='POST'){const created={id:crypto.randomUUID(),username:options.body.username,title:'新的对话',scope:[options.body.username],messages:[],latest_run:''};previewThreads.unshift(created);return clone(created)}
-    return clone(previewThreads.filter(item=>!options.query?.username||item.username===options.query.username))
+    return clone(previewThreads.filter(item=>!options.query?.username||item.username===options.query.username).map(item=>({...item,latest_run_status:previewRuns[item.latest_run]?.status || ''})))
   }
   if(path==='/agent/runs/run1/materials') {
     const {kind,offset=0}=options.query
@@ -102,14 +102,45 @@ const reset=()=>{clearInterval(demoTimer);run=withContext();previewThreads=[clon
 const streamDemo=()=>{
   state.value.pinned.preview='thread1';seed.value++;startStream('run1')
 }
+const stepsDemo=()=>{
+  reset()
+  const now=Date.now()/1000
+  const stages=['理解问题与读取范围','正在读取聊天记录','正在分段分析','正在分段分析']
+  run={...withContext(),status:'running',answer:'',elapsed_seconds:0,segment_started:now-26,stage_started_at:now-2,
+    stage:stages[3],read_count:100,analysis:{known:true,analyzed:50,complete:false,coverage:[]},coverage_warnings:[],usage:{calls:3,input_tokens:100,output_tokens:20},
+    timeline:stages.map((text,i)=>({id:`stage${i}`,seq:i+1,revision:1,kind:'status',text,status:i===3?'running':'completed',started_at:now-26+i*8,...(i<3?{finished_at:now-18+i*8}:{})}))}
+  previewRuns.run1=run
+  previewThreads[0].title='请总结一下最近100条消息再说什么'
+  previewThreads[0].messages=[{id:'steps-question',role:'user',run_id:'run1',text:previewThreads[0].title}]
+  state.value.pinned.preview='thread1';seed.value++
+}
+const finishDemo=()=>{
+  clearInterval(demoTimer)
+  const now=Date.now()/1000
+  run={...run,status:'completed',elapsed_seconds:Math.round(now-run.segment_started),
+    answer:'这是用于检查完成态的示例回答。真实回答仍由模型生成。',
+    timeline:run.timeline.map(x=>x.status==='running'?{...x,status:'completed',revision:(x.revision||0)+1,finished_at:now}:x)}
+  previewRuns[run.id]=run
+  onAgentEvent?.({run_id:run.id,status:run.status})
+}
 const startStream=(id,resume=false)=>{
   clearInterval(demoTimer)
   const started=Date.now()/1000
-  run={...withContext(),id,status:'running',answer:resume?previewRuns[id].answer:'',segment_started:started,stage_started_at:started,stage:'正在核对出行安排',updated_at:started}
+  run={...withContext(),id,status:'running',elapsed_seconds:0,answer:resume?previewRuns[id].answer:'',segment_started:started,stage_started_at:started,stage:'正在核对出行安排',updated_at:started}
   run.timeline=run.timeline.map(item=>item.id==='t2'?{...item,revision:2,status:'running',started_at:started,finished_at:null}:item)
-  previewRuns[id]=run;onAgentEvent?.({run_id:id})
-  let count=run.answer.length
+  previewRuns[id]=run;onAgentEvent?.({run_id:id,status:run.status})
+  let count=run.answer.length, ticks=0
+  const completedTimeline=withContext().timeline
+  if(!resume) run={...run,timeline:[],stage:'理解问题与读取范围',read_count:0,usage:{calls:1,input_tokens:0,output_tokens:0},analysis:null,coverage_warnings:[]}
+  previewRuns[id]=run;onAgentEvent?.({run_id:id,status:run.status})
   demoTimer=setInterval(()=>{
+    ticks++
+    if(!resume && ticks<20){
+      if(ticks===10) run={...run,stage:'搜索相关聊天记录',stage_started_at:Date.now()/1000,timeline:[{...completedTimeline[0],status:'running',started_at:Date.now()/1000,finished_at:null}]}
+      previewRuns[id]=run;onAgentEvent?.({run_id:id,status:run.status});return
+    }
+    if(!resume && ticks===20) run={...run,timeline:completedTimeline,stage:'整理已找到的记录，生成回答',stage_started_at:Date.now()/1000,read_count:29}
+
     count+=24
     const done=count>=answer.length
     const item={id:`answer:${id}`,kind:'answer',seq:100,revision:count,text:answer.slice(0,count),status:done?'completed':'running'}
@@ -117,7 +148,7 @@ const startStream=(id,resume=false)=>{
     if(done){run.status='completed';run.elapsed_seconds=Math.round(Date.now()/1000-started);run.timeline=run.timeline.map(x=>x.id==='t2'?{...x,revision:3,status:'completed',finished_at:Date.now()/1000}:x);clearInterval(demoTimer)}
     previewRuns[id]=run
     if(done){const t=previewThreads.find(t=>t.latest_run===id);if(t&&!t.messages.some(m=>m.role==='assistant'&&m.run_id===id))t.messages.push({id:crypto.randomUUID(),role:'assistant',run_id:id,text:run.answer,citations})}
-    onAgentEvent?.({run_id:id,timeline_item:item})
+    onAgentEvent?.({run_id:id,status:run.status,timeline_item:item})
   },450)
 }
 onUnmounted(()=>clearInterval(demoTimer))

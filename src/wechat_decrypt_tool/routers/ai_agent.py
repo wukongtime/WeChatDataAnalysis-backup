@@ -31,8 +31,19 @@ def update_settings(body: AgentSettings):
 
 @router.get('/threads')
 def threads(account: str, username: str = ''):
-    records = get_agent_service().store.list('agent_thread', account_name(account))
-    return [{k: v for k, v in t.items() if k not in ('messages', 'memory')} for t in records if not username or t['username'] == username]
+    store = get_agent_service().store
+    owner = account_name(account)
+    records = store.list('agent_thread', owner)
+    result = []
+    for record in records:
+        if username and record['username'] != username:
+            continue
+        item = {k: v for k, v in record.items() if k not in ('messages', 'memory')}
+        # 列表只返回最新任务的状态，不加载证据或把回答内容带入列表。
+        latest = store.get('agent_run', record['latest_run']) if record.get('latest_run') else None
+        item['latest_run_status'] = latest.get('status', '') if latest and latest.get('account') == owner and latest.get('thread_id') == record['id'] else ''
+        result.append(item)
+    return result
 
 
 @router.post('/threads')

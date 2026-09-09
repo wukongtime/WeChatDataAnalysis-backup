@@ -23,6 +23,7 @@ class ContextIntent(BaseModel):
     objective: str = Field('', max_length=600)
     media: bool = False
     reset_time: bool = False
+    message_count: int | None = Field(None, ge=1, le=10000)
 
 
 class Finding(BaseModel):
@@ -114,6 +115,8 @@ class AgentContext:
             'statistics 仅按日期/会话/发言人统计消息数量（需要语义判断的统计用 list）；list 完整提取符合条件的记录。'
             '“这几天/最近/上周”等时间由你结合当前本地时间理解并填写 Unix 秒 start/end，不能只留文字。'
             '概览、时间线、统计和完整提取必须给出时间窗口；明确全部历史时 start=0。'
+            '用户明确要求最近/最新 N 条消息时 message_count=N（每个选中会话），保留数量限制；未指定数量时为 null。'
+            '只有条数没有日期时 start=0、end=当前时间，不要擅自限制为最近几天。'
             'time_phrase 复制用户原话的时间描述；不要将资料日期当作查询限制。followup 表示沿用上一问题的对象和条件；'
             '“那上周呢”替换日期，“第二件事”沿用背景，“最新/现在”重新填写截止时间。'
             'objective 写完整的本次目标，保留必要指代；用户明确取消日期限制时 reset_time=true；media 仅在需要分析图片附件内容时为 true。'
@@ -121,6 +124,8 @@ class AgentContext:
             '\n上一任务：'+json.dumps(previous,ensure_ascii=False)+'\n近期对话：'+history+'\n用户要求：'+digest)
         for attempt in range(3):
             intent = ContextIntent.model_validate(await self.context_call(id,prompt,ContextIntent)).model_dump()
+            if intent['message_count'] and intent['start'] is None and intent['end'] is None:
+                intent.update(start=0, end=run['cutoff'])
             interval = {} if intent['reset_time'] else dict(run.get('time_range') or {})
             if intent['followup'] and not interval and not intent['reset_time']:
                 interval = previous.get('time_range',{})
@@ -506,16 +511,20 @@ class AgentContext:
     @observed('agent.context.next_analysis_page', id_field='run_id')
     async def next_analysis_page(self,id,username,interval,offset):
         run=self.guard(id)
+        count=run.get('intent',{}).get('message_count')
+        # 复用底层最近 N 条读取器，在固定截止时间内分页；不会先取最早 N 条。
+        start=None if count and interval['start']==0 else interval['start']
+        options={'count':count} if count else {}
         if not hasattr(self.tools,'open_pages'):
-            return await self.tools.read(run['account'],username,interval['start'],interval['end'],offset)
-        key=(id,run['version'],username,interval['start'],interval['end'])
+            return await self.tools.read(run['account'],username,start,interval['end'],offset,**options)
+        key=(id,run['version'],username,start,interval['end'],count)
         reader=self.readers.get(id)
         if reader and (reader['key']!=key or reader['offset']!=offset):
             await reader['manager'].__aexit__(None,None,None)
             self.readers.pop(id,None)
             reader=None
         if not reader:
-            manager=self.tools.open_pages(run['account'],username,interval['start'],interval['end'],offset,lambda:self.guard(id))
+            manager=self.tools.open_pages(run['account'],username,start,interval['end'],offset,lambda:self.guard(id),**options)
             read=await manager.__aenter__()
             reader={'key':key,'manager':manager,'read':read,'offset':offset}
             self.readers[id]=reader

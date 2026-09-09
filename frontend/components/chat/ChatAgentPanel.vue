@@ -2,7 +2,7 @@
   <aside ref="panelView" class="agent-panel" :class="{ 'is-expanded': expanded, 'is-resizing': resizing }" :style="{ '--agent-panel-width': `${panelWidth}px` }" :role="expanded ? 'dialog' : undefined" :aria-modal="expanded ? true : undefined" aria-label="AI 助手" @keydown.esc="onEscape" @keydown.tab="expanded && trapFocus($event, panelView)">
     <div v-if="!expanded" class="agent-resizer" role="separator" tabindex="0" aria-label="调整 AI 助手宽度" aria-orientation="vertical" :aria-valuemin="minWidth" :aria-valuemax="maxWidth" :aria-valuenow="panelWidth" :aria-valuetext="`${panelWidth} 像素`" title="拖动调整宽度，双击恢复默认；方向键微调" @pointerdown="startResize" @lostpointercapture="finishResize" @keydown="resizeKeyboard" @dblclick="resetWidth" />
     <div class="agent-shell" :class="{ 'has-navigation': navigationOpen }">
-    <AgentThreadList v-if="navigationOpen" :key="account" :items="history" :current="thread?.id" :running-id="running ? thread?.id : ''" :loading="historyLoading" :busy="historyBusy" :error="historyError" :name-for="nameFor" @close="navigationOpen = false" @new="newThread" @select="selectHistory" @refresh="loadHistory" @rename="renameHistory" @delete="deleteHistory" @settings="settings.openDialog('ai')" />
+    <AgentThreadList v-if="navigationOpen" :key="account" :items="history" :current="thread?.id" :running-ids="runningThreadIds" :loading="historyLoading" :busy="historyBusy" :error="historyError" :name-for="nameFor" @close="navigationOpen = false" @new="newThread" @select="selectHistory" @refresh="loadHistory" @rename="renameHistory" @delete="deleteHistory" @settings="settings.openDialog('ai')" />
     <div class="agent-main">
     <header class="agent-header">
       <button type="button" aria-label="AI 对话历史" title="会话列表" :aria-expanded="navigationOpen" @click="openHistory"><i class="fa-solid fa-columns" aria-hidden="true" /></button>
@@ -96,7 +96,11 @@ const profilesLoading = ref(false), profilesError = ref('')
 let profilesRequest = null
 const history = ref([]), directory = ref([]), dialog = ref(''), dialogError = ref(''), scopeQuery = ref(''), scopeDraft = ref([])
 const navigationOpen = ref(false), historyLoading = ref(false), historyBusy = ref(false), historyError = ref(''), threadLoading = ref(false), pendingThreadId = ref('')
-let historyVersion = 0
+let historyVersion = 0, historyPending = 0, lastHistorySync = 0, statusRevision = 0
+const runStatuses = ref({})
+// 状态按任务保存，切换当前会话不会清除其他会话的运行指示。
+const rememberStatus = (id, status) => { if (id && typeof status === 'string') runStatuses.value[id] = {status,revision:++statusRevision} }
+const runningThreadIds = computed(() => history.value.filter(item => ['queued','running'].includes(runStatuses.value[item.latest_run]?.status ?? item.latest_run_status)).map(item => item.id))
 const menuOpen = ref(false), menuAnchor = ref(null), menuTrigger = ref(null), composerSettings = ref(false), draftInput = ref(null)
 const inspectedSource = ref(null), canInspect = ref(false)
 let panelObserver, sourceTrigger = null
@@ -266,14 +270,26 @@ const saveScope = async () => {
     thread.value = result; dialog.value = ''; await refresh()
   } catch (e) { if (!disposed && account === props.account) dialogError.value = e.message }
 }
-const loadHistory = async () => {
-  const account = props.account, current = ++historyVersion
-  historyLoading.value = true; historyError.value = ''
+const loadHistory = async ({silent = false} = {}) => {
+  const account = props.account, current = ++historyVersion, revision = statusRevision
+  historyPending++; lastHistorySync = Date.now()
+  if (!silent) { historyLoading.value = true; historyError.value = '' }
   try {
-    const items = account ? await api.request('/agent/threads', {query:{account}}) : []
-    if (!disposed && account === props.account && current === historyVersion) history.value = items
-  } catch (e) { if (!disposed && account === props.account && current === historyVersion) historyError.value = `会话列表加载失败：${e.message}` }
-  finally { if (current === historyVersion) historyLoading.value = false }
+    const items = account ? await api.request('/agent/threads', {query:{account},timeout:12000}) : []
+    if (!disposed && account === props.account && current === historyVersion) {
+      for (const item of items) {
+        // 请求发出后收到的新事件优先，避免旧列表把已完成任务重新显示成运行中。
+        if (item.latest_run_status != null && (runStatuses.value[item.latest_run]?.revision ?? 0) <= revision) rememberStatus(item.latest_run, item.latest_run_status)
+      }
+      // 静默刷新只更新内容，保留已有行的顺序，避免鼠标下的会话突然换位。
+      if (silent) {
+        const incoming = new Map(items.map(item => [item.id,item]))
+        const existing = new Set(history.value.map(item => item.id))
+        history.value = [...history.value.map(item => incoming.get(item.id)).filter(Boolean), ...items.filter(item => !existing.has(item.id))]
+      } else history.value = items
+    }
+  } catch (e) { if (!silent && !disposed && account === props.account && current === historyVersion) historyError.value = `会话列表加载失败：${e.message}` }
+  finally { historyPending--; if (current === historyVersion) historyLoading.value = false }
 }
 const openHistory = () => { navigationOpen.value = !navigationOpen.value; if (navigationOpen.value) void loadHistory() }
 const selectHistory = item => guardAction(async () => {
@@ -320,6 +336,7 @@ const connect = () => {
   const account=props.account
   if (account && api.agentEvents) events=api.agentEvents(account, event=>{
     if (disposed || account!==props.account) return
+    rememberStatus(event?.run_id, event?.status)
     if (event?.run_id === run.value?.id && event.timeline_item) {
       run.value={...run.value,timeline:mergeTimeline(run.value.timeline,[event.timeline_item])}
       const accepted = run.value.timeline.find(item=>item.id===event.timeline_item.id)
@@ -328,7 +345,8 @@ const connect = () => {
     clearTimeout(eventTimer); eventTimer=setTimeout(refresh,180)
   })
 }
-watch(() => [props.account, props.contact?.username], ([account],[oldAccount]) => { if (account !== oldAccount) { ++historyVersion; history.value = []; historyBusy.value = false; historyError.value = ''; expanded.value = false; directory.value = []; connect(); void loadHistory() }; if (!pinned.value || account !== oldAccount) void guardAction(loadSelection) })
+watch(() => [props.account, props.contact?.username], ([account],[oldAccount]) => { if (account !== oldAccount) { ++historyVersion; runStatuses.value = {}; lastHistorySync = 0; history.value = []; historyBusy.value = false; historyError.value = ''; expanded.value = false; directory.value = []; connect(); void loadHistory() }; if (!pinned.value || account !== oldAccount) void guardAction(loadSelection) })
+watch(() => [props.account, run.value?.id, run.value?.status], () => { if (run.value && (!run.value.account || run.value.account === props.account)) rememberStatus(run.value.id, run.value.status) })
 watch(() => props.focusTaskId, id => { if (id) mode.value = 'tools' })
 watch(() => settings.open?.value, (open, previous) => { if (previous && !open) void loadProfiles() })
 watch(expanded, value => { closeInspector(); finishResize(); navigationOpen.value = value; if (value) void loadHistory(); emit('expanded', value) })
@@ -346,6 +364,6 @@ onMounted(() => {
   })
   panelObserver.observe(panelView.value)
   resizeDraft()
-  connect(); void guardAction(loadSelection); void loadProfiles(); timer = setInterval(() => { now.value = Date.now(); if (running.value) void refresh() }, 1500) })
+  connect(); void guardAction(loadSelection); void loadProfiles(); timer = setInterval(() => { now.value = Date.now(); if (running.value) void refresh(); if (!historyPending && Date.now() - lastHistorySync >= 5000 && (navigationOpen.value || runningThreadIds.value.length)) void loadHistory({silent:true}) }, 1500) })
 onUnmounted(() => { panelObserver?.disconnect(); document.removeEventListener('pointerdown', onOutside); closeInspector(); disposed = true; ++version; clearInterval(timer); clearTimeout(eventTimer); events?.(); emit('expanded', false) })
 </script>
