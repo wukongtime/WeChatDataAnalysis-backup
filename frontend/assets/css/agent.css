@@ -303,6 +303,13 @@ html[data-theme=dark] .agent-panel .agent-markdown .agent-ref { background:#173c
 .agent-process-title { color:var(--app-text-primary); font-weight:600; white-space:nowrap; }
 .agent-process-toggle .agent-process-meta { margin:0; font-size:12px; font-weight:400; }
 .agent-process-disclosure { margin-left:auto; font-size:12px; white-space:nowrap; }
+/* 收起时退为轻量文字入口，避免整行卡片抢占回答的视觉重心。 */
+.agent-process-panel:not(.is-open) { width:fit-content; max-width:100%; background:transparent; border:0; border-radius:0; margin-bottom:16px; }
+.agent-process-panel:not(.is-open) > .agent-process-toggle { padding:4px 0!important; gap:8px; flex-wrap:nowrap; min-height:30px; border-radius:4px; background:transparent; }
+.agent-process-panel:not(.is-open) .agent-process-title { color:var(--ag-muted); font-weight:400; font-size:12px; }
+.agent-process-panel:not(.is-open) .agent-process-toggle > i:first-child { font-size:12px; width:14px; }
+.agent-process-panel:not(.is-open) .agent-process-meta { order:0; flex:0 1 auto; min-width:0; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.agent-process-panel:not(.is-open) .agent-process-disclosure { display:none; }
 .agent-process-panel.is-open > .agent-process-toggle { border-radius:12px 12px 0 0; border-bottom:1px solid var(--ag-border); }
 .agent-process-body { padding:8px 16px 12px; }
 .agent-process-body .agent-tool { margin:2px 0; padding:0 8px; font-size:13px; }
