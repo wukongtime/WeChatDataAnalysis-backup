@@ -12,8 +12,9 @@ const contact = { username:'sample', name:'文海健9.8' }, contacts=[contact,{u
 const source = {source:'aaaaaaaaaaaaaaaaaaaaaaaa',username:'sample',anchor:'msg2',name:'文海健9.8',sender:'文海健',time:1788849120,text:'费用先记到 AA 表里，晚点再一起核对。'}
 const answer = designPreview ? `约饭定在 **9月9日（周三）晚上**。
 
-- 9月2日：改到下周三。[[aaaaaaaaaaaaaaaaaaaaaaaa]]
-- 9月7日：再次确认周三晚上。[[bbbbbbbbbbbbbbbbbbbbbbbb]]` : `## 南京出行梳理
+从聊天看，这事有过一次明确约定：
+- 9月2日提到“那就下周三（旺柴）”，也就是顺延到 **9月9日**。[[aaaaaaaaaaaaaaaaaaaaaaaa]]
+- 9月7日再次确认“周三晚上吃饭啊”“先这样哈，周三见”。[[bbbbbbbbbbbbbbbbbbbbbbbb]]` : `## 南京出行梳理
 目前聊到了行程、费用和兼职安排，以下是已经确认和仍需核对的内容。
 ### 已经提到
 1. **行程**：讨论过南京出行，但具体出发时间还没敲定。[[aaaaaaaaaaaaaaaaaaaaaaaa]]
@@ -36,11 +37,10 @@ const baseRun=()=>({id:'run1',status:'completed',elapsed_seconds:18,answer,citat
 const makeRun = () => {
   const result = baseRun()
   if (designPreview) Object.assign(result, { elapsed_seconds:141, coverage_warnings:[], timeline:[
-    {id:'p0',kind:'progress',seq:0,status:'completed',text:'我找到了约饭的记录，再核对一下最后确认的时间。'},
     {id:'t1',kind:'tool',seq:1,status:'completed',text:'搜索了聊天记录',action:'search_messages',query:'约饭',username:'sample',started_at:1,finished_at:3,result:{returned:21,retrieval_mode:'hybrid'}},
     {id:'t2',kind:'tool',seq:2,status:'completed',text:'读取了上下文',action:'read_context',username:'sample',started_at:3,finished_at:5,result:{returned:21}},
     {id:'t3',kind:'tool',seq:3,status:'completed',text:'读取了上下文',action:'read_context',username:'sample',started_at:5,finished_at:5,cached:true,result:{returned:21}},
-    {id:'p1',kind:'progress',seq:4,status:'completed',text:'最近的消息确认了周三晚上。[[aaaaaaaaaaaaaaaaaaaaaaaa]]'},
+    {id:'p1',kind:'progress',seq:4,status:'completed',text:'已找到周三晚饭的约定，继续核对最近消息。[[aaaaaaaaaaaaaaaaaaaaaaaa]]'},
     {id:'t4',kind:'tool',seq:5,status:'completed',text:'核对了最近消息',action:'read_messages',username:'sample',started_at:5,finished_at:9,result:{returned:8}},
   ] })
   return result

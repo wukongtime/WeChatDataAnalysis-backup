@@ -12,6 +12,34 @@ const base = () => ({id:'run1',status:'running',stage:'搜索聊天记录',segme
 const setup = (extra={}) => mount(AgentRun,{props:{run:base(),now:105000,nearBottom:true,latest:true,viewState:reactive({}),...extra}})
 
 describe('Agent 执行对话流',()=>{
+  it('完成概览在过程前，用量折叠在答案前，收起过程不隐藏答案', async () => {
+    const w = setup({run:{...base(),status:'completed',elapsed_seconds:141,answer:'约饭定在周三',usage:{calls:6,input_tokens:100,output_tokens:20}}})
+    const text = w.text()
+    expect(w.find('.agent-process-toggle').text()).toContain('已完成 · 2分21秒')
+    expect(text.indexOf('已完成 · 2分21秒')).toBeLessThan(text.indexOf('搜索报价'))
+    expect(text.indexOf('用量与读取范围')).toBeLessThan(text.indexOf('约饭定在周三'))
+    expect(w.find('.agent-run-metadata').element.open).toBe(false)
+    expect(w.find('.agent-run-metadata > summary').text()).toContain('6 次模型调用')
+    await w.find('.agent-process-toggle').trigger('click')
+    expect(w.find('.agent-final-answer').isVisible()).toBe(true)
+    w.unmount()
+  })
+  it('重复读取默认展示逐次时间线，缓存命中不重复计数，折叠状态保留', async () => {
+    const a = {id:'a',kind:'tool',action:'read_context',username:'friend',status:'completed',result:{returned:21},started_at:100,finished_at:102}
+    const b = {...a,id:'b',cached:true}
+    const r = {...base(),timeline:[a,b]}
+    const w = setup({run:r})
+    const group = w.find('.agent-tool')
+    expect(group.element.open).toBe(true)
+    expect(w.find('.agent-tool > summary').text()).toContain('21 条消息 · 含 1 次复用')
+    expect(w.findAll('.agent-tool-attempt-row').map(x=>x.text())).toEqual(['首次读取21 条 · 2秒','复用已读结果无需重复读取'])
+    group.element.open = false
+    await group.trigger('toggle')
+    await w.setProps({run:{...r,timeline:[a,b,{...b,id:'c'}]}})
+    expect(group.element.open).toBe(false)
+    expect(w.find('.agent-tool > summary').text()).toContain('21 条消息 · 含 2 次复用')
+    w.unmount()
+  })
   it('过程进展共用 Markdown 引用渲染，折叠历史仍显示实时状态', async () => {
     const id = '622367649b6ca270ffad893a', r = base()
     r.timeline[1].text = `约的是 **周三** (source: ${id})`
