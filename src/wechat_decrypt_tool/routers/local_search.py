@@ -14,6 +14,7 @@ router = APIRouter(prefix='/api/ai/local-search', dependencies=[Depends(local_on
 class Settings(BaseModel):
     model_config = ConfigDict(extra='forbid')
     enabled: bool = False
+    agent_global: bool = False
     model: Literal['bge-small-zh','bge-base-zh','e5-small'] | None = None
     usernames: list[str] = Field(default_factory=list, max_length=2000)
     days: Literal[0,30,90] = 90
@@ -38,7 +39,13 @@ def status(account: str | None = None):
 
 @router.put('/settings')
 async def settings(body: Settings, account: str):
-    try: return await get_local_search().configure(account_name(account), body.model_dump())
+    try:
+        values = body.model_dump()
+        if body.agent_global:
+            from ..ai.agent_tools import ChatTools
+            chats = await ChatTools().conversations(account_name(account))
+            values.update(usernames=[c['username'] for c in chats], days=0, start=0, end=None, auto_update=True)
+        return await get_local_search().configure(account_name(account), values)
     except ValueError as e: raise HTTPException(400, str(e)) from None
 
 @router.get('/conversations')

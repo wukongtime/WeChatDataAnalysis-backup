@@ -8,6 +8,9 @@ from pathlib import Path
 
 
 async def _checkpoint(root):
+    from deepagents import create_deep_agent
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
     from langgraph.graph import StateGraph, START, END
     from typing import TypedDict
@@ -24,6 +27,39 @@ async def _checkpoint(root):
         config = {'configurable': {'thread_id': 'synthetic-runtime-check'}}
         assert (await workflow.ainvoke({'count': 0}, config))['count'] == 1
         assert (await workflow.aget_state(config)).values['count'] == 1
+        # 使用真实 DeepAgents 构图和持久化，冻结程序也必须具备新引擎。
+        class RuntimeModel(GenericFakeChatModel):
+            def bind_tools(self, tools, **kwargs):
+                return self
+        agent = create_deep_agent(model=RuntimeModel(messages=iter([AIMessage(content='运行正常')])), checkpointer=saver)
+        result = await agent.ainvoke({'messages': [('user', '你好')]}, {'configurable': {'thread_id': 'deepagents-smoke'}})
+        assert result['messages'][-1].content == '运行正常'
+
+    # 进一步验证应用自己的模型适配、工具裁剪、持久化和校验链路，避免仅框架可导入。
+    from .storage import AIStore
+    from .providers import ModelService
+    from .service import AIService
+    from .agent_service import AgentService
+    store = AIStore(root / 'application')
+    store.put('profile', {'model': 'synthetic', 'name': '冻结验收', 'protocol': 'openai',
+        'base_url': 'http://127.0.0.1:1/v1', 'api_key': 'synthetic-unused-key',
+        'model_overrides': {'context_window': 32768}}, id='synthetic')
+    store.put('defaults', {'text': 'synthetic'}, id='global')
+    models = ModelService(store)
+    models.client = lambda profile: RuntimeModel(messages=iter([AIMessage(content='运行正常')]))
+    class NoQueries:
+        async def conversations(self, account):
+            raise AssertionError('冻结问候检查不能读取聊天目录')
+    service = AgentService(AIService(store, models), tools=NoQueries())
+    thread = await service.create_thread('synthetic', '', '运行检查')
+    run = await service.submit(thread['id'], 'synthetic', {'text': '你好', 'request_id': 'smoke'})
+    await service.workers[run['id']]
+    result = service.public_run(run['id'], 'synthetic')
+    assert result['status'] == 'completed', result.get('error')
+    assert result['answer'] == '运行正常'
+    assert result['used']['models'] == 1 and result['used']['tools'] == 0
+    assert result['engine'] == 'deepagents' and result['engine_version'] == 3
+    await service.stop()
 
 
 def check_runtime(model_root=None):
@@ -58,6 +94,7 @@ def check_runtime(model_root=None):
         store.put('runtime_check', {'ok': True}, id='check', account='synthetic')
         assert store.get('runtime_check', 'check')['ok']
         asyncio.run(_checkpoint(root))
+        report['application_graph'] = 'deepagents-v3-one-call-no-query'
         index = SemanticIndex(root / 'vectors.sqlite3')
         with index.connection() as db:
             assert db.execute("SELECT vec_distance_cosine('[1,0]','[1,0]')").fetchone()[0] == 0

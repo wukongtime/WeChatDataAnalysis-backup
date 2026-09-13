@@ -7,7 +7,7 @@ from .diagnostics import observed, event
 
 @observed('lifecycle.start')
 async def start_services():
-    for package in ('langchain-openai', 'langchain-anthropic', 'langgraph', 'onnxruntime', 'sqlite-vec', 'tokenizers'):
+    for package in ('deepagents', 'langchain-openai', 'langchain-anthropic', 'langgraph', 'onnxruntime', 'sqlite-vec', 'tokenizers'):
         try:
             event('runtime.component', component=package, runtime=version(package))
         except PackageNotFoundError as error:

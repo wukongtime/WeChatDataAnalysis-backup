@@ -3,8 +3,11 @@ from .diagnostics import observed, event as diagnostic_event, context as diagnos
 import logging
 import asyncio
 import json
+import hashlib
 import time
 import uuid
+import httpx
+import httpcore
 from contextvars import ContextVar
 
 from langchain_core.messages import SystemMessage
@@ -12,16 +15,19 @@ from langsmith import tracing_context
 from pydantic import ValidationError
 
 from .agent_schemas import AgentAction, TOOL_DESCRIPTION, AgentControl
-from .providers import ProviderFailure, audit_task_id, model_attempt_hook
+from .providers import ProviderFailure, audit_task_id, model_attempt_hook, capture_sdk_truncation
 from .agent_budget import active_budget, check_request, output_limit, ContextOverflow, is_context_error
+from .model_execution import ANSWER_SECONDS, DECISION_SECONDS
+from .model_scheduler import scheduler, subtask_id
 
 agent_feedback = ContextVar('agent_feedback', default=None)
 
 
 class ActionFormatError(ValueError):
-    def __init__(self, code, fields=None):
+    def __init__(self, code, fields=None, *, correction=None):
         super().__init__(code)
         self.code, self.fields = code, fields or []
+        self.correction = correction
 
 
 class AgentFailure(ProviderFailure):
@@ -35,6 +41,29 @@ class AgentModel:
     def __init__(self, models):
         self.models = models
         self.no_tools, self.no_stream, self.no_force, self.no_json = set(), set(), set(), set()
+
+    def compatibility_state(self, key, *, save=False):
+        """短期保存服务明确拒绝的参数；配置版本变化后使用不同记录。"""
+        identifier = hashlib.sha256(json.dumps(key, ensure_ascii=False).encode()).hexdigest()
+        flags = ('no_tools', 'no_stream', 'no_force', 'no_json')
+        try:
+            if save:
+                self.models.store.put('agent_model_compatibility', {
+                    'expires_at': time.time() + 86400,
+                    'disabled': [flag for flag in flags if key in getattr(self, flag)],
+                }, id=identifier)
+                return
+            state = self.models.store.get('agent_model_compatibility', identifier) or {}
+            if not state:
+                return
+            disabled = state.get('disabled', []) if state.get('expires_at', 0) > time.time() else []
+            for flag in flags:
+                getattr(self, flag).discard(key)
+                if flag in disabled:
+                    getattr(self, flag).add(key)
+        except Exception:
+            # 派生缓存不可用时保留进程内结果，不影响任务和原文检查点。
+            diagnostic_event('model.compatibility.cache_unavailable', level=logging.WARNING)
 
     @staticmethod
     def text(content):
@@ -91,8 +120,9 @@ class AgentModel:
         return cls.validate_actions(values)
 
     @observed('agent.model.call')
-    async def call(self, profile, messages, account, *, decision=False, on_delta=None, validate=None):
+    async def call(self, profile, messages, account, *, decision=False, on_delta=None, validate=None, continuation=False):
         key = (profile.get('base_url'), profile.get('protocol'), profile['model'], profile['id'], profile.get('revision'))
+        self.compatibility_state(key)
         phase = 'decision' if decision else 'answer'
         capabilities = profile.get('model_metadata', {})
         if capabilities.get('tool_call') is False:
@@ -100,19 +130,20 @@ class AgentModel:
         if capabilities.get('structured_output') is False:
             self.no_json.add(key)
         corrections, token_limit = [], None
+        deadline = time.monotonic() + (DECISION_SECONDS if decision else ANSWER_SECONDS)
         for attempt in range(3):
             request = [*messages, *corrections]
-            fallback = decision and (key in self.no_tools or key in self.no_force)
+            fallback = decision and key in self.no_tools
             if fallback:
                 request.append(SystemMessage(content=TOOL_DESCRIPTION+'\n只返回符合以下 Schema 的 JSON 动作，禁止附加散文：' + json.dumps(AgentAction.model_json_schema(), ensure_ascii=False)))
+            extra={'description':TOOL_DESCRIPTION,'parameters':AgentAction.model_json_schema()} if decision and not fallback else None
             if active_budget.get():
-                extra={'description':TOOL_DESCRIPTION,'parameters':AgentAction.model_json_schema()} if decision and not fallback else None
                 # 本地预算检查未向上游发出请求，不建立虚假的未知用量记录。
                 check_request(profile,request,extra)
             hook = model_attempt_hook.get()
             if hook:
                 hook()
-            audit = dict(id=uuid.uuid4().hex, account=account, task_id=audit_task_id.get(),
+            audit = dict(id=uuid.uuid4().hex, account=account, task_id=audit_task_id.get(), subtask_id=subtask_id.get(),
                          profile_id=profile['id'], profile_name=profile.get('name'), model=profile['model'],
                          provider=profile.get('provider'), profile_revision=profile.get('revision'),
                          attempt=attempt + 1, started_at=time.time(), status='running', usage={}, usage_known=False,
@@ -123,15 +154,18 @@ class AgentModel:
             request_finished = None
             diagnostic_event('model.call.started', call_id=audit['id'], phase=phase, attempt=attempt+1, using_fallback=fallback)
             emitted, response = False, None
+            call_timeout = asyncio.timeout(max(.001, deadline - time.monotonic()))
             try:
-                async with self.models.semaphore:
+                async with call_timeout, self.models.semaphore:
                     requested = time.monotonic()
                     diagnostic_event('model.call.acquired', call_id=audit['id'], queue_ms=(requested-queued)*1000)
                     with tracing_context(enabled=False):
                         client = self.models.client(profile)
                         kwargs = {'max_tokens': min(token_limit or output_limit(profile), output_limit(profile))} if active_budget.get() else ({'max_tokens': token_limit} if token_limit else {})
+                        if decision and not token_limit:
+                            kwargs['max_tokens'] = min(output_limit(profile), 4096)
                         if decision:
-                            if key not in self.no_tools and key not in self.no_force:
+                            if key not in self.no_tools:
                                 client = client.bind_tools([{'name': 'chat_action', 'description': TOOL_DESCRIPTION,
                                                             'parameters': AgentAction.model_json_schema()}],
                                                            tool_choice='auto' if key in self.no_force else 'chat_action')
@@ -153,6 +187,10 @@ class AgentModel:
                                 if profile.get('protocol') == 'openai':
                                     kwargs['stream_usage'] = True
                                 async for chunk in client.astream(request, config={'callbacks': []}, **kwargs):
+                                    # 已缓冲的流式片段可能连续同步返回，期间没有
+                                    # 事件循环调度点；不能只依赖 timeout 的取消回调。
+                                    if time.monotonic() >= deadline:
+                                        raise TimeoutError('回答超过本步骤截止时间')
                                     response = chunk if response is None else response + chunk
                                     self.capture(audit, response, check_finish=False)
                                     delta = self.text(chunk.content)
@@ -171,6 +209,11 @@ class AgentModel:
                             validate(value)
                 request_finished = time.monotonic()
                 audit.update(status='success', validation_status='success')
+                from .context_meter import active_meter
+                meter = active_meter.get()
+                if meter:
+                    meter.observe(profile, request, extra, audit.get('usage'))
+                    audit['context_measurement'] = dict(meter.last)
                 return value
             except asyncio.CancelledError:
                 audit['status'] = 'cancelled'
@@ -180,8 +223,12 @@ class AgentModel:
                 raise
             except Exception as exc:
                 request_finished = time.monotonic()
+                if capture_sdk_truncation(audit, exc):
+                    exc = ActionFormatError('output_truncated')
                 diagnostic_event('model.call.attempt_failed', level=logging.WARNING, error=exc, call_id=audit['id'], diagnostic_id=audit['id'])
                 code = getattr(exc, 'status_code', None)
+                if code == 429:
+                    scheduler().throttled()
                 category, retryable = 'protocol', True
                 fields, reason_code = getattr(exc, 'fields', []), getattr(exc, 'code', '')
                 audit.update(status='failed', http_status=code, error_type=type(exc).__name__,
@@ -211,8 +258,12 @@ class AgentModel:
                         token_limit = min(16384, max(8192, (token_limit or 4096) * 2))
                     if decision:
                         correction = '上一动作未执行。请修正：' + json.dumps({'error':reason_code, 'fields':fields}, ensure_ascii=False) + '。仅输出符合 Schema 的动作；search_messages 需要非空 query，read_context/analyze_media 的 source 必须原样复制 evidence 中的消息 source，不能使用 data_source、realtime、decrypted、snapshot_index 或自行编造编号；没有已读消息时先搜索或读取消息；answer/clarify 必须单独调用。不要重读已完成页面。'
+                    elif continuation:
+                        correction = '上一段续写未通过校验，新增内容已撤回，原回答前缀保持不变。只能输出该前缀最后一个字符之后的剩余内容，先按最后一条用户指令接完半截引用；禁止重新输出已有标题、开头或整份回答。仅使用输入证据中的合法引用。'
                     else:
-                        correction = '上一回答未通过完整性或引用校验。请重新输出简短完整的重点回答，详细条目保留在分页结果中；仅使用输入证据内的 [[source_id]] 引用，不添加未知来源。'
+                        correction = '上一回答未通过完整性或引用校验。请按本轮要求重新输出完整回答，保留用户要求的范围、事实与详细程度；仅使用输入证据内的 [[source_id]] 引用，不添加未知来源。'
+                    if getattr(exc, 'correction', None):
+                        correction += '\n' + exc.correction
                     # 最新纠错已包含完整约束，不反复累积相同提示占用小窗口。
                     corrections = [SystemMessage(content=correction)]
                 elif code == 429:
@@ -224,12 +275,15 @@ class AgentModel:
                 elif code:
                     category, retryable = 'configuration', False
                 else:
-                    category = 'connection' if any(x in type(exc).__name__.lower() for x in ('connection', 'network', 'connect')) else 'internal'
+                    # 流式 SDK 也可能直接抛出底层 httpcore 异常，二者不是继承关系。
+                    category = 'connection' if isinstance(exc, (httpx.TransportError, httpcore.NetworkError, httpcore.ProtocolError)) or any(x in type(exc).__name__.lower() for x in ('connection', 'network', 'connect')) else 'internal'
                     retryable = category == 'connection'
                 audit.update(error_category=category, error_code=reason_code, diagnostic_id=audit['id'])
+                if compatibility:
+                    self.compatibility_state(key, save=True)
                 diagnostic_event('model.call.validation', level=logging.WARNING, call_id=audit['id'], diagnostic_id=audit['id'],
                                  error_category=category, reason_code=reason_code, using_fallback=compatibility)
-                if attempt == 2 or not retryable or (emitted and not isinstance(exc, ActionFormatError)):
+                if attempt == 2 or call_timeout.expired() or time.monotonic() >= deadline or not retryable or (emitted and not isinstance(exc, ActionFormatError)):
                     labels = {'authentication':'模型鉴权失败，请检查 AI 服务配置。', 'configuration':'模型请求配置有误，请检查 AI 服务。',
                               'capability':'该服务不支持所需调用方式，请检查模型能力。', 'protocol':'模型返回的查询指令仍无法处理。' if decision else '回答校验未通过，请重试这一步。',
                               'truncated':'模型输出被截断，当前步骤未完成。', 'rate_limit':'服务请求过于频繁，请稍后重试。',
@@ -248,7 +302,7 @@ class AgentModel:
                 if not decision and on_delta:
                     on_delta(None)
                 if not compatibility and not isinstance(exc, ActionFormatError):
-                    await asyncio.sleep(2 ** attempt)
+                    await asyncio.sleep(min(2 ** attempt, max(0, deadline - time.monotonic())))
             finally:
                 audit.update(finished_at=time.time(), duration_ms=round((time.time() - audit['started_at']) * 1000))
                 self.models.store.put('usage', audit, account=account)

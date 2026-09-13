@@ -13,7 +13,7 @@
         <i class="fa-solid" :class="tab.icon" aria-hidden="true"></i><span class="ais-tab-copy"><strong>{{ tab.label }}</strong><small>{{ tab.hint }}</small></span>
       </button>
     </div>
-    <LocalSearchSettings v-if="activeTab === 'local'" id="ais-local" role="tabpanel" aria-labelledby="ais-local-tab" />
+    <LocalSearchSettings v-if="activeTab === 'local'" account-wide id="ais-local" role="tabpanel" aria-labelledby="ais-local-tab" />
     <p v-if="error" role="alert" class="ais-feedback is-error">{{ error }}</p>
     <p v-if="notice" role="status" class="ais-feedback is-success"><i class="fa-solid fa-circle-check" aria-hidden="true"></i>{{ notice }}</p>
 
@@ -96,6 +96,10 @@
           <details class="ais-capability-options"><summary>其他能力与参数</summary>
             <label>最大输出（tokens） · {{ capabilitySource('max_output_tokens') }}<input :value="form.model_overrides.max_output_tokens ?? selectedMetadata?.limit?.output ?? ''" type="number" min="1" max="10000000" placeholder="自动识别，或手动填写" @input="setOverride('max_output_tokens', $event.target.value ? Number($event.target.value) : null)" /></label>
             <label v-for="field in editableCapabilities" :key="field.key">{{ field.label }}<UiSelect :model-value="overrideChoice(field.key)" :label="field.label" :options="capabilityOptions(field.key)" @update:model-value="setOverride(field.key, $event === 'auto' ? null : $event === 'yes')" /></label>
+            <label>原生推理等级 · {{ capabilitySource('reasoning_efforts') }}
+              <input aria-label="供应商确认的原生推理等级" :value="(form.model_overrides.reasoning_efforts ?? selectedMetadata?.reasoning_efforts ?? []).join(', ')" maxlength="800" placeholder="例如：low, high, max" @change="setReasoningEfforts($event.target.value)" />
+              <small class="ais-muted">仅填写供应商已确认支持的等级，用逗号分隔；留空恢复自动识别。</small>
+            </label>
             <AiModelMetadata v-if="selectedMetadata" :metadata="selectedMetadata" />
             <p v-else class="ais-muted">暂未获取到参考参数，使用上方手动配置。</p>
           </details>
@@ -166,6 +170,7 @@ const profileOptions = vision => [{ value: '', label: '不设置默认模型' },
 const protocolOptions = [{ value: 'openai', label: 'OpenAI 兼容' }, { value: 'anthropic', label: 'Claude Messages' }]
 const providerPresentation = {
   deepseek: { hint: 'DeepSeek 官方接口', aliases: '深度求索' },
+  xiaomi: { caption: '小米 MiMo 开放平台', hint: '小米官方 OpenAI 兼容接口', aliases: '小米 MiMo' },
   claude: { hint: 'Claude Messages 接口', aliases: 'Anthropic' },
   kimi: { hint: 'Moonshot 兼容接口', aliases: '月之暗面' },
   openai: { hint: 'OpenAI 官方接口', aliases: 'ChatGPT GPT' },
@@ -270,6 +275,10 @@ const capabilitySource = key => {
 const setOverride = (key, value) => {
   if (value == null) { delete form.model_overrides[key]; selectModel() }
   else form.model_overrides[key] = value
+}
+const setReasoningEfforts = value => {
+  const levels = [...new Set(value.split(/[,，\s]+/).map(level => level.trim()).filter(Boolean))]
+  setOverride('reasoning_efforts', levels.length ? levels : null)
 }
 const restoreAutomatic = async () => {
   form.model_overrides = {}; form.context_window = null; form.vision = false

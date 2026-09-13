@@ -53,7 +53,7 @@ def get_record(kind, id, account=None):
 @router.get("/settings")
 async def settings():
     service = get_ai_service()
-    await service.models.metadata.refresh()
+    service.models.metadata.refresh_in_background()
     return {"presets": PRESETS, "profiles": [public_profile(service.models.metadata.enrich(p)) for p in service.store.list("profile")],
             "defaults": service.store.get("defaults", "global") or {"text": "", "vision": ""}}
 
@@ -78,6 +78,9 @@ def write_profile(body, id=None):
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
     old = get_record("profile", id) if id else {}
+    if 'compaction_policy' not in body.model_fields_set and old.get('compaction_policy'):
+        # 旧设置界面保存模型时保留通过 API 配置的上下文策略。
+        profile['compaction_policy'] = old['compaction_policy']
     if profile["api_key"] is None:
         if old.get("api_key") and (profile["base_url"].rstrip("/") != old["base_url"].rstrip("/") or profile["protocol"] != old["protocol"]):
             raise HTTPException(422, "修改服务地址或协议后，请重新输入密钥再保存")

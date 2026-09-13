@@ -4,15 +4,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ChatAgentPanel from '../components/chat/ChatAgentPanel.vue'
 import AgentAnswer from '../components/chat/AgentAnswer.vue'
 
-let state, threads, runs, request, seq
+let state, threads, runs, request, seq, eventCallbacks, eventReady, eventDisconnected
 beforeEach(() => {
-  state = ref({selected:{},drafts:{},pinned:{}}); threads = {}; runs = {}; seq = 0
+  state = ref({selected:{},drafts:{},pinned:{}}); threads = {}; runs = {}; seq = 0; eventCallbacks = {}; eventReady = {}; eventDisconnected = {}
   request = vi.fn(async (path, options = {}) => {
     if (path === '/settings') return {profiles:[]}
     if (path === '/conversations') return [{username:'first',name:'会话一'},{username:'second',name:'会话二'}]
     if (path === '/agent/threads') {
-      if (options.method === 'POST') { const id = `thread${++seq}`; return threads[id] = {id, ...options.body, scope:[options.body.username], messages:[], latest_run:''} }
-      return Object.values(threads).filter(t => !options.query?.username || t.username === options.query.username)
+      if (options.method === 'POST') { const id = `thread${++seq}`; return threads[id] = {id, ...options.body, scope:['first','second'], messages:[], latest_run:''} }
+      return Object.values(threads).filter(t => !options.query?.username || t.username === options.query.username).map(t=>({...t,latest_run_status:runs[t.latest_run]?.status || ''}))
     }
     const [, , , id, action] = path.split('/')
     if (path.startsWith('/agent/threads/')) {
@@ -35,17 +35,227 @@ beforeEach(() => {
     }
     return []
   })
-  vi.stubGlobal('useAiApi', () => ({request,events:()=>()=>{},agentEvents:()=>()=>{}}))
+  vi.stubGlobal('useAiApi', () => ({request,events:()=>()=>{},agentEvents:(account,callback,ready,disconnected)=>{eventCallbacks[account]=callback;eventReady[account]=ready;eventDisconnected[account]=disconnected;return ()=>{}}}))
   vi.stubGlobal('useSettingsDialog', () => ({openDialog:vi.fn()}))
   vi.stubGlobal('useState', () => state)
 })
 const mountPanel = () => mount(ChatAgentPanel, {attachTo:document.body,props:{account:'acc',contact:{username:'first',name:'会话一'},contacts:[{username:'first',name:'会话一'},{username:'second',name:'会话二'}]},global:{stubs:{AiSidebar:true,Teleport:true}}})
-const send = async (wrapper,text) => { await wrapper.find('textarea').setValue(text); await wrapper.find('[aria-label="发送问题"], [aria-label="发送补充要求"]').trigger('click'); await flushPromises() }
+const send = async (wrapper,text) => { await wrapper.find('textarea').setValue(text); await wrapper.find('textarea').trigger('keydown',{key:'Enter'}); await flushPromises() }
 
 describe('聊天 Agent', () => {
-  it('展开即展示会话列表，可搜索、跨会话切换，并保留各自草稿', async () => {
+  it('新消息刷新联系人资料和 AI 流式回复时保持大视图、当前任务与草稿', async () => {
+    const w = mountPanel()
+    try {
+      await flushPromises(); await send(w, '总结最近的消息')
+      await w.find('[aria-label="展开大视图"]').trigger('click'); await flushPromises()
+      await w.find('textarea').setValue('未发送的补充')
+      const thread = w.vm.thread, run = w.vm.run, onEvent = eventCallbacks.acc
+      request.mockClear()
+
+      // 实时会话列表刷新会替换联系人对象，但当前聊天的 username 不变。
+      for (let unreadCount = 1; unreadCount <= 2; unreadCount++) {
+        await w.setProps({ contact: { username: 'first', name: '更新后的会话名', unreadCount, lastMessage: `新消息 ${unreadCount}` } })
+        await flushPromises()
+        expect(w.classes()).toContain('is-expanded')
+        expect(w.find('.agent-owner').text()).toBe('更新后的会话名')
+        expect(w.vm.thread).toBe(thread)
+        expect(w.vm.run).toBe(run)
+        expect(w.find('textarea').element.value).toBe('未发送的补充')
+        expect(eventCallbacks.acc).toBe(onEvent)
+      }
+      expect(request).not.toHaveBeenCalled()
+
+      onEvent({ thread_id: thread.id, run_id: run.id, status: 'running', patch: { stage: '正在读取新消息', read_count: 12 } })
+      await flushPromises()
+      expect(w.vm.run).toMatchObject({ stage: '正在读取新消息', read_count: 12 })
+      expect(w.classes()).toContain('is-expanded')
+      expect(w.find('textarea').element.value).toBe('未发送的补充')
+      expect(w.emitted('expanded')).toEqual([[true]])
+    } finally { w.unmount() }
+  })
+
+  it.each([
+    ['联系人', { contact: { username: 'second', name: '会话二' } }],
+    ['账号', { account: 'next' }],
+  ])('真正切换%s时仍收起大视图并清除上一会话', async (_, props) => {
+    const original = request.getMockImplementation()
+    request.mockImplementation((path, options) => {
+      // 新账号尚无 AI 对话，列表不能返回旧账号的数据。
+      if (path === '/agent/threads' && options?.query?.account === 'next') return Promise.resolve([])
+      return original(path, options)
+    })
+    const w = mountPanel()
+    try {
+      await flushPromises(); await send(w, '查询当前会话')
+      await w.find('[aria-label="展开大视图"]').trigger('click'); await flushPromises()
+      await w.setProps(props); await flushPromises()
+      expect(w.classes()).not.toContain('is-expanded')
+      expect(w.vm.thread).toBe(null)
+      expect(w.vm.run).toBe(null)
+    } finally { w.unmount() }
+  })
+
+  it('区分实时连接中断和快照同步超时，终态任务也会自动重试并清除提示', async () => {
+    vi.useFakeTimers()
+    threads.old={id:'old',username:'first',title:'已完成任务',scope:['first'],latest_run:'done',messages:[]}
+    runs.done={id:'done',thread_id:'old',status:'completed',timeline:[],updated_at:1}
+    const w = mountPanel()
+    try {
+      await flushPromises()
+      eventDisconnected.acc(); await flushPromises()
+      expect(w.text()).toContain('实时进度连接已中断')
+      eventReady.acc(); await flushPromises()
+      expect(w.text()).not.toContain('实时进度连接已中断')
+
+      const original = request.getMockImplementation()
+      let failed = false
+      request.mockImplementation((path, options) => {
+        if (!failed && path === '/agent/threads/old') { failed = true; return Promise.reject(new Error('timeout')) }
+        return original(path, options)
+      })
+      eventReady.acc(); await flushPromises()
+      expect(w.text()).toContain('状态同步较慢')
+      expect(w.text()).not.toContain('进度连接暂时中断')
+      await vi.advanceTimersByTimeAsync(800); await flushPromises()
+      expect(w.text()).not.toContain('状态同步较慢')
+      expect(request.mock.calls.filter(([path]) => path === '/agent/threads/old').length).toBeGreaterThanOrEqual(3)
+    } finally { w.unmount(); vi.useRealTimers() }
+  })
+
+  it('重连但没有新事件时恢复已完成任务并保留未发送草稿', async () => {
+    const w = mountPanel()
+    try {
+      await flushPromises(); await send(w, '检查报告')
+      const id = w.vm.run.id
+      await w.find('textarea').setValue('未发送的补充')
+      runs[id] = {...runs[id],status:'completed',answer:'连接期间完成的报告',updated_at:Date.now()/1000 + 1}
+      eventReady.acc(); await flushPromises()
+      expect(w.vm.run.status).toBe('completed')
+      expect(w.text()).toContain('连接期间完成的报告')
+      expect(w.find('textarea').element.value).toBe('未发送的补充')
+      expect(request.mock.calls.filter(([path, options]) => path.endsWith('/messages') && options.method === 'POST')).toHaveLength(1)
+    } finally { w.unmount() }
+  })
+  it('流式正文和引用同时显示，较旧快照不丢失已显示的人物和出处', async () => {
+    vi.useFakeTimers()
+    const w = mountPanel()
+    try {
+      await flushPromises(); await send(w, '查约球')
+      const id = w.vm.run.id, source = 'a'.repeat(24), person = 'b'.repeat(24)
+      await w.find('textarea').setValue('未发送的补充')
+      const event = {run_id:id, timeline_item:{id:`answer:${id}`,seq:1,revision:2,kind:'answer',status:'running',
+        text:`[[person:${person}]]负责约球 [[${source}]]`},
+        citations:[{source,username:'first',sender:'甲',sender_avatar_path:'/chat/avatar?username=a',time:100,text:'甲说乙负责约球'}],
+        references:[{id:person,kind:'person',username:'b',name:'乙',sources:[source],mentioned_sources:[source]}]}
+      eventCallbacks.acc(event); await flushPromises()
+      expect(w.find('[data-person]').text()).toBe('乙')
+      expect(w.find('[data-source]').attributes('data-source')).toBe(source)
+      expect(w.find('.agent-ref-unresolved').exists()).toBe(false)
+      // 模拟延迟快照仍未包含新正文；合并后沿用较新事件和配套身份。
+      await vi.advanceTimersByTimeAsync(200); await flushPromises()
+      expect(w.find('[data-person]').text()).toBe('乙')
+      expect(w.find('[data-source]').exists()).toBe(true)
+      expect(w.find('textarea').element.value).toBe('未发送的补充')
+      eventCallbacks.acc({...event,timeline_item:{...event.timeline_item,revision:1,text:'旧回答'},references:[{...event.references[0],name:'错误旧姓名'}]})
+      await flushPromises()
+      expect(w.find('[data-person]').text()).toBe('乙')
+    } finally { w.unmount(); vi.useRealTimers() }
+  })
+
+  it('SSE 正常时只合并事件不轮询快照，断线后才启用保底同步', async () => {
+    vi.useFakeTimers({toFake:['setInterval','clearInterval','Date']})
+    threads.live={id:'live',username:'first',title:'实时任务',scope:['first'],latest_run:'r',messages:[{id:'q',role:'user',text:'问题',run_id:'r'}]}
+    runs.r={id:'r',thread_id:'live',version:1,status:'running',stage:'准备中',timeline:[],updated_at:1}
+    const w = mountPanel()
+    try {
+      await flushPromises()
+      eventReady.acc({reconnected:false})
+      request.mockClear()
+      eventCallbacks.acc({run_id:'r',thread_id:'live',version:1,updated_at:2,status:'running',patch:{stage:'正在读取',read_count:12}})
+      await vi.advanceTimersByTimeAsync(4500); await flushPromises()
+      expect(w.vm.run).toMatchObject({stage:'正在读取',read_count:12})
+      expect(request.mock.calls.filter(([path]) => path === '/agent/threads/live' || path === '/agent/runs/r')).toHaveLength(0)
+
+      eventDisconnected.acc(); request.mockClear()
+      await vi.advanceTimersByTimeAsync(1600); await flushPromises()
+      expect(request.mock.calls.some(([path]) => path === '/agent/threads/live')).toBe(true)
+      expect(request.mock.calls.some(([path]) => path === '/agent/runs/r')).toBe(true)
+    } finally { w.unmount(); vi.useRealTimers() }
+  })
+
+  it('历史回答无需加载处理过程即可复制，并在失败后允许重试', async () => {
+    const writeText = vi.fn().mockRejectedValueOnce(new Error('暂时不可用')).mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    threads.old={id:'old',username:'first',title:'旧报告',scope:['first'],latest_run:'',messages:[
+      {id:'q',role:'user',text:'请总结',run_id:'past'},
+      {id:'a',role:'assistant',text:'已确认的结论。',run_id:'past',citations:[],references:[]},
+    ]}
+    const w=mountPanel();await flushPromises()
+    await w.find('[aria-label="AI 对话历史"]').trigger('click');await flushPromises()
+    await w.find('.agent-thread-select').trigger('click');await flushPromises()
+    await w.find('[aria-label="复制回答"]').trigger('click');await flushPromises()
+    expect(w.text()).toContain('复制失败，请重试')
+    await w.find('[aria-label="复制回答"]').trigger('click');await flushPromises()
+    expect(writeText).toHaveBeenLastCalledWith('已确认的结论。')
+    expect(w.find('[aria-label="已复制回答"]').exists()).toBe(true)
+    expect(w.text()).not.toContain('复制失败，请重试')
+    expect(request.mock.calls.some(([path])=>path==='/agent/runs/past')).toBe(false)
+    w.unmount()
+  })
+  it('切换会话后保留后台转圈，事件结束只更新对应任务，旧任务不覆盖新任务', async () => {
+    threads.a={id:'a',title:'会话 A',username:'first',scope:['first'],messages:[],latest_run:'ra'}
+    threads.b={id:'b',title:'会话 B',username:'first',scope:['first'],messages:[],latest_run:'rb'}
+    runs.ra={id:'ra',thread_id:'a',status:'running',timeline:[]}
+    runs.rb={id:'rb',thread_id:'b',status:'queued',timeline:[]}
+    const w=mountPanel();await flushPromises()
+    await w.find('[aria-label="展开大视图"]').trigger('click');await flushPromises()
+    const a=w.findAll('.agent-thread-item')[0],b=w.findAll('.agent-thread-item')[1]
+    expect(a.find('.agent-thread-running').exists()).toBe(true)
+    expect(b.find('.agent-thread-running').exists()).toBe(true)
+    const spinner=a.find('.agent-thread-running').element
+    await b.find('.agent-thread-select').trigger('click');await flushPromises()
+    expect(a.find('.agent-thread-running').element).toBe(spinner)
+    expect(w.find('.agent-thread-title').text()).toBe('会话 B')
+    eventCallbacks.acc({run_id:'ra',status:'completed'});await flushPromises()
+    expect(a.find('.agent-thread-running').exists()).toBe(false)
+    expect(b.find('.agent-thread-running').exists()).toBe(true)
+    runs.ra2={id:'ra2',thread_id:'a',status:'running',timeline:[]};threads.a.latest_run='ra2'
+    await w.find('[aria-label="刷新会话列表"]').trigger('click');await flushPromises()
+    eventCallbacks.acc({run_id:'ra',status:'failed'});await flushPromises()
+    expect(a.find('.agent-thread-running').exists()).toBe(true)
+    const original=request.getMockImplementation();let resolveList
+    request.mockImplementation((path,options)=>path==='/agent/threads'&&options.method!=='POST'?new Promise(resolve=>{resolveList=resolve}):original(path,options))
+    await w.find('[aria-label="刷新会话列表"]').trigger('click')
+    eventCallbacks.acc({run_id:'ra2',status:'completed'});await flushPromises()
+    resolveList([{...threads.a,latest_run_status:'running'},{...threads.b,latest_run_status:'queued'}]);await flushPromises()
+    expect(a.find('.agent-thread-running').exists()).toBe(false)
+    w.unmount()
+  })
+  it('未收到事件时静默轮询后台完成状态，失败不清除正在运行的指示', async () => {
+    vi.useFakeTimers({toFake:['setInterval','clearInterval','Date']})
+    const original=request.getMockImplementation()
+    let w
+    try {
+      threads.a={id:'a',title:'后台任务',username:'first',scope:['first'],messages:[],latest_run:'ra'}
+      threads.b={id:'b',title:'浏览其他会话',username:'first',scope:['first'],messages:[]}
+      runs.ra={id:'ra',thread_id:'a',status:'running',timeline:[]}
+      w=mountPanel();await flushPromises()
+      await w.find('[aria-label="展开大视图"]').trigger('click');await flushPromises()
+      await w.findAll('.agent-thread-select')[1].trigger('click');await flushPromises()
+      request.mockImplementation((path,options)=>path==='/agent/threads'&&options.method!=='POST'?Promise.reject(new Error('暂时离线')):original(path,options))
+      await vi.advanceTimersByTimeAsync(6000);await flushPromises()
+      expect(w.find('.agent-thread-running').exists()).toBe(true)
+      expect(w.find('.agent-thread-error').exists()).toBe(false)
+      request.mockImplementation(async (path,options)=>{const result=await original(path,options);return path==='/agent/threads'&&options.method!=='POST'?result.reverse():result});runs.ra.status='completed'
+      await vi.advanceTimersByTimeAsync(6000);await flushPromises()
+      expect(w.find('.agent-thread-running').exists()).toBe(false)
+      expect(w.find('.agent-thread-title').text()).toBe('浏览其他会话')
+      expect(w.findAll('.agent-thread-select').map(item=>item.text())).toEqual(['后台任务会话一','浏览其他会话会话一'])
+    } finally { w?.unmount();vi.useRealTimers() }
+  })
+  it('展开即展示会话列表，可搜索、切换当前联系人的 AI 对话，并保留各自草稿', async () => {
     threads.a={id:'a',title:'报价确认',username:'first',scope:['first'],messages:[]}
-    threads.b={id:'b',title:'南京出行',username:'second',scope:['second'],messages:[]}
+    threads.b={id:'b',title:'南京出行',username:'first',scope:['first'],messages:[]}
     const w=mountPanel();await flushPromises()
     await w.find('textarea').setValue('报价草稿')
     await w.find('[aria-label="展开大视图"]').trigger('click');await flushPromises()
@@ -55,7 +265,7 @@ describe('聊天 Agent', () => {
     expect(w.findAll('.agent-thread-item')).toHaveLength(1)
     await w.find('.agent-thread-select').trigger('click');await flushPromises()
     expect(w.find('.agent-thread-title').text()).toBe('南京出行')
-    expect(w.find('.agent-scope').text()).toBe('会话二')
+    expect(w.find('.agent-scope').exists()).toBe(false)
     expect(w.find('textarea').element.value).toBe('')
     await w.find('textarea').setValue('出行草稿')
     await w.find('[aria-label="搜索 AI 会话"]').setValue('')
@@ -92,7 +302,7 @@ describe('聊天 Agent', () => {
   it('会话列表请求失败可重试，旧账号迟到的列表不会污染新账号', async () => {
     const original=request.getMockImplementation();let resolveOld, fail=true
     request.mockImplementation((path,options)=>{
-      if(path==='/agent/threads' && !options.query?.username){
+      if(path==='/agent/threads' && options.method!=='POST'){
         if(fail)return Promise.reject(new Error('连接中断'))
         if(options.query.account==='acc')return new Promise(resolve=>{resolveOld=resolve})
         return Promise.resolve([{id:'new',title:'新账号会话',username:'first'}])
@@ -109,9 +319,9 @@ describe('聊天 Agent', () => {
     expect(w.find('.agent-thread-list').text()).not.toContain('旧账号会话')
     w.unmount()
   })
-  it('快速切换时采用最后一次选择，失败不修改固定记录', async () => {
+  it('快速切换时采用最后一次选择，失败不修改当前联系人的选择记录', async () => {
     threads.a={id:'a',title:'会话 A',username:'first',scope:['first'],messages:[]}
-    threads.b={id:'b',title:'会话 B',username:'second',scope:['second'],messages:[]}
+    threads.b={id:'b',title:'会话 B',username:'first',scope:['first'],messages:[]}
     const w=mountPanel();await flushPromises();await w.find('[aria-label="展开大视图"]').trigger('click');await flushPromises()
     const original=request.getMockImplementation();let resolveB
     request.mockImplementation((path,options)=>path==='/agent/threads/b'?new Promise(resolve=>{resolveB=resolve}):original(path,options))
@@ -120,11 +330,11 @@ describe('聊天 Agent', () => {
     await w.findAll('.agent-thread-select')[0].trigger('click');await flushPromises()
     resolveB(threads.b);await flushPromises()
     expect(w.find('.agent-thread-title').text()).toBe('会话 A')
-    expect(state.value.pinned.acc).toBe('a')
+    expect(state.value.selected['acc:first']).toBe('a')
     request.mockImplementation((path,options)=>path==='/agent/threads/b'?Promise.reject(new Error('会话不可用')):original(path,options))
     await w.findAll('.agent-thread-select')[1].trigger('click');await flushPromises()
     expect(w.find('.agent-error').text()).toContain('会话不可用')
-    expect(state.value.pinned.acc).toBe('a')
+    expect(state.value.selected['acc:first']).toBe('a')
     w.unmount()
   })
   it('停止后可继续，切换到历史再回来能恢复进行中的任务', async () => {
@@ -165,44 +375,28 @@ describe('聊天 Agent', () => {
     expect(request.mock.calls.filter(([path])=>path.endsWith('/messages'))).toHaveLength(1)
     w.unmount()
   })
-  it('无缓存首次展开模型菜单时等待请求，返回后直接显示选项且菜单保持打开', async () => {
+  it('模型菜单等待配置返回并显示按服务分组的模型', async () => {
     let resolveSettings
-    const pending = new Promise(resolve => { resolveSettings = resolve })
-    const original = request.getMockImplementation()
-    request.mockImplementation((path, options) => path === '/settings' ? pending : original(path, options))
-    const wrapper = mountPanel(); await flushPromises()
-    await wrapper.find('[aria-label="Agent 文本模型"]').trigger('click')
-    expect(wrapper.find('[role="listbox"]').attributes('aria-busy')).toBe('true')
-    expect(wrapper.find('[role="listbox"]').text()).toContain('正在加载')
-    expect(request.mock.calls.filter(([path]) => path === '/settings')).toHaveLength(1)
-    resolveSettings({profiles:[{id:'text',name:'首次返回的文本模型'},{id:'vision',name:'首次返回的视觉模型',vision:true}]})
-    await flushPromises()
-    expect(wrapper.find('[aria-label="Agent 文本模型"]').attributes('aria-expanded')).toBe('true')
-    expect(wrapper.find('[role="listbox"]').text()).toContain('首次返回的文本模型')
-    await wrapper.find('[aria-label="Agent 文本模型"]').trigger('keydown', {key:'Escape'})
-    await wrapper.find('[aria-label="对话设置"]').trigger('click')
-    await wrapper.find('[aria-label="Agent 视觉模型"]').trigger('click'); await flushPromises()
-    expect(wrapper.find('[role="listbox"]').text()).toContain('首次返回的视觉模型')
-    expect(wrapper.find('[role="listbox"]').text()).not.toContain('首次返回的文本模型')
-    wrapper.unmount()
+    const original=request.getMockImplementation()
+    request.mockImplementation((path,options)=>path==='/settings'?new Promise(resolve=>{resolveSettings=resolve}):original(path,options))
+    const w=mountPanel();await flushPromises()
+    w.find('.agent-model-menu').element.open=true
+    expect(w.find('.agent-model-popover').attributes('aria-busy')).toBe('true')
+    resolveSettings({profiles:[{id:'one',name:'服务一',model:'model-a'},{id:'two',name:'服务二',model:'model-b'}]});await flushPromises()
+    expect(w.findAll('.agent-model-popover section').map(s=>s.text())).toEqual(['服务一获取模型model-a','服务二获取模型model-b'])
+    expect(w.find('.agent-model-menu').element.open).toBe(true)
+    w.unmount()
   })
-  it('首次读取模型失败后，打开下拉框会重试；失败提示可见且重试成功后清除', async () => {
-    let attempts = 0
-    const original = request.getMockImplementation()
-    request.mockImplementation((path, options) => {
-      if (path !== '/settings') return original(path, options)
-      if (++attempts <= 2) return Promise.reject(new Error('后端尚未就绪'))
-      return Promise.resolve({profiles:[{id:'ready',name:'已恢复的模型'}]})
-    })
-    const wrapper=mountPanel(); await flushPromises()
-    await wrapper.find('[aria-label="Agent 文本模型"]').trigger('click'); await flushPromises()
-    expect(wrapper.find('[role="listbox"]').text()).toContain('模型列表加载失败')
-    await wrapper.find('[aria-label="Agent 文本模型"]').trigger('click')
-    await wrapper.find('[aria-label="Agent 文本模型"]').trigger('click'); await flushPromises()
-    expect(wrapper.find('[role="listbox"]').text()).toContain('已恢复的模型')
-    expect(wrapper.find('[role="listbox"]').text()).not.toContain('加载失败')
-    expect(attempts).toBe(3)
-    wrapper.unmount()
+  it('首次配置加载失败可在模型菜单重试，草稿不受影响', async () => {
+    const original=request.getMockImplementation();let attempts=0
+    request.mockImplementation((path,options)=>path==='/settings'?(++attempts===1?Promise.reject(Error('离线')):Promise.resolve({profiles:[{id:'ready',name:'恢复服务',model:'ready'}]})):original(path,options))
+    const w=mountPanel();await flushPromises();await w.find('textarea').setValue('草稿')
+    expect(w.find('.agent-model-popover').text()).toContain('模型列表加载失败')
+    await w.find('.agent-model-popover [role="alert"] button').trigger('click');await flushPromises()
+    expect(w.find('.agent-model-popover').text()).toContain('恢复服务')
+    expect(w.find('.agent-model-popover [role="alert"]').exists()).toBe(false)
+    expect(w.find('textarea').element.value).toBe('草稿')
+    w.unmount()
   })
   it('关闭服务设置后刷新模型，不必关闭并重开助手', async () => {
     const settingsOpen=ref(false)
@@ -217,7 +411,7 @@ describe('聊天 Agent', () => {
     expect(wrapper.vm.profileOptions.some(option=>option.label==='刚添加的模型')).toBe(true)
     wrapper.unmount()
   })
-  it('从更多菜单切换工具再返回时保留草稿，输入区设置可独立开关', async () => {
+  it('从更多菜单切换工具再返回时保留草稿和模型菜单', async () => {
     const wrapper = mountPanel(); await flushPromises()
     await wrapper.find('textarea').setValue('保留这份草稿')
     await wrapper.find('[aria-label="更多 AI 功能"]').trigger('click')
@@ -225,10 +419,7 @@ describe('聊天 Agent', () => {
     expect(wrapper.find('textarea').exists()).toBe(false)
     await wrapper.find('.agent-tools-heading button').trigger('click')
     expect(wrapper.find('textarea').element.value).toBe('保留这份草稿')
-    await wrapper.find('[aria-label="对话设置"]').trigger('click')
-    expect(wrapper.find('[aria-label="Agent 视觉模型"]').exists()).toBe(true)
-    await wrapper.find('[aria-label="关闭对话设置"]').trigger('click')
-    expect(wrapper.find('.agent-composer-settings').exists()).toBe(false)
+    expect(wrapper.find('.agent-model-menu').exists()).toBe(true)
     wrapper.unmount()
   })
   it('宽视图点击引用显示原文栏，缩窄后关闭原文栏并恢复浮层', async () => {
@@ -266,11 +457,11 @@ describe('聊天 Agent', () => {
     expect(posts[0][1].body.request_id).toBe(posts[1][1].body.request_id)
     wrapper.unmount()
   })
-  it('默认对话，提交当前聊天，进行中可以补充且沿用同一任务', async () => {
+  it('对话归属当前联系人，运行中 Enter 补充沿用同一任务', async () => {
     const wrapper = mountPanel(); await flushPromises()
     expect(wrapper.text()).toContain('想从聊天里了解什么')
     await send(wrapper,'找一下报价')
-    expect(request.mock.calls.find(([p,o])=>p==='/agent/threads'&&o.method==='POST')[1].body.username).toBe('first')
+    expect(request.mock.calls.find(([p,o])=>p==='/agent/threads'&&o.method==='POST')[1].body).toEqual({account:'acc',username:'first'})
     expect(wrapper.text()).toContain('搜索相关消息')
     await send(wrapper,'只看上周')
     const posts = request.mock.calls.filter(([p])=>p.endsWith('/messages'))
@@ -279,16 +470,29 @@ describe('聊天 Agent', () => {
     expect(wrapper.text()).toContain('已收到补充要求')
     wrapper.unmount()
   })
-  it('固定后切换聊天保留原 AI 对话，解除固定恢复跟随', async () => {
-    const wrapper = mountPanel(); await flushPromises(); await send(wrapper,'找报价')
-    await wrapper.find('[aria-label="固定此对话"]').trigger('click'); await flushPromises()
-    await wrapper.setProps({contact:{username:'second',name:'会话二'}}); await flushPromises()
-    expect(wrapper.find('.agent-scope').text()).toContain('会话一')
-    await wrapper.find('[aria-label="固定此对话"]').trigger('click'); await flushPromises()
-    expect(wrapper.find('.agent-scope').text()).toContain('会话二')
-    expect(wrapper.find('.agent-welcome').exists()).toBe(true)
-    wrapper.unmount()
+  it('切换联系人分别恢复对话和草稿，后台结果不串入新窗口', async () => {
+    const w=mountPanel();await flushPromises();await send(w,'找报价')
+    const first=w.vm.thread.id
+    await w.find('textarea').setValue('甲的草稿')
+    await w.setProps({contact:{username:'second',name:'会话二'}});await flushPromises()
+    expect(w.vm.thread).toBe(null)
+    expect(w.find('textarea').element.value).toBe('')
+    await w.find('textarea').setValue('乙的新对话草稿')
+    await w.setProps({contact:{username:'first',name:'会话一'}});await flushPromises()
+    expect(w.vm.thread.id).toBe(first)
+    expect(w.find('textarea').element.value).toBe('甲的草稿')
+    await w.setProps({contact:{username:'second',name:'会话二'}});await flushPromises()
+    expect(w.find('textarea').element.value).toBe('乙的新对话草稿')
+    await send(w,'查询乙的消息')
+    const second=w.vm.thread.id
+    expect(second).not.toBe(first)
+    eventCallbacks.acc({thread_id:first,run_id:threads[first].latest_run,status:'completed'})
+    await flushPromises()
+    expect(w.vm.thread.id).toBe(second)
+    expect(threads[second].username).toBe('second')
+    w.unmount()
   })
+
   it('草稿在关闭、重开及展开大视图后保留', async () => {
     let wrapper = mountPanel(); await flushPromises()
     await wrapper.find('textarea').setValue('尚未发送的草稿')
@@ -299,14 +503,12 @@ describe('聊天 Agent', () => {
     expect(wrapper.find('textarea').element.value).toBe('尚未发送的草稿')
     wrapper.unmount()
   })
-  it('通过读取范围弹窗提交明确会话集合', async () => {
-    const wrapper = mountPanel(); await flushPromises()
-    await wrapper.find('.agent-scope').trigger('click'); await flushPromises()
-    await wrapper.find('.agent-scope-list input[value="second"]').setValue(true)
-    await wrapper.find('.agent-dialog footer button:last-child').trigger('click'); await flushPromises()
-    expect(request.mock.calls.find(([,o])=>o?.method==='PATCH')[1].body.scope).toEqual(['first','second'])
-    expect(wrapper.find('.agent-scope').text()).toContain('2 个会话')
-    wrapper.unmount()
+  it('明确筛选通过问题提交，不修改账号读取权限', async () => {
+    const w=mountPanel();await flushPromises();await send(w,'只查会话二上周的报价')
+    expect(request.mock.calls.find(([p])=>p.endsWith('/messages'))[1].body.text).toBe('只查会话二上周的报价')
+    expect(request.mock.calls.some(([,o])=>o?.method==='PATCH')).toBe(false)
+    expect(w.find('.agent-scope').exists()).toBe(false)
+    w.unmount()
   })
   it('回答引用可预览定位，外部图片和原始 HTML 不执行', async () => {
     const source = 'a'.repeat(24)

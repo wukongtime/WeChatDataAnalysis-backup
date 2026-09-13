@@ -564,6 +564,8 @@ class AIService:
         self.deleted_accounts.add(account)
         ids = [t["id"] for t in self.store.list("task", account)]
         agent_ids = [r['id'] for r in self.store.list('agent_run', account)]
+        deep_ids = [f'{account}:{r["id"]}:v{version}' for r in self.store.list('agent_run', account)
+                    if r.get('engine_version') == 3 for version in range(1, r['version'] + 1)]
         from . import agent_service
         if agent_service._agent is not None:
             agent_service._agent.cancel_account(account)
@@ -582,6 +584,13 @@ class AIService:
                 for table in ('checkpoints', 'writes'):
                     if table in tables:
                         db.executemany(f'DELETE FROM {table} WHERE thread_id=?', [(id,) for id in agent_ids])
+        deep_path = self.store.root / 'deepagents_checkpoints.sqlite3'
+        if deep_path.exists():
+            with sqlite3.connect(deep_path, timeout=30) as db:
+                tables = {x[0] for x in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                for table in ('checkpoints', 'writes'):
+                    if table in tables:
+                        db.executemany(f'DELETE FROM {table} WHERE thread_id=?', [(id,) for id in deep_ids])
 
 
 _service = None

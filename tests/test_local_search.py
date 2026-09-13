@@ -24,6 +24,40 @@ def test_filter_before_return_and_same_second(tmp_path):
     assert index.progress('job')['offset']==4
     assert not index.search('different',[1.,0.],['allowed'])
 
+@pytest.mark.parametrize('sender,kinds,start,end', [
+    (None, None, 0, 1000), ('alice', ['text'], 108, 124),
+    ('missing', None, 0, 1000), (None, None, 500, 600),
+])
+def test_chunk_recall_matches_exhaustive_message_ranking(tmp_path, sender, kinds, start, end):
+    import sqlite_vec
+    index = SemanticIndex(tmp_path / 'index.sqlite3')
+    messages = [message(f'm{i:03}', timestamp=100 + i % 31,
+                        sender='alice' if i % 3 else 'bob',
+                        username='allowed' if i % 7 else 'other') for i in range(180)]
+    chunks, vectors = [], []
+    for i, m in enumerate(messages):
+        neighbors = [v['source'] for v in messages[max(0, i-2):i+1] if v['username'] == m['username']]
+        chunks.append({'text': str(i), 'sources': neighbors, 'username': m['username']})
+        # 大量等距离及重叠片段，最近原消息可能出现在后续批次。
+        vectors.append([1., 0.] if i % 5 else [0., 1.])
+    index.commit('g', messages, chunks, vectors, {'id': 'j'})
+    index.commit('other-generation', [message('m001', timestamp=999)],
+                 [{'text': 'other', 'sources': ['m001'], 'username': 'allowed'}], [[1., 0.]], {'id': 'old'})
+    clauses = ['m.generation=?', 'm.username=?', 'm.created>=?', 'm.created<=?']
+    params = ['g', 'allowed', start, end]
+    if sender:
+        clauses.append('m.sender=?'); params.append(sender)
+    if kinds:
+        clauses.append('m.kind=?'); params.append(kinds[0])
+    with index.connection() as db:
+        expected = db.execute('SELECT m.source,MIN(vec_distance_cosine(c.vector,?)) AS distance FROM messages m'
+            ' JOIN members x ON x.source=m.source JOIN chunks c ON c.id=x.chunk AND c.generation=m.generation'
+            ' WHERE ' + ' AND '.join(clauses) + ' GROUP BY m.source ORDER BY distance,m.created DESC,m.source LIMIT 17',
+            [sqlite_vec.serialize_float32([1., 0.]), *params]).fetchall()
+    actual = index.search('g', [1., 0.], ['allowed'], start, end, sender, kinds, 17)
+    assert [(v['message']['source'], v['distance']) for v in actual] == [(r['source'], r['distance']) for r in expected]
+
+
 def test_commit_is_atomic(tmp_path):
     index=SemanticIndex(tmp_path/'index.sqlite3')
     with pytest.raises(Exception):
@@ -137,9 +171,92 @@ def test_exact_message_precedes_neighbors_with_shared_vector(tmp_path):
         result = await service.hybrid('a', {'hits': []}, target['text'], ['allowed'], limit=10)
         assert result['retrievalMode'] == 'hybrid'
         assert result['hits'][0]['id'] == 'target'
-        assert result['hits'][0]['matchMethods'] == ['semantic']
+        assert result['hits'][0]['matchMethods'] == ['keyword', 'semantic']
         await service.stop()
     asyncio.run(run())
+
+def test_partial_index_literal_hit_survives_vector_candidate_limit(tmp_path):
+    async def run():
+        service = LocalSearch(tmp_path/'state', tmp_path/'models', engine=FakeEngine())
+        service.store.put('config', {'enabled': True, 'model': 'bge-small-zh', 'days': 0, 'usernames': ['allowed'],
+            'active': {'model': 'bge-small-zh', 'generation': 'g', 'usernames': ['allowed'], 'start': 0,
+                       'end': 999, 'updated': 1, 'partial': True}}, id='a', account='a')
+        target = message('target', '7-21惨案', timestamp=100)
+        neighbors = [message(str(i), '打球聊天', timestamp=101+i) for i in range(250)]
+        index = service.index('a')
+        index.commit('g', [target, *neighbors],
+                     [{'text': m['text'], 'sources': [m['source']], 'username': 'allowed'} for m in [target, *neighbors]],
+                     [[0.,1.], *([[1.,0.]] * 250)], {'id': 'j'})
+        assert not any(r['message']['source'] == 'target' for r in index.search('g', [1.,0.], ['allowed']))
+        result = await service.hybrid('a', {'hits': []}, '7-21惨案', ['allowed'], limit=10)
+        assert result['hits'][0]['id'] == 'target'
+        assert result['hits'][0]['matchMethods'] == ['keyword']
+        assert result['coverage']['partial'] is True
+        await service.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('extra', [
+    {'quoteTitle': '甲', 'quoteContent': '明晚讨论'},
+    {'title': '附件标题', 'voiceTranscript': '转写文字'},
+])
+def test_index_hit_returns_canonical_ai_text_without_appending_metadata_twice(tmp_path, extra):
+    from wechat_decrypt_tool.ai.agent_tools import normalize
+    async def run():
+        service = LocalSearch(tmp_path/'state', tmp_path/'models', engine=FakeEngine())
+        service.store.put('config', {'enabled': True, 'model': 'bge-small-zh', 'days': 0, 'usernames': ['allowed'],
+            'active': {'model': 'bge-small-zh', 'generation': 'g', 'usernames': ['allowed'], 'start': 0,
+                       'end': 999, 'updated': 1}}, id='a', account='a')
+        raw = {'id': 'db:table:3', 'username': 'allowed', 'content': '原始正文', 'createTime': 100, **extra}
+        target = normalize('a', 'allowed', raw)
+        service.index('a').commit('g', [target], [{'text': target['text'], 'sources': [target['source']],
+            'username': 'allowed'}], [[1., 0.]], {'id': 'j'})
+        result = await service.hybrid('a', {'hits': []}, '原始正文', ['allowed'], limit=10)
+        hit = result['hits'][0]
+        restored = normalize('a', 'allowed', hit)
+        assert restored['text'] == target['text']
+        assert restored['source'] == target['source']
+        assert all(hit[key] == value for key, value in extra.items())
+        # 搜索票据续页仍走同一格式，不依赖是否再次调用向量模型。
+        cached = await service.hybrid('a', {'hits': []}, '原始正文', ['allowed'], ticket=result['searchTicket'])
+        assert normalize('a', 'allowed', cached['hits'][0])['text'] == target['text']
+        await service.stop()
+    asyncio.run(run())
+
+
+def test_literal_search_filters_committed_raw_messages_without_vectors(tmp_path):
+    index = SemanticIndex(tmp_path/'index.sqlite3')
+    index.commit('g', [message('a', 'ÄBC 100%_报价'), message('other', 'ÄBC 100%_报价', username='other'),
+                       message('sender', 'ÄBC 100%_报价', sender='bob'),
+                       message('later', 'ÄBC 100%_报价', timestamp=101), message('wildcard', 'ÄBC 1000报价')],
+                 [], [], {'id': 'j'})
+    assert [m['source'] for m in index.keyword('g', 'äbc 100%_', ['allowed'], 100, 100, 'alice', ['text'])] == ['a']
+    assert index.keyword('old', '报价', ['allowed']) == []
+    assert index.keyword('g', "' OR 1=1 --", ['allowed']) == []
+
+
+def test_literal_results_survive_model_failure_and_remain_paged(tmp_path, monkeypatch):
+    async def run():
+        service = LocalSearch(tmp_path/'state', tmp_path/'models', engine=FakeEngine())
+        service.store.put('config', {'enabled': True, 'model': 'bge-small-zh', 'days': 0, 'usernames': ['allowed'],
+            'active': {'model': 'bge-small-zh', 'generation': 'g', 'usernames': ['allowed'], 'start': 0,
+                       'end': 999, 'updated': 1, 'partial': True}}, id='a', account='a')
+        service.index('a').commit('g', [message(str(i), '报价') for i in range(3)], [], [], {'id': 'j'})
+        def unavailable(*args):
+            raise InferenceFailure('模型暂不可用', 'runtime')
+        monkeypatch.setattr(service.engine, 'encode', unavailable)
+        first = await service.hybrid('a', {'hits': []}, '报价', ['allowed'], limit=1)
+        second = await service.hybrid('a', {'hits': []}, '报价', ['allowed'], limit=1, offset=1)
+        assert first['retrievalMode'] == 'keyword' and first['total'] == 3
+        assert len(first['hits']) == len(second['hits']) == 1
+        assert first['hits'][0]['id'] != second['hits'][0]['id']
+        assert first['hasMore'] is True
+        old_page = await service.hybrid('a', {'hits': [{'id': 'old-page', 'username': 'allowed'}], 'total': 11},
+                                        '没有新索引命中', ['allowed'], limit=1, offset=10)
+        assert old_page['hits'][0]['id'] == 'old-page'
+        await service.stop()
+    asyncio.run(run())
+
 
 def test_gpu_failure_falls_back_without_changing_preference(monkeypatch):
     monkeypatch.setattr('wechat_decrypt_tool.local_search.inference.sys.platform','win32')

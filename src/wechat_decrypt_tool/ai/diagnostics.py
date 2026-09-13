@@ -13,6 +13,8 @@ import re
 import threading
 import time
 import uuid
+import httpx
+import httpcore
 
 
 context = ContextVar('ai_diagnostic_context', default={})
@@ -22,7 +24,7 @@ _TOKEN = re.compile(r'[^A-Za-z0-9_.:@/+\-]')
 _IDS = {'trace_id', 'operation_id', 'parent_operation_id', 'execution_id', 'call_id',
         'diagnostic_id', 'task_id', 'run_id', 'thread_id', 'rule_id', 'profile_id',
         'account', 'username', 'source_id', 'generation', 'ticket_id', 'session_id'}
-_LABELS = {'phase', 'status', 'reason_code', 'error_type', 'error_category', 'provider',
+_LABELS = {'phase', 'status', 'reason_code', 'error_type', 'error_module', 'error_category', 'provider',
            'protocol', 'model', 'purpose', 'mode', 'action', 'data_source', 'actual_device',
            'strategy', 'runtime', 'platform', 'arch', 'suffix', 'file', 'finish_reason',
            'validation_status', 'kind', 'component', 'method', 'route', 'origin', 'stage_code'}
@@ -32,7 +34,7 @@ _COUNTS = {'duration_ms', 'queue_ms', 'request_ms', 'first_token_ms', 'attempt',
            'message_count', 'source_count', 'read_count', 'analyzed', 'segments', 'chunks',
            'processed', 'embedded', 'unchanged', 'returned', 'image_count', 'input_tokens',
            'output_tokens', 'tool_count', 'invalid_tool_count', 'bytes', 'total', 'wait_seconds',
-           'device_id', 'batch_size', 'input_budget', 'previous_budget', 'index', 'level',
+           'device_id', 'batch_size', 'input_budget', 'material_budget', 'previous_budget', 'index', 'level',
            'cached_count', 'failed_count', 'matches', 'omitted', 'event_id', 'after',
            'elapsed_ms', 'suppressed_count', 'dropped_count', 'queued', 'text_chars',
            'models', 'tools', 'media', 'seconds', 'keyword_count', 'semantic_count', 'merge_level', 'sqlite_errorcode'}
@@ -131,15 +133,17 @@ def safe_fields(values):
 
 def exception_fields(error):
     """保留栈位置与错误分类，禁止异常消息、局部变量和源码行进入日志。"""
-    fields = {'error_type': type(error).__name__}
+    fields = {'error_type': type(error).__name__, 'error_module': type(error).__module__}
     for source, target in [('status_code', 'http_status'), ('errno', 'errno'), ('winerror', 'winerror'), ('sqlite_errorcode','sqlite_errorcode')]:
         value = getattr(error, source, None)
         if isinstance(value, int):
             fields[target] = value
     response_status = getattr(getattr(error, 'response', None), 'status_code', None)
     if isinstance(response_status, int): fields['http_status'] = response_status
-    category = getattr(error, 'category', None)
-    if category in {'runtime', 'gpu', 'model', 'input', 'process', 'timeout', 'cancelled'}:
+    detail = getattr(error, 'detail', None)
+    category = getattr(error, 'category', None) or (detail.get('category') if isinstance(detail, dict) else None)
+    if category in {'runtime', 'gpu', 'model', 'input', 'process', 'timeout', 'cancelled',
+                    'authentication', 'configuration', 'connection', 'protocol', 'service', 'rate_limit', 'internal'}:
         fields['error_category'] = category
     else:
         status = fields.get('http_status')
@@ -147,7 +151,7 @@ def exception_fields(error):
         fields['error_category'] = ('authentication' if status in (401,403) else 'rate_limit' if status==429
             else 'timeout' if 'timeout' in name else 'context' if name=='contextoverflow'
             else 'validation' if isinstance(error, ValueError) else 'service' if status and status>=500
-            else 'configuration' if status else 'connection' if any(x in name for x in ('network','connection','connect')) else 'internal')
+            else 'configuration' if status else 'connection' if isinstance(error, (httpx.TransportError, httpcore.NetworkError, httpcore.ProtocolError)) or any(x in name for x in ('network','connection','connect')) else 'internal')
     frames = []
     tb = error.__traceback__
     while tb:

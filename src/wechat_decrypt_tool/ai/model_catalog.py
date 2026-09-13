@@ -14,12 +14,44 @@ PROVIDER_IDS = {
 }
 
 
+def documented_metadata(profile, model):
+    """仅补充官方文档明确确认、公共目录可能未列出的能力。"""
+    endpoint = urlparse(profile.get('base_url', ''))
+    # DeepSeek 官方思考模式开关；deepseek-flash 别名也通过官方接口实测确认。
+    if (profile.get('protocol') == 'openai' and endpoint.scheme == 'https'
+            and endpoint.hostname == 'api.deepseek.com' and endpoint.port in (None, 443)
+            and endpoint.path.rstrip('/') in ('', '/v1', '/v1/chat/completions', '/v1/models')
+            and model in ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp')):
+        return {'thinking_types': ['enabled', 'disabled'], 'thinking_default': 'enabled',
+            'correction_reasoning_effort': 'low',
+            'thinking_documentation_url': 'https://api-docs.deepseek.com/guides/thinking_mode/'}
+    # 不将官方接口的能力套到同名代理模型，也不按模型前缀推断新版本。
+    if (profile.get('protocol') == 'openai' and endpoint.scheme == 'https'
+            and endpoint.hostname == 'api.xiaomimimo.com'
+            and endpoint.port in (None, 443)
+            and endpoint.path.rstrip('/') in ('', '/v1', '/v1/chat/completions', '/v1/models')
+            and model in ('mimo-v2.5', 'mimo-v2.5-pro')):
+        return {
+            'structured_output': True,
+            'tool_call': True,
+            'reasoning_content_required': True,
+            'limit': {'context': 1048576, 'output': 131072},
+            'limits_documentation_url': 'https://mimo.mi.com/docs/en-US/quick-start/summary/model',
+            'thinking_types': ['enabled', 'disabled'],
+            'thinking_default': 'enabled',
+            'thinking_documentation_url': 'https://platform.xiaomimimo.com/docs/en-US/usage-guide/passing-back-reasoning_content',
+            'documentation_url': 'https://mimo.mi.com/docs/en-US/quick-start/usage-guide/text-generation/structured-output',
+        }
+    return {}
+
+
 class ModelCatalog:
     def __init__(self, root, store=None):
         self.store = store
         self.path = root / 'models-dev.json'
         self.data, self.checked_at, self.updated_at = {}, 0, 0
         self.lock = asyncio.Lock()
+        self.refresh_task = None
         try:
             cached = json.loads(self.path.read_text(encoding='utf-8'))
             if isinstance(cached['data'], dict):
@@ -27,6 +59,11 @@ class ModelCatalog:
                 self.updated_at = self.checked_at = float(cached['updated_at'])
         except (OSError, ValueError, KeyError, TypeError):
             pass
+
+    def refresh_in_background(self):
+        """界面优先读取本地配置，目录更新不占用提交消息的关键路径。"""
+        if self.refresh_task is None or self.refresh_task.done():
+            self.refresh_task = asyncio.create_task(self.refresh())
 
     async def refresh(self):
         async with self.lock:
@@ -85,7 +122,7 @@ class ModelCatalog:
 
     @staticmethod
     def upstream_key(profile, model):
-        identity = [profile.get('base_url', '').rstrip('/'), profile.get('protocol', 'openai'), model]
+        identity = [profile.get('id', ''), profile.get('base_url', '').rstrip('/'), profile.get('protocol', 'openai'), model]
         return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
     def remember(self, profile, items):
@@ -98,8 +135,10 @@ class ModelCatalog:
         catalog = self.lookup(profile, model) or {}
         saved = self.store.get('model_capabilities', self.upstream_key(profile, model)) if self.store else None
         upstream = saved.get('metadata', {}) if saved else {}
-        metadata = {**catalog}
-        sources = {key: 'models.dev' for key in catalog if catalog[key] is not None}
+        metadata = documented_metadata(profile, model)
+        sources = {key: 'provider-docs' for key in metadata}
+        metadata.update({key: value for key, value in catalog.items() if value is not None})
+        sources.update({key: 'models.dev' for key in catalog if catalog[key] is not None})
         sources.update({f'limit.{key}': 'models.dev' for key in catalog.get('limit', {})})
         for key, value in upstream.items():
             if value is None or key == 'id':
@@ -112,8 +151,8 @@ class ModelCatalog:
             sources[key] = 'upstream'
         if not metadata:
             return None
-        return {**metadata, 'id': model, 'field_sources': sources,
-                'source': 'upstream' if any(v == 'upstream' for v in sources.values()) else 'models.dev'}
+        source = next((value for value in ('upstream', 'models.dev', 'provider-docs') if value in sources.values()), 'models.dev')
+        return {**metadata, 'id': model, 'field_sources': sources, 'source': source}
 
     def enrich(self, profile):
         automatic = self.automatic(profile)

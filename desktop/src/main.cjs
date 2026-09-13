@@ -45,7 +45,7 @@ const {
   shouldRetryBackendOnDifferentPort,
 } = require("./backend-startup.cjs");
 const { applyNativeCoreRuntimePolicy } = require("./native-core-runtime.cjs");
-const { loadWithRedirect } = require("./renderer-startup.cjs");
+const { loadWithRedirect, resolveDesktopUiUrl } = require("./renderer-startup.cjs");
 const {
   ENV_INTEGRITY_NATIVE_PATH,
   ENV_MACOS_DB_KEY_BUNDLE,
@@ -307,9 +307,12 @@ function getBackendUiUrl() {
 }
 
 function getDesktopUiUrl() {
-  const explicit = String(process.env.ELECTRON_START_URL || "").trim();
-  if (explicit) return explicit;
-  return app.isPackaged ? getBackendUiUrl() : "http://localhost:3000";
+  return resolveDesktopUiUrl({
+    startUrl: process.env.ELECTRON_START_URL,
+    backendUrl: getBackendUiUrl(),
+    isPackaged: app.isPackaged,
+    staticUi: process.env.WECHAT_TOOL_STATIC_UI === "1",
+  });
 }
 
 function isPortAvailable(port, host) {
@@ -863,9 +866,12 @@ function getDesktopSettingsPath() {
 }
 
 function getPackagedUiDir() {
-  if (!app.isPackaged) return null;
+  // 静态开发入口也加载生成文件，重建后必须失效旧页面缓存。
+  if (!app.isPackaged && process.env.WECHAT_TOOL_STATIC_UI !== "1") return null;
   try {
-    return path.join(process.resourcesPath, "ui");
+    return process.env.WECHAT_TOOL_UI_DIR?.trim() || (app.isPackaged
+      ? path.join(process.resourcesPath, "ui")
+      : path.join(__dirname, "..", "..", "frontend", ".output", "public"));
   } catch {
     return null;
   }
@@ -1303,7 +1309,7 @@ async function applyPendingOutputDirOnStartup() {
 }
 
 async function refreshRendererCacheForPackagedUi() {
-  if (!app.isPackaged) return;
+  if (!app.isPackaged && process.env.WECHAT_TOOL_STATIC_UI !== "1") return;
 
   const nextBuildId = readPackagedUiBuildId();
   if (!nextBuildId) return;
@@ -1322,6 +1328,7 @@ async function refreshRendererCacheForPackagedUi() {
     logMain(`[main] cleared renderer cache for UI build change: ${prevBuildId || "(none)"} -> ${nextBuildId}`);
   } catch (err) {
     logMain(`[main] failed to clear renderer cache for UI build change: ${err?.message || err}`);
+    return;
   }
 
   loadDesktopSettings();
@@ -2460,6 +2467,8 @@ function setupRendererLifecycleLogging(win) {
   const logRendererLifecycle = (message) => {
     logMain(`[renderer] ${message}`);
   };
+  win.on('show', () => logRendererLifecycle('window-show'));
+  win.on('hide', () => logRendererLifecycle('window-hide'));
 
   logRendererLifecycle(`window-created id=${win.id}`);
 
@@ -2568,14 +2577,15 @@ async function loadWithRetry(win, url) {
     attempt += 1;
     logMain(`[main] loadWithRetry attempt=${attempt} url=${url}`);
     try {
-      await loadWithRedirect(win, url);
+      const remaining = Math.max(1, 60_000 - (Date.now() - startedAt));
+      await loadWithRedirect(win, url, Math.min(5000, remaining), remaining);
       logMain(`[main] loadWithRetry success attempt=${attempt} elapsedMs=${Date.now() - startedAt} url=${url}`);
       return;
     } catch (err) {
       logMain(
         `[main] loadWithRetry failure attempt=${attempt} elapsedMs=${Date.now() - startedAt} url=${url} error=${err?.message || err}`
       );
-      if (Date.now() - startedAt > 60_000) throw new Error(`Failed to load URL in time: ${url}`);
+      if (Date.now() - startedAt >= 60_000) throw new Error(`Failed to load URL in time: ${url}`);
       await new Promise((r) => setTimeout(r, 500));
     }
   }
@@ -3469,9 +3479,14 @@ async function ensureMainWindowReady() {
     logMain(`[main] debugEnabled=${debugEnabled()} startUrl=${startUrl}`);
     await loadWithRetry(win, startUrl);
 
-    if (debugEnabled()) {
+    // 首次创建不能只依赖构造器的显示行为；隐藏启动标志可能留下不可见主窗口。
+    if (mainWindow === win && !win.isDestroyed()) showMainWindow();
+
+    // 常规开发版启动也先显示应用；仅显式调试启动自动打开工具窗口。
+    if (debugEnabled() && (process.env.WECHAT_DESKTOP_DEBUG === "1" || process.argv.includes("--debug") || process.argv.includes("--devtools"))) {
       try {
-        win.webContents.openDevTools({ mode: "detach" });
+        // 调试窗口不抢走主窗口焦点，启动后用户能直接看到应用。
+        win.webContents.openDevTools({ mode: "detach", activate: false });
       } catch {}
     }
 

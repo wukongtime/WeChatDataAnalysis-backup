@@ -44,6 +44,7 @@ dependencies = [
     "onnxruntime==1.23.2; sys_platform == 'darwin'",
     "tokenizers==0.23.1",
     "sqlite-vec==0.1.9",
+    "deepagents==0.7.13",
 ]
 
 [project.optional-dependencies]

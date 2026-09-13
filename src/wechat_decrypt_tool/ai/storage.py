@@ -22,6 +22,10 @@ class AIStore:
         self.path = self.root / "ai.sqlite3"
         self.lock = threading.RLock()
         self.revoked_accounts = set()
+        # SSE 订阅者通过条件变量等待新事件；SQLite 仍是断线重放的权威来源。
+        # 使用按账号修订号，避免其他账号的高频事件无谓唤醒当前连接。
+        self._event_condition = threading.Condition()
+        self._event_revisions = {}
         with self.connection() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS records (
@@ -105,11 +109,31 @@ class AIStore:
             db.execute("DELETE FROM records WHERE kind=? AND id=?", (kind, id))
 
     def event(self, account, kind, body, unique_key=None):
+        inserted = False
         with self.connection() as db:
             if account in self.revoked_accounts:
                 return
-            db.execute("INSERT OR IGNORE INTO events(account,kind,body,unique_key,created) VALUES(?,?,?,?,?)",
-                       (account, kind, json.dumps(body, ensure_ascii=False), unique_key, time.time()))
+            cursor = db.execute("INSERT OR IGNORE INTO events(account,kind,body,unique_key,created) VALUES(?,?,?,?,?)",
+                                (account, kind, json.dumps(body, ensure_ascii=False), unique_key, time.time()))
+            inserted = cursor.rowcount > 0
+        if inserted:
+            with self._event_condition:
+                self._event_revisions[account] = self._event_revisions.get(account, 0) + 1
+                self._event_condition.notify_all()
+
+    def event_revision(self, account):
+        """返回进程内事件修订号，用于无竞态地建立 SSE 等待点。"""
+        with self._event_condition:
+            return self._event_revisions.get(account, 0)
+
+    def wait_for_event(self, account, revision, timeout):
+        """阻塞等待账号出现新事件；超时后由 SSE 发送低频心跳。"""
+        with self._event_condition:
+            changed = self._event_condition.wait_for(
+                lambda: self._event_revisions.get(account, 0) != revision,
+                timeout=max(0, timeout),
+            )
+            return changed, self._event_revisions.get(account, 0)
 
     def events(self, after=0, account=None, pending=False):
         sql, args = "SELECT * FROM events WHERE id>?", [after]

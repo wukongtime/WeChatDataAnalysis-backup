@@ -5,7 +5,7 @@ const { spawnSync } = require('node:child_process');
 
 // AI 的动态导入和清单统一收集，源码与冻结程序使用同一组资源。
 function aiPackagingArgs(root, platform = process.platform) {
-  const packages = ['langchain_core', 'langchain_openai', 'langchain_anthropic', 'langgraph', 'langsmith',
+  const packages = ['deepagents', 'langchain', 'langchain_core', 'langchain_openai', 'langchain_anthropic', 'langchain_google_genai', 'langgraph', 'langsmith', 'wcmatch', 'bracex',
     'pypdf', 'pypdfium2', 'pypdfium2_raw', 'tiktoken', 'docx', 'pptx', 'openpyxl',
     'onnxruntime', 'tokenizers', 'sqlite_vec', 'huggingface_hub'];
   const args = packages.flatMap(name => ['--collect-all', name]);

@@ -25,13 +25,54 @@ beforeEach(()=>{
   vi.stubGlobal('useRoute',()=>({params:{username:'current'}}))
 })
 afterEach(()=>{wrapper?.unmount();vi.unstubAllGlobals();vi.useRealTimers()})
-async function open(){wrapper=mount(LocalSearchSettings,{attachTo:document.body,global:{stubs:{teleport:true}}});await flushPromises()}
+async function open(props={}){wrapper=mount(LocalSearchSettings,{props,attachTo:document.body,global:{stubs:{teleport:true}}});await flushPromises()}
 const button=text=>wrapper.findAll('button').find(b=>b.text()===text)
 const scopeButton=(category,text)=>wrapper.find(`[data-category="${category}"]`).findAll('button').find(b=>b.text()===text)
 const primary=()=>wrapper.find('.lss-start button')
 function ready(){models[0].downloaded=true;config.model=models[0].id;config.usernames=['current']}
 async function selectScope(){await button('选择聊天').trigger('click');await flushPromises();await button('确认选择').trigger('click');await flushPromises()}
 
+it('全账号入口不要求选择聊天，直接启用全部历史渐进索引',async()=>{
+  models[0].downloaded=true;config.model=models[0].id
+  await open({accountWide:true})
+  expect(wrapper.text()).toContain('当前账号全部群聊和私聊')
+  expect(button('选择聊天')).toBeUndefined()
+  expect(wrapper.text()).not.toContain('不会自动扩大范围')
+  expect(primary().attributes('disabled')).toBeUndefined()
+  await primary().trigger('click');await flushPromises()
+  const body=request.mock.calls.find(([path,options])=>path.includes('/settings') && options?.method==='PUT')[1].body
+  expect(body).toMatchObject({agent_global:true,usernames:[],days:0,start:0,end:null,auto_update:true,enabled:true})
+  expect(request.mock.calls.some(([path])=>path.includes('/index/build'))).toBe(true)
+})
+it('部分索引按实际时间段显示覆盖，不称全量完成',async()=>{
+  config.active={partial:true,coverage:{recent:{username:'a',complete:true},history:{username:'a',complete:false}}}
+  await open({accountWide:true})
+  expect(wrapper.find('#lss-global-title').element.parentElement.parentElement.parentElement.textContent).toContain('部分覆盖 · 1 个聊天 · 1 个时间段已读完')
+})
+it('全账号旧任务必须先迁移范围，不能直接继续旧聊天筛选',async()=>{
+  ready();config.enabled=true;jobs=[{id:'old',status:'paused',config:{revision:1}}]
+  await open({accountWide:true})
+  expect(primary().text()).toBe('保存并开始整理')
+})
+it('全账号超过 2000 个聊天时高级设置不回传目录，保留全局模式',async()=>{
+  ready();config.enabled=true;config.agent_global=true;config.days=0;config.start=0
+  config.usernames=Array.from({length:2001},(_,i)=>`chat-${i}`)
+  const catalog=[...config.usernames],previous=request.getMockImplementation()
+  request.mockImplementation(async(path,options)=>{
+    if(path.includes('/settings')){
+      if(options.body.usernames.length>2000)throw new Error('会话列表超过接口上限')
+      config={...options.body,usernames:catalog,revision:config.revision+1}
+      return config
+    }
+    return previous(path,options)
+  })
+  await open({accountWide:true})
+  await button('保存高级设置').trigger('click');await flushPromises()
+  const saved=request.mock.calls.find(([path,options])=>path.includes('/settings') && options?.method)[1].body
+  expect(saved).toMatchObject({agent_global:true,usernames:[],enabled:true})
+  expect(wrapper.text()).toContain('高级设置已保存')
+  expect(config.usernames).toHaveLength(2001)
+})
 it('首次打开没有启用开关，不下载、不保存、不扫描，直接说明下一步',async()=>{
   await open()
   expect(wrapper.find('[role=switch]').exists()).toBe(false)
@@ -109,7 +150,7 @@ it('重复检查零新增时展示现有索引总数，说明复用',async()=>{
   expect(wrapper.find('.lss-status-title').text()).toContain('搜索数据已是最新')
   expect(wrapper.find('.lss-index-total').text()).toContain('6601 条消息 · 601 个片段')
   expect(wrapper.find('.lss-status').text()).toContain('已复用现有搜索数据')
-  expect(wrapper.find('.lss-live-count').text()).toContain('本次生成 0 个片段')
+  expect(wrapper.find('.lss-live-count').text()).toContain('本次已保存 0 个片段')
 })
 it('没有可用片段时不能显示智能搜索已准备好',async()=>{
   ready();config.enabled=true;indexStats={messages:10,chunks:0}
@@ -118,6 +159,18 @@ it('没有可用片段时不能显示智能搜索已准备好',async()=>{
   expect(wrapper.find('.lss-status-title').text()).toContain('暂无可搜索内容')
   expect(wrapper.find('.lss-status').text()).not.toContain('可以智能搜索了')
   expect(wrapper.find('.lss-status').text()).toContain('请调整聊天或时间范围')
+})
+it('暂停后的片段数量以事务保存结果为准，手动暂停不是错误',async()=>{
+  ready();config.enabled=true;config.agent_global=true
+  jobs=[{id:'paused',status:'paused',stage:'embedding',processed:1617,read_count:2117,
+    embedded:244,embedded_count:308,error:'处理已暂停',started:1,finished:37,config:{revision:1}}]
+  indexStats={messages:1617,chunks:244}
+  await open({accountWide:true})
+  expect(wrapper.find('.lss-live-count').text()).toContain('本次已保存 244 个片段')
+  expect(wrapper.find('.lss-live-count').text()).not.toContain('308')
+  expect(wrapper.find('.lss-status .lss-error').exists()).toBe(false)
+  expect(wrapper.find('.lss-status').text()).toContain('已保存 1617 条消息的进度')
+  expect(primary().text()).toBe('继续整理')
 })
 it('大批量未保存时实时显示读取增长，旧事件不能倒退数量',async()=>{
   ready();config.enabled=true

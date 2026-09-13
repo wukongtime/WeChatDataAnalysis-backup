@@ -148,6 +148,9 @@ class MediaService:
             data, suffix = await asyncio.to_thread(resolve_media, account, message, options.get("max_attachment_mb", 20))
             diagnostic_event('media.located', suffix=suffix, bytes=len(data))
             signature = {"version": 1, "profile": vision_profile.get("id"), "revision": vision_profile.get("revision"), "suffix": suffix}
+            question = str(options.get('question') or '').strip()
+            if question:
+                signature['question'] = question
             key = hashlib.sha256(account.encode() + data + json.dumps(signature, sort_keys=True).encode()).hexdigest()
             cached = self.store.get("media_cache", key)
             if cached:
@@ -182,7 +185,10 @@ class MediaService:
                         diagnostic_event('media.page.cache', index=index, cached=True)
                         description = partial["text"]
                     else:
-                        description = await self.models.invoke(vision_profile, f"描述这份聊天资料中的{label}，完整提取可辨认文字、表格和关键信息。不能辨认的内容请说明。", images=[part["image"]], account=account)
+                        prompt = f"描述这份聊天资料中的{label}，完整提取可辨认文字、表格和关键信息。不能辨认的内容请说明。"
+                        if question:
+                            prompt += '\n重点核查本次问题：' + question
+                        description = await self.models.invoke(vision_profile, prompt, images=[part["image"]], account=account)
                         self.store.put("media_cache", {"text": description}, id=partial_key, account=account)
                     text.append(f"[{label}] {description}")
                 else:

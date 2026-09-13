@@ -11,6 +11,54 @@ from wechat_decrypt_tool.ai.messages import iter_message_pages, read_messages
 from wechat_decrypt_tool.local_search.service import LocalSearch
 
 
+def test_time_reader_keeps_explicit_at_identity(message_source):
+    from wechat_decrypt_tool.ai.agent_references import material_references, reference_id
+    state = message_source(1)
+    state['rows'][0].msg_source = '<msgsource><atuserlist>target</atuserlist></msgsource>'
+    original = read_messages('a', 'group@chatroom', 0, 200)['messages'][0]
+    assert original['media']['atUsernames'] == ['target']
+    refs = material_references('a', [original], [{'username': 'target', 'name': '同名'}, {'username': 'other', 'name': '同名'}])
+    assert refs[reference_id('person', 'a', 'target')]['mentioned_sources'] == [original['source']]
+    assert reference_id('person', 'a', 'other') not in refs
+
+
+@pytest.mark.parametrize('budget', [None, 4096])
+def test_group_sender_name_matches_chat_view_without_changing_identity(message_source, monkeypatch, budget):
+    from wechat_decrypt_tool import chat_helpers
+    from wechat_decrypt_tool.ai.agent_budget import message_payload
+    from wechat_decrypt_tool.ai.agent_references import material_references, reference_id
+    message_source(1)
+    monkeypatch.setattr(chat_helpers, '_load_contact_rows', lambda path, names: {u: {'remark': '联系人名称'} for u in names})
+    monkeypatch.setattr(chat_helpers, '_load_group_nickname_map_from_contact_db',
+                        lambda path, group, senders: {'sender': '群内名片'} if group == 'group@chatroom' else {})
+    group = read_messages('a', 'group@chatroom', 0, 200, max_batch_bytes=budget)['messages'][0]
+    assert group['sender'] == '群内名片'
+    assert group['sender_id'] == 'sender'
+    assert group['sender_aliases'] == ['群内名片', '联系人名称']
+    assert message_payload(group)['sender_aliases'] == group['sender_aliases']
+    refs = material_references('a', [group])
+    person = refs[reference_id('person', 'a', 'sender')]
+    assert person['name'] == '群内名片' and '联系人名称' in person['aliases']
+    private = read_messages('a', 'private', 0, 200, max_batch_bytes=budget)['messages'][0]
+    assert private['sender'] == '联系人名称' and private['sender_id'] == 'sender'
+    assert 'sender_aliases' not in private
+
+
+def test_search_context_and_time_reader_share_source_identity(message_source):
+    from wechat_decrypt_tool.ai.agent_tools import normalize
+    state = message_source(12)
+    messages = read_messages('a', 'chat', 0, 200)['messages']
+    for row, message in zip(state['rows'], messages):
+        raw = {'id': f'{row.db_stem}:{row.table_name}:{row.local_id}', 'serverIdStr': str(row.server_id),
+               'createTime': row.create_time, 'conversationUsername': 'chat', 'content': row.raw_text}
+        # 时间读取按稳定身份排序，因此按身份匹配，覆盖无服务端编号的消息。
+        normalized = normalize('a', '', raw)
+        original = next(m for m in messages if m['text'] == row.raw_text)
+        assert normalized['source'] == original['source']
+        assert normalized['identity'] == original['identity']
+        assert normalize('another-account', '', raw)['source'] != original['source']
+
+
 def test_agent_stream_100000_messages_has_bounded_memory_and_deduplicates(message_source, ai_file_diagnostics):
     from wechat_decrypt_tool.chat_export_service import _Row
     from wechat_decrypt_tool.ai.agent_tools import ChatTools
@@ -27,7 +75,7 @@ def test_agent_stream_100000_messages_has_bounded_memory_and_deduplicates(messag
         baseline = peak_rss = None
         tracemalloc.start()
         try:
-            async with ChatTools().open_pages('a','chat',0,200,0,lambda:None) as read:
+            async with ChatTools().open_pages('a','chat',0,200,0,lambda:None,max_batch_bytes=3276) as read:
                 while True:
                     page = await read()
                     if page is None: break
@@ -108,6 +156,34 @@ def test_stream_reads_source_once_and_matches_messages(message_source, total):
     assert all(len(page['messages']) <= 100 for page in pages)
     assert state['opens'] == state['closed'] == 1
     assert state['scanned'] == len(state['rows'])
+
+
+@pytest.mark.parametrize('start', [None, 0, 90])
+@pytest.mark.parametrize('total', [0, 27, 100, 231])
+def test_recent_count_pages_only_latest_unique_messages(message_source, start, total):
+    message_source(total)
+    pages = list(iter_message_pages('a', 'chat', start, 200, count=100, page_size=50))
+    messages = [m for page in pages for m in page['messages']]
+    assert len(messages) == min(total, 100)
+    assert {int(m['anchor']) for m in messages} == set(range(max(1, total-99), total+1))
+    assert pages[-1]['has_more'] is False
+    if total > 50:
+        resumed = list(iter_message_pages('a', 'chat', start, 200, count=100, page_size=50, page_offset=50))
+        assert [m for page in resumed for m in page['messages']] == messages[50:]
+
+
+def test_global_recent_count_uses_same_second_order_before_per_chat_limit(message_source):
+    """单群先按另一种顺序取 N，会在跨群合并前丢掉应入选的同秒消息。"""
+    from wechat_decrypt_tool.ai.agent_tools import ChatTools
+    message_source(231)
+    expected = []
+    for username in ('first', 'second'):
+        expected.extend(read_messages('a', username, 0, 200)['messages'])
+    expected = sorted(expected, key=lambda m: (m['time'], m['source']))[-7:]
+    actual = asyncio.run(ChatTools().recent_set('a', ['first', 'second'], 0, 201, 7, lambda: None))
+    assert [m['source'] for m in actual['messages']] == [m['source'] for m in expected]
+    reversed_order = asyncio.run(ChatTools().recent_set('a', ['second', 'first'], 0, 201, 7, lambda: None))
+    assert [m['source'] for m in reversed_order['messages']] == [m['source'] for m in expected]
 
 
 def test_legacy_page_matches_stream_and_closes_early(message_source):

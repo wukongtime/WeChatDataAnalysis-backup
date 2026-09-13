@@ -171,14 +171,15 @@
 
                 <div class="w-[72px] h-[72px] rounded-lg bg-white p-[2px] shadow-sm">
                   <img
-                      v-if="selfInfo.wxid"
+                      v-if="postAvatarUrl(selfInfo.wxid) && !hasSnsAvatarError(selfInfo.wxid)"
                       :src="postAvatarUrl(selfInfo.wxid)"
                       class="w-full h-full rounded-md object-cover bg-gray-100"
                       :alt="selfInfo.nickname"
                       referrerpolicy="no-referrer"
+                      @error="onSnsAvatarError(selfInfo.wxid)"
                   />
                   <div v-else class="w-full h-full rounded-md bg-gray-300 flex items-center justify-center text-gray-500 text-xs">
-                    ...
+                    {{ (selfInfo.nickname || '我').charAt(0) }}
                   </div>
                 </div>
               </div>
@@ -217,11 +218,12 @@
 	            <div class="flex items-start gap-3" @contextmenu.prevent="openPostContextMenu($event, post)">
               <div class="w-9 h-9 rounded-md overflow-hidden bg-gray-300 flex-shrink-0" :class="{ 'privacy-blur': privacyMode }">
                 <img
-                  v-if="postAvatarUrl(post.username)"
+                  v-if="postAvatarUrl(post.username) && !hasSnsAvatarError(post.username)"
                   :src="postAvatarUrl(post.username)"
                   :alt="post.displayName || post.username"
                   class="w-full h-full object-cover"
                   referrerpolicy="no-referrer"
+                  @error="onSnsAvatarError(post.username)"
                 />
                 <div
                   v-else

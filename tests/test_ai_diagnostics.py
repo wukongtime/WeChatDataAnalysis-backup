@@ -8,6 +8,7 @@ import shutil
 from unittest.mock import patch
 
 import httpx
+import httpcore
 import pytest
 from fastapi import FastAPI
 
@@ -18,6 +19,17 @@ from wechat_decrypt_tool.routers.ai import router
 
 def records(path):
     return [json.loads(line.split('运行诊断 ', 1)[1]) for line in path.read_text(encoding='utf-8').splitlines() if '运行诊断 ' in line]
+
+
+def test_transport_diagnostics_identify_exception_module_without_response_content():
+    from wechat_decrypt_tool.ai.agent_model import AgentFailure
+    for kind in (httpx.RemoteProtocolError, httpcore.RemoteProtocolError):
+        fields = d.exception_fields(kind('private response and key must not appear'))
+        assert fields['error_category'] == 'connection'
+        assert fields['error_module'] == kind.__module__
+        assert 'private' not in json.dumps(fields)
+    wrapped = AgentFailure('private', category='connection')
+    assert d.exception_fields(wrapped)['error_category'] == 'connection'
 
 
 def test_key_events_limit_volume_without_changing_other_logs(ai_file_diagnostics):

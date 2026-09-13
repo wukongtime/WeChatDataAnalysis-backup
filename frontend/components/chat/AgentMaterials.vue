@@ -14,7 +14,7 @@
       <p v-if="!items.length">当前没有结果。</p>
       <article v-for="(item, index) in items" :key="item.id || item.source || index">
         <template v-if="kind === 'sources'"><small>{{ item.name || item.username }} · {{ date(item.time) }} · {{ item.sender }}</small><p>{{ item.text }}</p><button type="button" @click="$emit('locate', item)">查看原消息</button></template>
-        <template v-else-if="kind === 'findings'"><p v-if="item.needs_check" class="agent-coverage">需要核对前后文</p><AgentAnswer :text="findingText(item)" :citations="item.citations || []" @locate="$emit('locate', $event)" /></template>
+        <template v-else-if="kind === 'findings'"><p v-if="item.needs_check" class="agent-coverage">需要核对前后文</p><AgentAnswer :text="findingText(item)" :citations="item.citations || []" :references="item.references || []" @locate="$emit('locate', $event)" /></template>
         <template v-else><p>{{ statisticKind === 'daily' ? item.day : statisticKind === 'sender' ? `${offset + index + 1}. ${item.sender || item.sender_id || '未知发言人'}` : `${item.day} · ${nameFor(item.username)} · ${item.sender || item.sender_id || '未知发言人'}` }}</p><strong>{{ item.count }} 条消息</strong></template>
       </article>
     </template>
