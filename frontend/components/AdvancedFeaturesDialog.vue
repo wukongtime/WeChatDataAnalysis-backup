@@ -42,7 +42,7 @@
           </div>
 
           <footer class="afd-foot">
-            <p class="afd-foot__meta afd-mono">{{ PRO_TOTAL }} 项 · 写入 / 动作</p>
+            <p class="afd-foot__meta afd-mono">{{ PRO_TOTAL }} 项 · 写入 / 动作 / 自动化</p>
             <button type="button" class="afd-get afd-mono" @click="openDeveloperContact">
               获取 — QQ {{ DEVELOPER_QQ }} · 备注「高级版」 <i aria-hidden="true">↗</i>
             </button>
@@ -91,7 +91,7 @@ const prefersReducedMotion = () => (
     : false
 )
 
-// 引擎（8 组场景）和它的样式体积都不小，首次打开时才一起拉进来；
+// 引擎（8 个场景文件）和它的样式体积都不小，首次打开时才一起拉进来；
 // CSS 也走动态 import，才不会随 SidebarRail 混进每个页面的 entry.css
 const loadEngine = () => Promise.all([
   import('@website/js/pro-demos/index.js'),
@@ -392,7 +392,7 @@ onBeforeUnmount(() => {
 }
 
 .afd-host :deep(.pd-root) {
-  --pd-list-cols: 1;
+  --pd-list-cols: auto;   /* 单栏 + 纵向滚动；写 1 会让定高清单横着溢出成多栏，只剩第一栏可见 */
   height: 100%;
 }
 
