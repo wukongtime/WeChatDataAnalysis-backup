@@ -363,7 +363,8 @@ def test_media_interruption_resume_reuses_completed_pages(service):
         service.ai.models.invoke = vision
         message = {'kind':'file','media':{},'username':'friend','text':'附件','source':SOURCE}
         profile = {'id':'vision','revision':1,'vision':True}
-        def parts(*args):
+        def parts(*args, include_images=True):
+            assert include_images is True
             for index in range(3):
                 yield {'label':f'第{index+1}页','image':'data:image/png;base64,test'}
         used = 0

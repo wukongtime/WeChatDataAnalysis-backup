@@ -56,7 +56,9 @@ def test_auxiliary_thinking_control_is_scoped_and_preserves_explicit_effort():
         assert ModelService.client(profile).extra_body == {'thinking': {'type': 'disabled'}}
         assert not ModelService.client({**profile, 'base_url': 'https://proxy.example/v1'}).extra_body
         explicit = ModelService.client({**profile, 'reasoning_effort': 'high'})
-        assert not explicit.extra_body and explicit.reasoning_effort == 'high'
+        # 显式档位应启用 MiMo 思考，不能被辅助请求的默认关闭策略覆盖。
+        assert explicit.extra_body == {'thinking': {'type': 'enabled'}}
+        assert explicit.reasoning_effort == 'high'
     assert not ModelService.client(profile).extra_body
 
 

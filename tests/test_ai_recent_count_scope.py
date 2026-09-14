@@ -66,13 +66,19 @@ def test_recent_100_question_succeeds_without_scope_retries(tmp_path, monkeypatc
         lambda messages: action('read_messages', {'scope_handle': last_result(messages)['scope_handle']}),
         AIMessage(content='最近100条消息主要讨论出行安排。'),
     ])
+    # 本例验证数量范围和业务调用次数，窗口须容纳完整工具定义及这 100 条资料。
+    # 小窗口压缩、无进展和恢复由 test_ai_sawtooth.py 单独覆盖。
+    profile = service.store.get('profile', 'model')
+    profile.update(context_window=131072, model_overrides={'context_window': 131072})
+    service.store.put('profile', profile, id='model')
 
     async def check():
         _, run = await execute(service, '最近的100条消息再说什么？')
         assert run['status'] == 'completed', run.get('error')
         assert run['read_count'] == 100
-        # 小窗口测试配置允许内部压缩；只检查业务模型没有因范围失败而重试。
-        assert len([u for u in service.store.list('usage') if u.get('purpose') == 'deepagents_agent']) == 3
+        usage = service.store.list('usage')
+        assert len(usage) == 3
+        assert all(u.get('purpose') == 'deepagents_agent' for u in usage)
         assert [call[4] for call in tools.calls if isinstance(call, tuple)] == [100]
         steps = [item for item in run['timeline'] if item['kind'] == 'tool']
         assert [step['action'] for step in steps] == ['select_chat_scope', 'read_messages']

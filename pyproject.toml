@@ -91,3 +91,5 @@ find-links = ["./tools/key_wheels/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# 让 pytest 命令与 python -m pytest 都能导入仓库工具和源码。
+pythonpath = [".", "src"]
