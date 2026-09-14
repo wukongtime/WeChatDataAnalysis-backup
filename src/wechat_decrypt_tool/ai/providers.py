@@ -123,6 +123,9 @@ def parse_model_catalog(payload):
         detail = result[id]
         # 兼容常见 /models 返回字段；只采纳明确值，未知字段不覆盖目录资料。
         capabilities = item.get('capabilities') if isinstance(item.get('capabilities'), dict) else {}
+        from .model_reasoning import options
+        if 'reasoning_options' in item or 'reasoning_options' in capabilities:
+            detail['reasoning_options'] = options(item.get('reasoning_options', capabilities.get('reasoning_options')))
         levels = item.get('reasoning_efforts', capabilities.get('reasoning_efforts'))
         if isinstance(levels, list) and levels and all(isinstance(v, str) and 0 < len(v) <= 40 for v in levels):
             detail['reasoning_efforts'] = list(dict.fromkeys(levels))
@@ -170,24 +173,21 @@ class ModelService:
         id = id or defaults.get("vision" if vision else "text", "")
         result = self.store.get("profile", id)
         if not result:
-            raise ProviderFailure("请先在设置 → AI 服务中配置默认模型")
+            raise ProviderFailure("所选 AI 服务不可用，请重新选择模型或在设置 → AI 服务中添加配置")
         result = self.metadata.enrich(result)
         if vision and not result.get("vision"):
             raise ProviderFailure("当前配置不支持图片，请选择视觉模型")
         return result
 
-    def resolve_turn(self, id='', model_id='', reasoning_effort=None):
+    def resolve_turn(self, id='', model_id='', reasoning_effort=None, thinking_mode=None, thinking_budget=None):
         """临时选择模型不改写服务配置；原生等级只接受明确声明的能力。"""
         result = self.resolve(id)
         if model_id and model_id != result['model']:
             raw = self.store.get('profile', result['id'])
-            result = self.metadata.enrich({**raw, 'model': model_id, 'model_overrides': {}, 'context_window': None})
-        levels = result.get('model_metadata', {}).get('reasoning_efforts') or []
-        if reasoning_effort is not None:
-            if reasoning_effort not in levels:
-                raise ProviderFailure('当前模型未声明此原生思考等级，请刷新模型能力后重试。')
-            result = {**result, 'reasoning_effort': reasoning_effort}
-        return result
+            result = self.metadata.enrich({**raw, 'model': model_id, 'model_overrides': {}, 'context_window': None,
+                                          'vision': False, 'reasoning_effort': None})
+        from .model_reasoning import validate
+        return validate(result, reasoning_effort, thinking_mode, thinking_budget)
 
     @staticmethod
     def client(profile):
@@ -197,15 +197,17 @@ class ModelService:
         if profile["protocol"] == "anthropic":
             from langchain_anthropic import ChatAnthropic
             from .agent_budget import output_limit
-            extra = {'output_config': {'effort': profile['reasoning_effort']}} if profile.get('reasoning_effort') else {}
-            return ChatAnthropic(base_url=model_base_url(profile["base_url"]).removesuffix("/v1"), max_tokens=output_limit(profile), model_kwargs=extra, **common)
+            from .model_reasoning import request_options
+            return ChatAnthropic(base_url=model_base_url(profile["base_url"]).removesuffix("/v1"), max_tokens=output_limit(profile), **request_options(profile), **common)
         from langchain_openai import ChatOpenAI
-        extra = {'reasoning_effort': profile['reasoning_effort']} if profile.get('reasoning_effort') else {}
+        from .model_reasoning import request_options
+        extra = request_options(profile)
         from .model_catalog import documented_metadata
         from .model_execution import call_policy
         # 支持开关的模型可能默认深度思考；范围识别、独立事实摘录无需耗尽输出额度后
         # 重试。只对官方明确支持的接口生效，显式思考等级和最终回答不覆盖。
         if (call_policy.get().auxiliary and not profile.get('reasoning_effort')
+                and profile.get('thinking_mode') is None and profile.get('thinking_budget') is None
                 and 'disabled' in documented_metadata(profile, profile['model']).get('thinking_types', [])):
             extra['extra_body'] = {'thinking': {'type': 'disabled'}}
         client = ChatOpenAI(base_url=model_base_url(profile["base_url"]), **extra, **common)
@@ -304,7 +306,8 @@ class ModelService:
                         if active_budget.get():
                             kwargs['max_tokens'] = output_limit(profile)
                         if policy.output_tokens is not None:
-                            kwargs['max_tokens'] = min(output_limit(profile), policy.output_tokens)
+                            # 显式思考预算不能超过辅助调用的输出上限；扩展输出预留以保留用户选择。
+                            kwargs['max_tokens'] = min(output_limit(profile), max(policy.output_tokens, (profile.get('thinking_budget') or 0) + 1))
                         if json_output:
                             kwargs['response_format'] = {'type': 'json_object'}
                         if native_output:

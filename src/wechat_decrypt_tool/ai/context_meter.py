@@ -32,7 +32,7 @@ def request_sample(profile, messages, extra=None):
             part = text[start:start + 256]
             chunks.append([hashlib.sha256(part.encode()).hexdigest(), len(part.encode())])
     route = {k: profile.get(k) for k in ('id', 'revision', 'base_url', 'protocol', 'provider', 'model',
-                                        'reasoning_effort', 'context_window', 'model_metadata')}
+                                        'reasoning_effort', 'thinking_mode', 'thinking_budget', 'context_window', 'model_metadata', 'context_purpose')}
     from .model_execution import call_policy
     route['auxiliary'] = call_policy.get().auxiliary
     return {'route': digest([route, extra]), 'chunks': chunks}
@@ -59,8 +59,8 @@ class ContextMeter:
                     if old != new:
                         break
                     common += 1
-                # 小段固定说明不够代表可复用前缀；避免借无关请求放宽预算。
-                if common < 2:
+                # 只有完整旧请求前缀仍一致才外推；仅共享系统提示不能校准新的历史。
+                if common < 2 or common != len(anchor['chunks']):
                     continue
                 suffix = sum(row[1] for row in sample['chunks'][common:])
                 # 不扣除旧请求被删除的部分，避免错误推断其 Token 密度。

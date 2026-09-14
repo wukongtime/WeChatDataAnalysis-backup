@@ -5,7 +5,7 @@ import json
 from unittest.mock import patch
 
 import pytest
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import ValidationError
 
 from test_ai_agent import service
@@ -63,7 +63,10 @@ def test_usage_calibration_is_conservative_for_new_suffix_and_isolates_models():
     calibrated = meter.measure(profile, messages)
     assert 5000 < calibrated < initial
     extended = [messages[0], HumanMessage(content=messages[1].content + '新增内容🙂' * 100)]
-    assert calibrated < meter.measure(profile, extended) < request_size(extended)
+    # 已存在消息被改写时不复用旧锚点；追加完整新消息才保持请求前缀一致。
+    assert meter.measure(profile, extended) == request_size(extended)
+    appended = [*messages, AIMessage(content='新增内容🙂' * 100)]
+    assert calibrated < meter.measure(profile, appended) < request_size(appended)
     assert meter.measure({**profile, 'model': 'different'}, messages) == initial
     assert meter.measure({**profile, 'revision': 2}, messages) == initial
     assert meter.measure(profile, messages, {'tools': ['new']}) == request_size(messages, {'tools': ['new']})

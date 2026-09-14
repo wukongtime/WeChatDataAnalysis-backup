@@ -129,11 +129,12 @@ def test_different_empty_queries_count_but_paginated_search_can_continue(tmp_pat
     service, _ = make_service(tmp_path, monkeypatch)
     async def check():
         gateway = await prepared(service)
+        scope = await gateway.select()
         events = RuntimeEvents(service, gateway)
         async def empty(request):
             return ToolMessage(content=json.dumps({'messages': [], 'has_more': False}), tool_call_id=request.tool_call['id'])
         for i in range(3):
-            request = SimpleNamespace(tool_call={'id': str(i), 'name': 'search_messages', 'args': {'query': str(i)}})
+            request = SimpleNamespace(tool_call={'id': str(i), 'name': 'search_messages', 'args': {'query': str(i), 'scope_handle': scope['scope_handle']}})
             await events.awrap_tool_call(request, empty)
         assert events.empty_searches == 3
         async def next_page(request):

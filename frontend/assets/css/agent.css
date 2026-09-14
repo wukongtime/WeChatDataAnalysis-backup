@@ -352,6 +352,22 @@ html[data-theme=dark] .agent-live-step > i { color:#63d99a; }
 .agent-process-body .agent-process:empty { display:none; }
 .agent-process-body:has(.agent-process:empty) .agent-run-metadata { margin-top:0; padding-top:0; border-top:0; }
 .agent-process-body .agent-run-metadata { margin:12px 8px 0; padding-top:10px; border-top:1px solid var(--ag-border); }
+/* 摘要入口与实时进度分层，诊断信息按需展开。 */
+.agent-metadata-actions { display:flex; flex-wrap:wrap; align-items:center; gap:4px 20px; }
+.agent-metadata-actions > button { display:inline-flex; align-items:center; gap:8px; min-height:32px; padding:4px 0; margin:0; font-size:12px; color:var(--ag-muted); text-decoration:none; }
+.agent-metadata-actions > button i { flex:none; width:10px; text-align:center; font-size:10px; }
+.agent-metadata-actions > button:hover { color:var(--app-text-primary); }
+.agent-run-metadata button:focus-visible { outline:2px solid var(--ag-muted); outline-offset:3px; border-radius:4px; }
+.agent-coverage-summary { margin:0 0 4px; line-height:1.7; }
+.agent-run-details { padding:12px 0 4px; line-height:1.7; overflow-wrap:anywhere; }
+.agent-detail-facts { display:grid; gap:8px; margin:0; }
+.agent-detail-facts > div { display:grid; grid-template-columns:5em minmax(0,1fr); gap:12px; align-items:baseline; }
+.agent-detail-facts dt, .agent-detail-facts dd { margin:0; }
+.agent-detail-facts dd { color:var(--app-text-primary); font-variant-numeric:tabular-nums; }
+.agent-run-details .agent-usage { margin:12px 0 0; font-size:12px; }
+.agent-run-details .agent-coverage-note { margin-top:8px; }
+.agent-run-details .agent-index-note { margin-top:12px; }
+.agent-run-details button { min-height:32px; padding:4px 6px; font-size:12px; text-decoration:underline; text-underline-offset:3px; }
 .agent-answer-heading { margin:0 0 12px; font-size:14px; line-height:1.5; font-weight:600; color:var(--app-text-primary); }
 .agent-panel .agent-final-answer .agent-markdown { font-size:15px; line-height:1.85; }
 @container (max-width:480px) {
@@ -419,6 +435,8 @@ html[data-theme=dark] .agent-live-step > i { color:#63d99a; }
 .agent-reasoning-select { max-width:70px; border:0; padding:2px; }
 .agent-thread-root .agent-conversation { padding:0; }
 .agent-thread-root .agent-message { max-width:100%; width:100%; }
+/* 回复填满消息行，避免展开运行详情时内容固有宽度改变上方步骤间距。 */
+.agent-thread-root .agent-message > .agent-reply { flex:1; min-width:0; }
 .agent-thread-root .agent-message-content { max-width:100%; }
 .agent-process-panel { max-width:none; }
 .agent-process-panel > :not(:last-child) { margin-block:0; }

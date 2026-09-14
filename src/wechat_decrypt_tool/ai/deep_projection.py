@@ -4,11 +4,13 @@ import hashlib
 import time
 from .diagnostics import observed
 from .providers import ProviderFailure
-from .agent_budget import input_limit, output_limit, active_budget
+from .agent_budget import input_limit, model_output_limit, active_budget
 from .context_meter import ContextMeter
 
 class DeepProjection:
     def budget(self, run):
+        if run.get('engine_version') == 3:
+            return input_limit(self.profile(run))
         token=active_budget.set(run.get('input_budget') or input_limit(self.profile(run)))
         try:return input_limit(self.profile(run))
         finally:active_budget.reset(token)
@@ -44,7 +46,7 @@ class DeepProjection:
         segments=state.get('segments',0)
         if run.get('engine_version') == 2 and run.get('intent',{}).get('mode') != 'statistics':
             segments=self.workspace.page(run['id'],run['version'],'stage_note',limit=0)['total']
-        return {'coverage':state.get('coverage',[]),'segments':segments,
+        return {'coverage':state.get('coverage',[]),'segments':segments, 'tracked': state.get('tracked', True),
             'complete':state.get('complete',False),'known':bool(state),'mode':run.get('intent',{}).get('mode','search'),
             'findings':self.workspace.page(run['id'],run['version'],'finding',limit=0)['total'],
             'analyzed':sum(x.get('analyzed',0) for x in state.get('coverage',[]))}
@@ -78,12 +80,20 @@ class DeepProjection:
         window = profile.get('context_window')
         available = self.budget(run)
         snapshot = {'run_id': id, 'version': run['version'], 'used': used, 'input_capacity': available,
-                    'model_window': window, 'output_reserve': output_limit(profile), 'safety_reserve': 512,
+                    'model_window': window, 'output_reserve': model_output_limit(profile), 'safety_reserve': 512,
                     'percent': round(100 * used / available, 1) if window else None,
                     'measurement': 'conservative_estimate', 'unit': 'budget_units',
                     'description': '文本按 UTF-8 字节作保守上界估算，包含工具与请求封装；不是实测 Token。',
                     'model_id': profile.get('model'), 'profile_id': profile.get('id'),
                     'reasoning_effort': profile.get('reasoning_effort'), 'updated_at': time.time()}
+        if run.get('engine_version') == 3:
+            from .compaction_policy import policy_for
+            policy = policy_for(profile)
+            snapshot.update(context_revision=(run.get('context_compaction') or {}).get('id'),
+                compaction=run.get('context_compaction'),
+                window_percent=round(100 * used / window, 1) if window else None,
+                trigger_capacity=min(available, int((window or available) * policy.pressure_ratio)),
+                retain_capacity=int((window or available) * policy.recent_ratio))
         if run.get('engine_version') in (2, 3):
             measurement = self.context_meter(run).last
             if measurement.get('used') == used:
@@ -92,7 +102,7 @@ class DeepProjection:
                     snapshot['description'] = '相同模型请求的实测输入用量加新增内容保守估算；含安全余量，不是本次实测 Token。'
         self.update(id, context_budget=snapshot)
 
-    async def read_time(self, id, username, start, end, capacity, cursor=''):
+    async def read_time(self, id, username, start, end, capacity, cursor='', *, probe_budget=None):
         run = self.guard(id)
         state = None
         if cursor:
@@ -106,6 +116,8 @@ class DeepProjection:
                     raise ProviderFailure('续读原文缺失，已保留任务进度。')
                 state = {**state, 'pending_message': original}
         options = {'session': f'{id}:{run["version"]}'} if getattr(self.tools, 'supports_time_prefetch', False) else {}
+        if probe_budget is not None and getattr(self.tools, 'supports_time_prefetch', False):
+            options['probe_budget'] = probe_budget
         result = await self.tools.time_window(run['account'], username, start, end, capacity, state,
                                               checkpoint=lambda: self.guard(id), **options)
         self.guard(id)

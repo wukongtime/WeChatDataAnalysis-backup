@@ -103,15 +103,64 @@ def test_graph_continues_after_discarding_optional_quote(tmp_path, monkeypatch):
     asyncio.run(check())
 
 
+def test_commit_retry_timeline_preserves_page_identity_and_error(tmp_path, monkeypatch):
+    service, _ = make_service(tmp_path, monkeypatch)
+
+    async def check():
+        gateway = await prepared(service)
+        scope = await gateway.select(complete=True)
+        page = await gateway.read_next(scope['scope_handle'])
+        events = RuntimeEvents(service, gateway)
+
+        async def handler(request):
+            # 调用真实提交校验，确认失败未落库、成功后页面只推进一次。
+            running = service.run(gateway.id)['timeline'][-1]
+            assert running['status'] == 'running'
+            assert running['page_id'] == page['page_id']
+            assert running['scope_handle'] == page['scope_handle']
+            args = request.tool_call['args']
+            result = gateway.commit(args['scope_handle'], args['page_id'], args['findings'])
+            return ToolMessage(content=json.dumps(result), tool_call_id=request.tool_call['id'])
+
+        for call_id, source in [('first', 'not-in-page'), ('retry', page['messages'][0]['source'])]:
+            args = {'scope_handle': page['scope_handle'], 'page_id': page['page_id'],
+                    'findings': [{'text': '报价100元', 'sources': [source]}]}
+            request = SimpleNamespace(tool_call={'id': call_id, 'name': 'commit_findings', 'args': args})
+            result = await events.awrap_tool_call(request, handler)
+            if call_id == 'first':
+                assert result.status == 'error'
+                assert not gateway.get(page['page_id']).get('committed')
+                assert gateway.scope(page['scope_handle'])['committed_pages'] == 0
+            else:
+                assert json.loads(result.content)['saved'] is True
+
+        # 读取持久化记录，覆盖刷新和历史详情，原始失败不改写成成功。
+        run = service.store.get('agent_run', gateway.id)
+        commits = [item for item in run['timeline'] if item.get('action') == 'commit_findings']
+        assert [item['status'] for item in commits] == ['failed', 'completed']
+        for item in commits:
+            assert item['scope_handle'] == page['scope_handle']
+            assert item['page_id'] == page['page_id']
+            assert item['input_version'] == gateway.version
+            assert gateway.get(f'timeline:{item["seq"]:012d}') == item
+        assert '来源不属于本页' in commits[0]['result']['error']
+        assert commits[1]['result']['saved'] is True
+        assert commits[1]['result']['findings'] == 1
+        assert gateway.scope(page['scope_handle'])['committed_pages'] == 1
+
+    asyncio.run(check())
+
+
 def test_repeat_detection_allows_distinct_errors_and_new_pages(tmp_path, monkeypatch):
     service, _ = make_service(tmp_path, monkeypatch)
     async def check():
         gateway = await prepared(service)
+        scope = await gateway.select()
         events = RuntimeEvents(service, gateway)
         async def handler(request):
             raise ValueError('参数不正确')
         for i in range(4):
-            request = SimpleNamespace(tool_call={'id': str(i), 'name': 'search_messages', 'args': {'query': str(i)}})
+            request = SimpleNamespace(tool_call={'id': str(i), 'name': 'search_messages', 'args': {'query': str(i), 'scope_handle': scope['scope_handle']}})
             result = await events.awrap_tool_call(request, handler)
             assert result.status == 'error'
             assert 'recovery' in json.loads(result.content)
@@ -119,7 +168,6 @@ def test_repeat_detection_allows_distinct_errors_and_new_pages(tmp_path, monkeyp
             await events.awrap_tool_call(request, handler)
         with pytest.raises(ProviderFailure, match='未推进'):
             await events.awrap_tool_call(request, handler)
-        scope = await gateway.select()
         await gateway.read_next(scope['scope_handle'])
         assert (await events.awrap_tool_call(request, handler)).status == 'error'
     asyncio.run(check())

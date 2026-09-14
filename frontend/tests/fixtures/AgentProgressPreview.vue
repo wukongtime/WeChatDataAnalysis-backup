@@ -11,8 +11,9 @@
 import { computed, reactive, ref, watchEffect } from 'vue'
 import AgentRun from '../../components/chat/AgentRun.vue'
 const showSubtasks = ref(new URLSearchParams(location.search).has('subtasks'))
+const metadataPreview = new URLSearchParams(location.search).has('metadata')
 const now = Date.now(), start = now / 1000 - (showSubtasks.value ? 570 : 42)
-const complete = ref(!showSubtasks.value), dark = ref(false), views = reactive({'大视图':{},'窄侧栏':{}})
+const complete = ref(!showSubtasks.value && !metadataPreview), dark = ref(false), views = reactive({'大视图':{},'窄侧栏':{}})
 watchEffect(() => { document.documentElement.dataset.theme = dark.value ? 'dark' : 'light'; globalThis.progressPreviewCompleted = complete.value })
 const run = computed(() => ({
   id:'progress-preview',version:1,status:complete.value?'completed':'running',segment_started:start,
@@ -30,6 +31,13 @@ const run = computed(() => ({
   ],
   answer:complete.value?'主要讨论了三件事：\n\n- **工作安排**：聊到了接下来的打算，以及还有哪些事项待确认。\n- **电脑配件**：比较了升级成本，也讨论了继续使用现有配置。\n- **约饭与费用**：更新了碰面安排和费用处理方式。':'',
   citations:[],usage:{calls:4,input_tokens:2400,output_tokens:620},
+  // 复现长状态区的示例，验证折叠后在大视图与窄侧栏中的信息密度。
+  ...(metadataPreview ? {
+    read_count:1000,source_count:1000,used:{models:8,media:0},
+    query_filters:{conversations:['sample']},time_range:{start:0,end:1789352309},
+    index_status:{enabled:true,message:'语义索引在后台渐进补齐，基础搜索可立即使用。'},
+    analysis:{known:true,analyzed:complete.value?1000:0,complete:complete.value,segments:0,findings:0,coverage:[{username:'sample',read:1000,analyzed:complete.value?1000:0,complete:complete.value}]},
+  } : {}),
 }))
 </script>
 <style>

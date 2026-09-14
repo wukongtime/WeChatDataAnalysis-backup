@@ -14,11 +14,17 @@ const formatAmount = value => {
   if (amount < 1000) return String(amount)
   return `${Number((amount / 1000).toFixed(amount < 10000 ? 1 : 0))}k`
 }
-const usageLabel = computed(() => known.value ? `约 ${props.budget.percent}% 已用` : '容量未知')
+const usageLabel = computed(() => known.value ? `约 ${props.budget.window_percent ?? props.budget.percent}% 已用` : '容量未知')
+const remaining = computed(() => {
+  const { input_capacity, used } = props.budget || {}
+  if (input_capacity == null || used == null || !Number.isFinite(Number(input_capacity)) || !Number.isFinite(Number(used))) return null
+  return Math.max(0, Number(input_capacity) - Number(used))
+})
 const amountLabel = computed(() => props.budget
-  ? `已用约 ${formatAmount(props.budget.used)} / 可用 ${formatAmount(props.budget.input_capacity)}`
+  ? `已用约 ${formatAmount(props.budget.used)} / 剩余可用 ${formatAmount(remaining.value)}`
   : '开始提问后显示用量')
-const label = computed(() => `上下文窗口（估算值），${usageLabel.value}，${amountLabel.value}`)
+const windowLabel = computed(() => props.budget?.model_window ? `模型窗口 ${formatAmount(props.budget.model_window)}` : '')
+const label = computed(() => `上下文窗口（估算值），${usageLabel.value}，${amountLabel.value}，${windowLabel.value}`)
 // 默认对准圆环；接近输入框或视口边缘时只平移浮层，箭头继续指向圆环。
 const positionTooltip = () => {
   const element = trigger.value
@@ -59,7 +65,7 @@ onBeforeUnmount(() => {
 })
 provide(ContextKey, {
   usedTokens: computed(() => props.budget?.used || 0),
-  maxTokens: computed(() => known.value ? props.budget.input_capacity : 0),
+  maxTokens: computed(() => known.value ? (props.budget.window_percent != null ? props.budget.model_window : props.budget.input_capacity) : 0),
   usage: computed(() => undefined), modelId: computed(() => props.budget?.model_id),
 })
 </script>
@@ -73,6 +79,7 @@ provide(ContextKey, {
       <span class="agent-budget-heading">上下文窗口 <span class="agent-budget-estimate">估算值</span></span>
       <span class="agent-budget-usage">{{ usageLabel }}</span>
       <span class="agent-budget-amount">{{ amountLabel }}</span>
+      <span v-if="windowLabel" class="agent-budget-usage">{{ windowLabel }}</span>
     </span>
   </span>
 </template>

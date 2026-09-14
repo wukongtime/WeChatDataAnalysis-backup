@@ -19,11 +19,12 @@ def size(value):
     return len(value.encode('utf-8'))
 
 
-def input_limit(profile):
+def input_limit(profile, *, output_tokens=None):
     window = profile.get('context_window')
     limit = active_budget.get() or profile.get('input_budget') or window or 32768
     if window:
-        limit = min(limit, max(512, int(window) - output_limit(profile) - 512))
+        reserve = model_output_limit(profile) if output_tokens is None else output_tokens
+        limit = min(limit, max(512, int(window) - reserve - 512))
     upstream_input = profile.get('model_metadata', {}).get('limit', {}).get('input')
     if isinstance(upstream_input, int) and upstream_input > 0:
         limit = min(limit, upstream_input)
@@ -41,6 +42,11 @@ def output_limit(profile):
     return min(4096, max(256, int(profile.get('context_window') or 32768) // 4))
 
 
+def model_output_limit(profile, purpose='agent'):
+    """实际请求参数与输入预留使用同一出口，不按模型最大输出能力虚留空间。"""
+    return min(output_limit(profile), 16384 if purpose in ('evidence_adjudication', 'citation_repair') else 8192)
+
+
 def request_size(messages, extra=None):
     # 计入消息封装与工具 Schema；这是保守预算，不冒充供应商实际 Token 用量。
     def content_size(content):
@@ -55,11 +61,11 @@ def request_size(messages, extra=None):
         for m in messages) + size(extra or '') + 256
 
 
-def check_request(profile, messages, extra=None):
+def check_request(profile, messages, extra=None, *, output_tokens=None):
     from .context_meter import active_meter
     meter = active_meter.get()
     amount = meter.measure(profile, messages, extra) if meter else request_size(messages, extra)
-    if amount > input_limit(profile):
+    if amount > input_limit(profile, output_tokens=output_tokens):
         raise ContextOverflow('请求超过当前上下文预算，需要继续分段整理。')
     return amount
 

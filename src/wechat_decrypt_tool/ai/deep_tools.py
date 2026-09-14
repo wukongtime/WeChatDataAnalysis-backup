@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictInt, StrictStr
 from typing import Annotated, Literal
 
 from .agent_budget import input_limit, message_payload, size
@@ -17,6 +17,18 @@ from .agent_global import resolve_directory_name, comparable_name
 from .agent_references import material_references, reference_id
 from .deep_synchronization import serialized
 from .deep_validation import requires_complete_analysis, requires_findings
+from .deep_calculation import CalculationTerm, calculate
+from .deep_planning import REVISION, MainWork, BranchWork
+
+
+class ScopeError(ValueError):
+    """范围错误保留稳定编号，供模型恢复与界面展示。"""
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+ScopeTime = Annotated[StrictStr | StrictInt, Field(description='ISO 日期时间或 Unix 秒整数（也可用整数字符串），不是毫秒；省略时使用默认边界')]
 
 
 class FindingInput(BaseModel):
@@ -24,6 +36,10 @@ class FindingInput(BaseModel):
     text: str = Field(min_length=1, description='由所列本页来源支持的事实正文')
     sources: list[str] = Field(min_length=1, description='本页 messages 中的真实 source 编号，不带引用括号')
     quote: str | None = Field(default=None, description='可省略的逐字引文；概括放在 text 中。与对应原文不一致的附加引文会被舍弃')
+    entities: list[str] | None = Field(default=None, description='本页原文明确提到的实体；不能仅凭同名认定同一人')
+    event_time: str | None = Field(default=None, description='原文明示的事件时间，未知时省略；不得用消息发送时刻代替')
+    relation: str | None = Field(default=None, description='需要与其他发现关联的线索，不把推测当成事实')
+    evidence_status: Literal['supported', 'uncertain', 'conflicting'] | None = Field(default=None, description='省略表示原文支持；不确定或冲突必须标记')
 
 
 class ChatGateway:
@@ -48,10 +64,26 @@ class ChatGateway:
         self.service.workspace.put(self.id, self.version, key, kind, value)
 
     def scope(self, handle):
-        value = self.get('scope:' + handle)
+        value = self.get('scope:' + handle) if isinstance(handle, str) else None
         if not value:
-            raise ValueError('范围句柄不存在或不属于当前任务版本')
+            raise ScopeError('invalid_scope_handle', '范围句柄不存在或不属于当前任务版本，请重新选择本轮范围')
         return value
+
+    def previous_filters(self):
+        """补充版本只继承自己的条件快照，不能退回更早一轮。"""
+        run = self.guard()
+        if run['version'] > 1:
+            snapshot = self.service.workspace.get(self.id, self.version - 1, 'query:next_filters')
+            if (snapshot and snapshot.get('origin_run') == self.id
+                    and snapshot.get('origin_version') == self.version - 1):
+                return snapshot.get('filters') or {}
+            return {}
+        prior = self.service.store.get('agent_run', run.get('previous_run_id') or '')
+        if not prior:
+            return {}
+        if prior['account'] != run['account'] or prior['thread_id'] != run['thread_id']:
+            raise ValueError('不能继承其他账号或 AI 对话条件')
+        return prior.get('query_filters') or {}
 
     def progress_state(self):
         """给模型可直接执行的状态；统计覆盖不表示已分析。"""
@@ -64,10 +96,13 @@ class ChatGateway:
             'statistics_complete': s['mode'] == 'statistics' and s['read_complete'] and not s.get('warnings'),
             'analysis_complete': s['mode'] != 'statistics' and s['complete_required'] and s['read_complete'] and not s['pending_page'] and not s.get('warnings'),
             'pending_page': s['pending_page'] or None, 'pages': s['pages'],
+            **({'execution_mode': self.get(s['analysis_plan'])['mode'], 'plan_handle': s['analysis_plan']}
+                if s.get('analysis_plan') and self.get(s['analysis_plan']) else {}),
             'committed_pages': s['committed_pages'],
             'next_args': {'scope_handle': s['handle'], **({'page_id': s['pending_page']} if s['pending_page'] else {})},
             'next_tool': 'commit_findings' if s['pending_page'] else
                 'count_messages' if s['mode'] == 'statistics' and not s['read_complete'] else
+                'task' if s.get('analysis_plan') and self.get(s['analysis_plan'])['mode'] == 'parallel' and not s['read_complete'] else
                 'read_messages' if s['mode'] != 'statistics' and not s['read_complete'] else None} for s in states]
 
     @staticmethod
@@ -111,10 +146,23 @@ class ChatGateway:
                     lo = now.replace(year=year, month=month, day=min(now.day, calendar.monthrange(year, month)[1]))
                 return {'start': int(lo.timestamp()), 'end': run['cutoff']}
         def stamp(value, default):
-            if not value:
+            if value == '' or value is None:
                 return default
-            parsed = datetime.fromisoformat(value)
-            return int((parsed if parsed.tzinfo else parsed.replace(tzinfo=zone)).timestamp())
+            error = '时间格式无效：请使用 ISO 日期时间或 Unix 秒整数，不支持布尔值、小数或毫秒时间戳'
+            if type(value) not in (str, int):
+                raise ValueError(error)
+            value = value.strip() if isinstance(value, str) else value
+            if type(value) is int or re.fullmatch(r'[+-]?\d+', value):
+                seconds = int(value)
+                # 秒输入限定到四位年份可表达的范围，防止当代毫秒值被截成截止时间。
+                if not 0 <= seconds <= 253402300799:
+                    raise ValueError(error)
+                return seconds
+            try:
+                parsed = datetime.fromisoformat(value)
+                return int((parsed if parsed.tzinfo else parsed.replace(tzinfo=zone)).timestamp())
+            except (ValueError, OverflowError, OSError):
+                raise ValueError(error) from None
         lo, hi = stamp(start, 0), min(stamp(end, run['cutoff']), run['cutoff'])
         if not 0 <= lo <= hi:
             raise ValueError('时间区间无效，结束时刻不包含在读取范围内')
@@ -128,7 +176,11 @@ class ChatGateway:
             run = self.guard()
             if mode not in ('search', 'statistics'):
                 raise ValueError('mode 只能为 search 或 statistics')
-            complete = complete or requires_complete_analysis(run.get('input_digest', ''))
+            if run.get('subtask_plan_version') == REVISION and not run.get('parent_run_id'):
+                # 模型自行填写 complete 不能把普通问题升级为全历史核查。
+                complete = requires_complete_analysis(run.get('input_digest', ''))
+            else:
+                complete = complete or (not run.get('parent_run_id') and requires_complete_analysis(run.get('input_digest', '')))
             thread = self.service.thread(run['thread_id'], run['account'])
             contacts = self.get('directory:conversations')
             if contacts is None:
@@ -150,11 +202,8 @@ class ChatGateway:
                 comparable_name(c['name']) in clause or c['username'] in clause for clause in exclusion_clauses)}
             positive_ids = named_ids - explicit_excluded
             inherited = run.get('restart_filters') or {}
-            if reuse_previous and run.get('previous_run_id'):
-                prior = self.service.run(run['previous_run_id'], run['account'])
-                if prior['thread_id'] != run['thread_id']:
-                    raise ValueError('不能继承其他 AI 对话条件')
-                inherited = prior.get('query_filters') or {}
+            if reuse_previous:
+                inherited = self.previous_filters()
             inherited = dict(inherited)
             for key in clear_filters or []:
                 if key not in ('sender', 'message_count', 'time_range', 'conversations'):
@@ -193,12 +242,6 @@ class ChatGateway:
                     raise ValueError('子任务不能扩大分配范围')
             if not selected:
                 return {'clarification': '没有符合条件的可读会话'}
-            if run.get('bound_scope') and not time_phrase and not start and not end:
-                interval = {k: run['bound_scope'][k] for k in ('start', 'end')}
-            elif inherited and not time_phrase and not start and not end:
-                interval = inherited.get('time_range') or self.interval('', '', '')
-            else:
-                interval = self.interval(time_phrase, start, end)
             sender = (inherited.get('sender') or '') if sender is None else sender
             if message_count is None and reuse_previous and 'message_count' not in (clear_filters or []):
                 message_count = inherited.get('message_count')
@@ -212,6 +255,14 @@ class ChatGateway:
             if explicit and not run.get('bound_scope'):
                 # 用户明确写出的边界比模型换算的时间值优先，避免少读或多读一分钟。
                 interval = {**explicit, 'end': min(explicit['end'], run['cutoff'])}
+            elif run.get('bound_scope') and not time_phrase and start == '' and end == '':
+                interval = {k: run['bound_scope'][k] for k in ('start', 'end')}
+            elif inherited and not time_phrase and start == '' and end == '':
+                interval = inherited.get('time_range') or self.interval('', '', '')
+            else:
+                interval = self.interval(time_phrase, start, end)
+            if not 0 <= interval['start'] <= interval['end'] <= run['cutoff']:
+                raise ValueError('时间区间无效，结束时刻不包含在读取范围内')
             if run.get('bound_scope'):
                 bound = run['bound_scope']
                 if interval['start'] < bound['start'] or interval['end'] > bound['end']:
@@ -258,9 +309,17 @@ class ChatGateway:
                 from .deep_guide import ANALYSIS_GUIDE
                 from .deep_backend import TaskBackend
                 self.put('file:/skills/wechat-analysis.md', 'deep_file', TaskBackend.file_data(ANALYSIS_GUIDE))
-            return {'scope_handle': handle, 'conversation_count': len(selected), 'names': [allowed[u]['name'] for u in selected[:8]],
+            result = {'scope_handle': handle, 'conversation_count': len(selected), 'names': [allowed[u]['name'] for u in selected[:8]],
                 'time_range': interval, 'complete_required': spec['complete_required'],
                 **({'analysis_guide': '/skills/wechat-analysis.md'} if spec['complete_required'] else {})}
+            if (run.get('subtask_plan_version') == 1 and not run.get('parent_run_id') and complete
+                    and mode != 'statistics' and not state.get('pending_page') and not state.get('read_complete')):
+                plan = await self.service.analysis_plans.prepare(self, state)
+                result.update(plan_handle=plan['id'], execution_mode=plan['mode'],
+                    next_tool='task' if plan['mode'] == 'parallel' else 'read_messages',
+                    instruction='大范围已按内容量准备分片，请调用 task，subagent_type=range-analyst；程序自动并行并复用预读。'
+                        if plan['mode'] == 'parallel' else '范围较小，直接 read_messages 使用已缓存原文，无需子任务。')
+            return result
 
     @serialized
     def save_messages(self, messages, originals=None):
@@ -270,6 +329,9 @@ class ChatGateway:
         values = [{**m, 'source': aliases.get(m['source'], m['source'])} for m in values]
         refs = material_references(run['account'], values, existing=run.get('references', {}))
         self.service.update(self.id, read_count=len(run['evidence']), references=refs)
+        # 搜索和回查也改变资料集合，覆盖快照必须与总读取数同步。
+        if run.get('scope_handle'):
+            self.coverage()
         payload = []
         for m in messages:
             key = aliases.get(m['source'], m['source'])
@@ -284,6 +346,33 @@ class ChatGateway:
             payload.append(item)
         return payload
 
+    async def fetch_page(self, state, capacity, *, probe_budget=None):
+        """只推进读取位置；覆盖提交仍由主任务或分片拥有者负责。"""
+        run = self.guard()
+        username = state['conversations'][state['conversation_index']]
+        if state.get('message_count'):
+            result = await self.recent_page(state, capacity, probe_budget=probe_budget)
+            username = None
+        elif hasattr(self.service.tools, 'time_window'):
+            options = {'probe_budget': probe_budget} if probe_budget is not None else {}
+            result = await self.service.read_time(self.id, username, state['start'], state['end'], capacity, state['cursor'], **options)
+        else:
+            result = await self.service.tools.read(run['account'], username, state['start'], state['end'], int(state['cursor'] or 0), max_batch_bytes=capacity)
+        self.guard()
+        permitted = lambda m: self.permits(state, m) and (username is None or m['username'] == username)
+        result = {**result, 'messages': [m for m in result.get('messages', []) if permitted(m)],
+            'originals': [m for m in result.get('originals', result.get('messages', [])) if permitted(m)]}
+        following = {**state, 'warnings': list(dict.fromkeys([*state.get('warnings', []), *([result['warning']] if result.get('warning') else [])]))}
+        if result.get('has_more'):
+            cursor = result.get('next_cursor') or result.get('next_offset')
+            if cursor is None or str(cursor) == str(state['cursor']):
+                raise ValueError('读取游标未推进，已保留当前页面')
+            following['cursor'] = str(cursor)
+        else:
+            following.update(conversation_index=state['conversation_index'] + 1, cursor='')
+            following['read_complete'] = bool(state.get('message_count')) or following['conversation_index'] >= len(state['conversations'])
+        return result, following
+
     async def read_next(self, handle):
         async with self.lock:
             state = self.scope(handle)
@@ -293,15 +382,24 @@ class ChatGateway:
                 return {'complete': True, 'requires_commit': False, 'messages': [], 'scope_handle': handle,
                     'instruction': '范围已经处理完成，没有待提交页面；直接使用已保存发现回答，不再读取或提交。'}
             run = self.guard()
+            if run.get('subtask_plan_version') == REVISION and run.get('work_query'):
+                return await self.service.planned_work.read_query(self, state)
+            if run.get('manifest_id'):
+                return await self.service.read_manifest(self, state)
+            if state.get('analysis_plan'):
+                plan = self.get(state['analysis_plan'])
+                if plan and plan['mode'] == 'parallel':
+                    raise ScopeError('parallel_required', '范围已准备并行分析，请调用 task，subagent_type=range-analyst，scope_handle=' + handle)
             username = state['conversations'][state['conversation_index']]
             capacity = max(1024, min(48 * 1024, input_limit(self.service.profile(run)) // 3))
-            if state.get('message_count'):
-                result = await self.recent_page(state, capacity)
-                username = None
-            elif hasattr(self.service.tools, 'time_window'):
-                result = await self.service.read_time(self.id, username, state['start'], state['end'], capacity, state['cursor'])
+            cached = self.get(f"prefetch:{handle}:{state.get('prefetch_index', 0)}")
+            if cached:
+                result, following = cached['result'], cached['next']
+                following = {**following, 'prefetch_index': state.get('prefetch_index', 0) + 1}
             else:
-                result = await self.service.tools.read(run['account'], username, state['start'], state['end'], int(state['cursor'] or 0), max_batch_bytes=capacity)
+                result, following = await self.fetch_page(state, capacity)
+            if state.get('message_count'):
+                username = None
             self.guard()
             def permitted(m):
                 return m['username'] in state['conversations'] and (username is None or m['username'] == username) and state['start'] <= m['time'] < state['end'] and (not state['sender'] or
@@ -309,16 +407,8 @@ class ChatGateway:
             messages = [m for m in result.get('messages', []) if permitted(m)]
             originals = [m for m in result.get('originals', messages) if permitted(m)]
             payload = self.save_messages(messages, originals)
-            next_state = {**state, 'pages': state['pages'] + 1,
+            next_state = {**state, **{k: following[k] for k in ('cursor', 'conversation_index', 'read_complete', 'prefetch_index') if k in following}, 'pages': state['pages'] + 1,
                 'warnings': list(dict.fromkeys([*state.get('warnings', []), *([result['warning']] if result.get('warning') else [])]))}
-            if result.get('has_more'):
-                cursor = result.get('next_cursor') or result.get('next_offset')
-                if cursor is None or str(cursor) == str(state['cursor']):
-                    raise ValueError('读取游标未推进，已保留当前页面')
-                next_state['cursor'] = str(cursor)
-            else:
-                next_state.update(conversation_index=state['conversation_index'] + 1, cursor='')
-                next_state['read_complete'] = bool(state.get('message_count')) or next_state['conversation_index'] >= len(state['conversations'])
             page_id = f'page:{handle}:{state["pages"]:08d}'
             out = {'page_id': page_id, 'scope_handle': handle, 'messages': payload, 'has_more': not next_state['read_complete'],
                 'requires_commit': state['complete_required'] and state['mode'] != 'statistics', 'warning': result.get('warning', '')}
@@ -363,6 +453,7 @@ class ChatGateway:
                 # 引文是可选附加信息；丢弃不精确的引文，不让有效来源的一整批发现重做。
                 finding = {key: value for key, value in finding.items() if key != 'quote'}
                 dropped_quotes.append(index + 1)
+            finding = {k: v for k, v in finding.items() if k in ('text', 'sources', 'quote', 'entities', 'event_time', 'relation', 'evidence_status')}
             saved_findings.append(finding)
             pieces.append((f'finding:{page_id}:{index:05d}', 'finding', finding))
         if errors:
@@ -436,14 +527,22 @@ class ChatGateway:
         if states:
             self.service.update(self.id, query_scope=combined, query_filters={**(run.get('query_filters') or {}), 'conversations': combined})
         self.service.update(self.id, coverage_state='complete' if complete else 'partial', analysis={'complete': complete,
-            'coverage': coverage, 'segments': segments})
+            'coverage': coverage, 'segments': segments,
+            'tracked': any(s['complete_required'] and s['mode'] != 'statistics' for s in states)})
 
     def validate_complete(self, *, ignore_warnings=False):
         states = self.scopes()
         run = self.guard()
-        if not states and (run.get('child_role') == 'range-analyst' or requires_complete_analysis(run.get('input_digest', ''))):
+        if run.get('subtask_plan_version') == REVISION and not run.get('parent_run_id') and not self.service.planned_work.ready(run):
             return False
-        needs_findings = run.get('child_role') == 'range-analyst' or requires_findings(run.get('input_digest', ''))
+        if not states and (run.get('child_role') == 'range-analyst' or (not run.get('parent_run_id') and requires_complete_analysis(run.get('input_digest', '')))):
+            return False
+        needs_findings = run.get('child_role') == 'range-analyst' or (not run.get('parent_run_id') and requires_findings(run.get('input_digest', '')))
+        if not ignore_warnings:
+            for state in states:
+                plan = self.get(state['analysis_plan']) if state.get('analysis_plan') else None
+                if plan and plan['mode'] == 'parallel' and plan['phase'] != 'completed':
+                    return False
         content_states = [s for s in states if s['mode'] != 'statistics' and s['complete_required']]
         if requires_complete_analysis(run.get('input_digest', '')) and run.get('required_conversations') and not set(run['required_conversations']) <= {u for s in (content_states if needs_findings else states) for u in s['conversations']}:
             return False
@@ -452,7 +551,7 @@ class ChatGateway:
             return False
         return all(not s['complete_required'] or self.scope_covered(s, states, analyzed=s['mode'] != 'statistics', ignore_warnings=ignore_warnings) for s in states)
 
-    async def recent_page(self, state, capacity):
+    async def recent_page(self, state, capacity, *, probe_budget=None):
         run = self.guard()
         key = 'recent:' + state['handle']
         saved = self.get(key)
@@ -489,6 +588,8 @@ class ChatGateway:
                 fragment['next_text_offset'] = char_offset
                 break
             position, char_offset = position + 1, 0
+            if probe_budget is not None and used > probe_budget:
+                break
         more = position < len(saved['sources'])
         return {'messages': messages, 'originals': originals, 'has_more': more,
             'next_cursor': json.dumps([position, char_offset]) if more else None, 'warning': saved['warning']}
@@ -496,8 +597,9 @@ class ChatGateway:
     def tools(self):
         @tool
         async def select_chat_scope(conversations: list[str] | None = None, all_chats: bool = False,
-            time_phrase: str = '', start: str = '', end: str = '', sender: str | None = None, exclude: list[str] | None = None,
-            complete: bool = False, mode: Literal['search', 'statistics'] = 'search', reuse_previous: bool = False,
+            time_phrase: str = '', start: ScopeTime = '', end: ScopeTime = '', sender: str | None = None, exclude: list[str] | None = None,
+            complete: bool = False, mode: Literal['search', 'statistics'] = 'search',
+            reuse_previous: Annotated[bool, Field(description='追问沿用上一轮查询条件时设为 true，由程序重建本轮范围，无需复制历史句柄或时间')] = False,
             message_count: Annotated[int | None, Field(description='仅用户明确要求最近 N 条时填写 N；全部范围必须为 null，绝非分页大小')] = None,
             clear_filters: Annotated[list[str] | None, Field(description='追问明确取消的条件：sender、message_count、time_range、conversations')] = None) -> dict:
             """选择查询范围。无时间要求才查全历史；相对时间可用最近N天/周/月，模糊时间先结合语境确定并说明假设。子任务省略日期和对象即可继承精确分配范围。普通问答 complete=false；完整分析 complete=true；计数 mode=statistics。"""
@@ -519,6 +621,11 @@ class ChatGateway:
             self.guard()
             messages = [m for m in result.get('messages', []) if m['username'] in state['conversations'] and state['start'] <= m['time'] < state['end']
                 and (not state['sender'] or state['sender'] == (m.get('sender_id') or m.get('sender')))]
+            key = hashlib.sha256(json.dumps([scope_handle, query, conversation_offset, offset]).encode()).hexdigest()[:24]
+            self.put('search-coverage:' + key, 'deep_search_coverage', {'scope_handle':scope_handle, 'query':query,
+                'conversation':username, 'offset':offset, 'sources':[m['source'] for m in messages],
+                'has_more':bool(result.get('has_more')), 'warning':result.get('warning', ''),
+                'freshness':result.get('freshness', {}), 'coverage':'search_only'})
             return {**{k: v for k, v in result.items() if k not in ('messages', 'originals')}, 'messages': self.save_messages(messages),
                 'live_recheck_tool': 'search_live_messages' if result.get('freshness', {}).get('realtime_read_hint') else None,
                 'next_conversation_offset': conversation_offset if result.get('has_more') else conversation_offset + 1 if conversation_offset + 1 < len(state['conversations']) else None}
@@ -572,6 +679,9 @@ class ChatGateway:
                 result = {'messages': self.save_messages(matches), 'scanned': current['scanned'], 'has_more': more,
                     'cursor_handle': next_handle, 'warning': current['warning'], 'coverage': 'search_only'}
                 pieces = [(key, 'deep_live_cursor', {**saved, 'result': result})]
+                pieces.append(('search-coverage:' + identity + ':' + str(current['scanned']), 'deep_search_coverage',
+                    {'scope_handle':scope_handle, 'query':query, 'sources':[m['source'] for m in matches],
+                     'scanned':current['scanned'], 'has_more':more, 'warning':current['warning'], 'coverage':'search_only'}))
                 if more:
                     pieces.append(('live:' + next_handle, 'deep_live_cursor', current))
                 self.service.workspace.put_pieces(self.id, self.version, pieces)
@@ -604,6 +714,16 @@ class ChatGateway:
             original = run['evidence'].get(source)
             if not original or not self.permits(state, original):
                 raise ValueError('来源不在当前范围')
+            if run.get('manifest_id'):
+                parent = self.service.guard(run['parent_run_id'])
+                manifest = self.service.analysis_plans.get(parent, run['manifest_id'])
+                refs = [r for r in manifest['core'] + manifest['context'] if r['username'] == original['username']]
+                center = next((i for i, r in enumerate(refs) if r['source'] == source), None)
+                if center is None:
+                    raise ValueError('来源不属于分配清单')
+                values = self.service.analysis_plans.messages(parent, refs[max(0, center - 10):center + 11])
+                return {'messages': [message_payload(m) for m in values], 'data_source': 'assigned_manifest',
+                    'instruction': '仅返回清单内正文及背景；范围外疑点交主任务核查。'}
             from fastapi import HTTPException
             try:
                 result = await self.service.tools.context(run['account'], original)
@@ -638,6 +758,9 @@ class ChatGateway:
                     item['person_reference'] = f'[[person:{key}]]'
             more = any(stats[k] for k in ('has_more', 'daily_has_more', 'sender_has_more'))
             current = self.scope(scope_handle)
+            self.put('statistics-coverage:' + scope_handle, 'deep_statistics_coverage', {'scope_handle':scope_handle,
+                'read_complete':current['read_complete'], 'warnings':current.get('warnings', []),
+                'coverage':'statistics_only'})
             return {'statistics': stats, 'complete': current['read_complete'] and not current.get('warnings'),
                 'analysis_complete': False, 'scope_handle': scope_handle,
                 'instruction': 'complete 仅表示本范围计数已完成；分布分页按需读取。需要分析内容时调用 read_messages，统计不产生分析发现。',
@@ -647,10 +770,27 @@ class ChatGateway:
                 'sources': [message_payload(m, self.guard()['timezone_offset']) for m in self.guard()['evidence'].rows(limit=5)]}
 
         @tool
-        def read_results(query: str = '', offset: int = 0) -> dict:
+        def read_results(query: str = '', offset: int = 0, task_handle: str = '') -> dict:
             """分页回查本轮已分析发现，或用 query 搜索事实。"""
             self.guard()
+            if task_handle:
+                return self.service.planned_work.results(self, task_handle, offset, query)
             return self.service.workspace.page(self.id, self.version, 'finding', max(0, offset), 20, query)
+
+        @tool
+        def calculate_values(scope_handle: str, terms: list[CalculationTerm], operation: Literal['sum', 'difference', 'min', 'max'] = 'sum') -> dict:
+            """同一单位的已确认事件交程序精确计算；difference 为第一项减去其余项。跨片关系、数值与方向未确认时不得计算。"""
+            run = self.guard()
+            if run.get('parent_run_id'):
+                raise ValueError('子任务只提取局部事实；关联确认后的计算交主任务执行')
+            state = self.scope(scope_handle)
+            originals = run['evidence'].get_many(s for term in terms for s in term.sources)
+            if any(not originals.get(s) or not self.permits(state, originals[s]) for term in terms for s in term.sources):
+                raise ValueError('计算引用的来源不在当前已读取范围')
+            result = calculate(terms, operation)
+            key = hashlib.sha256(json.dumps([scope_handle, operation, [t.model_dump() for t in terms]], sort_keys=True).encode()).hexdigest()[:24]
+            self.put('calculation:' + key, 'deep_calculation', {'terms':[t.model_dump() for t in terms], **result})
+            return result
 
         @tool
         def search_material(scope_handle: str, query: str = '', source: str = '', offset: int = 0) -> dict:
@@ -659,6 +799,10 @@ class ChatGateway:
             run = self.guard()
             if offset < 0:
                 raise ValueError('分页位置不能为负')
+            if run.get('manifest_id'):
+                values = [m for m in self.service.analysis_plans.assigned_messages(run, source) if query in m.get('text', '')]
+                return {'messages': [message_payload(m) for m in values[offset:offset + 10]],
+                    'has_more': offset + 10 < len(values), 'next_offset': offset + 10 if offset + 10 < len(values) else None}
             with self.service.store.connection() as db:
                 candidates = db.execute("SELECT m.body FROM agent_material m JOIN records r ON r.kind='agent_run' AND r.id=m.run_id "
                     "WHERE r.account=? AND json_extract(r.body,'$.thread_id')=? AND (?='' OR m.source=?) AND (?='' OR instr(json_extract(m.body,'$.text'),?)>0) "
@@ -681,6 +825,19 @@ class ChatGateway:
             original = self.guard()['evidence'].get(source)
             if text_offset < 0 or not original or not self.permits(state, original):
                 raise ValueError('来源或续读位置不在当前范围')
+            run = self.guard()
+            if run.get('manifest_id'):
+                values = self.service.analysis_plans.assigned_messages(run, source)
+                for value in values:
+                    start, end = value['text_offset'], value['next_text_offset']
+                    if end <= text_offset and end != start:
+                        continue
+                    start = max(start, text_offset)
+                    stop = min(end, start + 4000)
+                    return {'messages': [message_payload({**value,
+                        'text': value['text'][start - value['text_offset']:stop - value['text_offset']],
+                        'text_offset': start, 'next_text_offset': stop if stop < end else None})]}
+                raise ValueError('续读位置不属于分配正文或背景，跨片疑点交主任务核查')
             text = original.get('text', '')
             end = min(len(text), text_offset + 4000)
             return {'messages': self.save_messages([{**original, 'text': text[text_offset:end], 'text_offset': text_offset,
@@ -688,18 +845,26 @@ class ChatGateway:
 
         @tool
         async def analyze_media(scope_handle: str, source: str, question: str = '') -> dict:
-            """仅当需要理解图片或附件时分析已知来源，使用用户配置的视觉模型和附件解析器。"""
+            """仅当需要理解图片或附件时分析已知来源。使用本轮所选模型；不支持图片时跳过图片，仍可提取附件文字。"""
             state = self.scope(scope_handle)
             run = self.guard()
             original = run['evidence'].get(source)
             if not original or not self.permits(state, original):
                 raise ValueError('附件来源不在已选范围')
+            if run.get('manifest_id'):
+                assigned = self.service.analysis_plans.assigned_messages(run, source)
+                if not assigned:
+                    raise ValueError('附件来源不属于分配清单')
+                # 媒体解析器可能把输入正文附在结果前，不能借此泄露未分配的长文。
+                original = {**original, 'text': '\n'.join(m['text'] for m in assigned)}
             from .providers import audit_task_id, model_attempt_hook
+            from .model_scheduler import subtask_id
             token = audit_task_id.set(run.get('parent_run_id') or run['id'])
+            child_token = subtask_id.set(run['id'] if run.get('parent_run_id') else '')
             hook = model_attempt_hook.set(lambda: self.service.spend(self.id, 'models'))
             try:
                 question = question or run.get('input_digest', '')
-                enriched = await self.service.ai.media.enrich(run['account'], original, {'media': True, 'question': question}, self.service.profile(run, True),
+                enriched = await self.service.ai.media.enrich(run['account'], original, {'media': True, 'question': question, 'skip_unsupported_images': True}, self.service.profile(run, True),
                     self.guard, unit_callback=lambda label, cached=False: None if cached else self.service.spend(self.id, 'media'))
                 self.guard()
                 # 媒体解释是派生结果，不能覆盖已经保存的原消息文本。
@@ -712,12 +877,45 @@ class ChatGateway:
                 available = body['coverage'].startswith('已分析')
                 result = {'source': source, 'analysis': body['analysis'][:2000], 'result_path': path,
                     'coverage': body['coverage'], 'available': available}
+                if '已跳过图片内容' in body['coverage']:
+                    result['note'] = '当前模型不支持图片，已跳过图片内容'
+                    result['instruction'] = '向用户说明图片已跳过；继续分析已读取文字，不重试图片，不要求切换模型，不猜测图片内容。'
+                    return result
                 if not available:
                     result['note'] = body['coverage'] or '此媒体未能分析。'
                     result['instruction'] = '此媒体内容尚未确认，不要猜测。继续根据已读文字回答并说明缺口；本机文件缺失时需用户下载后才能分析，不要反复调用。'
                 return result
             finally:
                 audit_task_id.reset(token)
+                subtask_id.reset(child_token)
                 model_attempt_hook.reset(hook)
 
-        return [select_chat_scope, search_messages, search_live_messages, read_messages, commit_findings, read_context, count_messages, read_results, search_material, read_material, analyze_media]
+        @tool
+        def plan_parallel_work(preliminary_analysis: str, evidence_handles: list[str], parallel_reason: str,
+                main_work: MainWork, branches: list[BranchWork]) -> dict:
+            """实际分析后规划独立分工；主模型保留具体工作，每轮最多三个分支。回执来自实际读取工具。不会启动 Agent。"""
+            return self.service.planned_work.plan(self, preliminary_analysis, evidence_handles, parallel_reason, main_work, branches)
+
+        @tool
+        def record_main_analysis(plan_handle: str, analysis: str, sources: list[str]) -> dict:
+            """保存主模型在并行期间完成的主线分析及真实来源；仅复述计划或等待分支不算完成。"""
+            return self.service.planned_work.main_result(self, plan_handle, analysis, sources)
+
+        @tool
+        async def wait_subtasks(plan_handle: str, seen_handles: list[str] = []) -> dict:
+            """主线工作已完成且确需依赖时等待新结果；事件驱动，无结果不唤醒模型。"""
+            return await self.service.planned_work.wait(self, plan_handle, seen_handles)
+
+        @tool
+        def finish_parallel_work(plan_handle: str, synthesis: str, sources: list[str], gaps: list[str] = []) -> dict:
+            """读取全部分支事实后保存主模型整合结论与缺口；并不替代全量覆盖校验。"""
+            return self.service.planned_work.close(self, plan_handle, synthesis, sources, gaps)
+
+        tools = [select_chat_scope, search_messages, search_live_messages, read_messages, commit_findings, read_context, count_messages, read_results, calculate_values, search_material, read_material, analyze_media]
+        # 构建旧检查点图时只读配置，不执行当前版本 guard；工具执行时仍逐次校验。
+        run = self.service.run(self.id)
+        if run.get('subtask_plan_version') == REVISION:
+            if run.get('parent_run_id'):
+                return [read_messages, commit_findings, read_context, read_material, analyze_media]
+            tools.extend([plan_parallel_work, record_main_analysis, wait_subtasks, finish_parallel_work])
+        return tools

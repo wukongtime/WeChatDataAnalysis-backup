@@ -1,6 +1,7 @@
 """摘要预算回归：完整分段、工具配对、超限恢复与失败不提交。"""
 import asyncio
 import json
+import re
 
 import pytest
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
@@ -12,8 +13,8 @@ from langchain_core.messages.utils import trim_messages
 from test_ai_deepagents import make_service
 from test_ai_deep_contracts import prepared
 from wechat_decrypt_tool.ai.deep_backend import TaskBackend
-from wechat_decrypt_tool.ai.deep_context import DurableSummarization, context_tokens
-from wechat_decrypt_tool.ai.agent_budget import request_size
+from wechat_decrypt_tool.ai.deep_context import DurableSummarization, context_tokens, MAX_SUMMARY_REQUEST_BYTES
+from wechat_decrypt_tool.ai.agent_budget import request_size, size
 from wechat_decrypt_tool.ai.providers import ProviderFailure
 
 
@@ -99,9 +100,100 @@ def test_invalid_summary_is_bounded_and_never_returned(monkeypatch, text):
         return AIMessage(content=text)
 
     monkeypatch.setattr(FakeListChatModel, 'ainvoke', summarize)
-    with pytest.raises(ProviderFailure, match='有效的精简摘要'):
+    with pytest.raises(ProviderFailure, match='上下文摘要整理失败'):
         asyncio.run(middleware()._acreate_summary([HumanMessage(content='原文')]))
     assert len(calls) == 3
+
+
+def test_oversized_complete_summary_is_shortened_instead_of_rereading(monkeypatch):
+    requests = []
+    draft = '较长的分析说明。' * 120 + '末尾待办：继续 cursor-42，来源 S9。'
+    expected = '待办：继续 cursor-42，来源 S9。'
+
+    async def summarize(self, messages, **kwargs):
+        requests.append(messages[0].content)
+        assert request_size(messages) <= 5500
+        return AIMessage(content=draft if len(requests) == 1 else expected)
+
+    monkeypatch.setattr(FakeListChatModel, 'ainvoke', summarize)
+    assert size(draft) > 1100
+    assert asyncio.run(middleware()._acreate_summary([HumanMessage(content='原文内容')])) == expected
+    assert len(requests) == 2
+    assert '<history_fragment>' in requests[0]
+    assert '<history_fragment>' not in requests[1]
+    assert '<summary_draft>\n' + draft + '\n</summary_draft>' in requests[1]
+    assert str(size(draft)) in requests[1]
+
+
+@pytest.mark.parametrize('invalid', [
+    AIMessage(content=''),
+    AIMessage(content='看似有效的摘要', response_metadata={'finish_reason': 'length'}),
+    AIMessage(content='看似有效的摘要', response_metadata={'stop_reason': 'max_tokens'}),
+    AIMessage(content='草稿太大' * 4000),
+], ids=['empty', 'openai_truncated', 'anthropic_truncated', 'draft_exceeds_request_budget'])
+def test_unusable_summary_retries_smaller_fragments_without_losing_history(monkeypatch, invalid):
+    requests, accepted = [], []
+
+    async def summarize(self, messages, **kwargs):
+        content = messages[0].content
+        assert request_size(messages) <= 5500
+        assert '<summary_draft>' not in content
+        fragment = content.split('<history_fragment>\n', 1)[1].rsplit('\n</history_fragment>', 1)[0]
+        requests.append(fragment)
+        if len(requests) == 1:
+            return invalid
+        accepted.append(fragment)
+        return AIMessage(content='完整摘要')
+
+    monkeypatch.setattr(FakeListChatModel, 'ainvoke', summarize)
+    messages = history()
+    assert asyncio.run(middleware()._acreate_summary(messages)) == '完整摘要'
+    assert size(requests[1]) < size(requests[0])
+    assert requests[0].startswith(requests[1])
+    assert ''.join(accepted) == '\n'.join(json.dumps(message_to_dict(m), ensure_ascii=False) for m in messages)
+
+
+def test_large_model_window_still_uses_bounded_summary_requests(monkeypatch):
+    fragments = []
+
+    async def summarize(self, messages, **kwargs):
+        assert request_size(messages) <= MAX_SUMMARY_REQUEST_BYTES
+        fragments.append(messages[0].content.split('<history_fragment>\n', 1)[1].rsplit('\n</history_fragment>', 1)[0])
+        return AIMessage(content='累计摘要')
+
+    monkeypatch.setattr(FakeListChatModel, 'ainvoke', summarize)
+    messages = [HumanMessage(content='原文😀' * 20000 + '末尾来源')]
+    assert asyncio.run(middleware(trim_tokens_to_summarize=338518)._acreate_summary(messages)) == '累计摘要'
+    assert len(fragments) > 1
+    assert ''.join(fragments) == json.dumps(message_to_dict(messages[0]), ensure_ascii=False)
+
+
+def test_failed_summary_repair_keeps_history_and_does_not_commit(tmp_path, monkeypatch):
+    service, _ = make_service(tmp_path, monkeypatch)
+
+    async def summarize(self, messages, **kwargs):
+        return AIMessage(content='不完整摘要', response_metadata={'finish_reason': 'length'})
+
+    monkeypatch.setattr(FakeListChatModel, 'ainvoke', summarize)
+
+    async def check():
+        gateway = await prepared(service)
+        backend = TaskBackend(service, gateway.id, gateway.version)
+        mw = middleware(backend)
+        messages = [HumanMessage(content='原文重要条件' * 2000), AIMessage(content='正在整理')]
+        request = ModelRequest(model=mw.model, messages=messages, state={'messages': messages})
+
+        async def handler(current):
+            pytest.fail('无有效摘要时不能以目录替换原历史')
+
+        with pytest.raises(ProviderFailure, match='原历史已保留'):
+            await mw.awrap_model_call(request, handler)
+        jobs = [json.loads(v['content']) for k, v in backend.files().items() if k.startswith('/context/jobs/')]
+        assert jobs[0]['status'] == 'failed'
+        assert '被截断' in jobs[0]['problem']
+        assert '_summarization_event' not in request.state
+        assert request.messages == messages
+    asyncio.run(check())
 
 
 @pytest.mark.parametrize('mode', ['below_threshold', 'after_compaction', 'single_human', 'tool_batch'])
@@ -112,6 +204,8 @@ def test_real_middleware_compacts_and_archives_before_retry(tmp_path, monkeypatc
         gateway = await prepared(service)
         backend = TaskBackend(service, gateway.id, gateway.version)
         messages = history()
+        if mode in ('below_threshold', 'after_compaction'):
+            messages = [HumanMessage(content='历史用户要求' * 3000), AIMessage(content='正在处理')]
         if mode == 'single_human':
             messages = [HumanMessage(content='超长输入😀' * 1200)]
         elif mode == 'tool_batch':
@@ -154,7 +248,7 @@ def test_archive_failure_blocks_compacted_model_call(tmp_path, monkeypatch):
         async def forbidden(current):
             pytest.fail('归档核验失败后不能调用主模型')
 
-        with pytest.raises(ProviderFailure, match='历史资料未能保存'):
+        with pytest.raises(ProviderFailure, match='保存核验失败'):
             await mw.awrap_model_call(request, forbidden)
         assert '_summarization_event' not in request.state
     asyncio.run(check())
@@ -167,7 +261,8 @@ def test_persistent_overflow_stops_without_committing(tmp_path, monkeypatch):
         gateway = await prepared(service)
         backend = TaskBackend(service, gateway.id, gateway.version)
         mw = middleware(backend, trim_tokens_to_summarize=16000)
-        request = ModelRequest(model=mw.model, messages=history(), state={'messages': history()})
+        messages = [HumanMessage(content='完整历史要求' * 3000), AIMessage(content='正在处理')]
+        request = ModelRequest(model=mw.model, messages=messages, state={'messages': messages})
         calls = []
 
         async def overflow(current):
@@ -181,7 +276,8 @@ def test_persistent_overflow_stops_without_committing(tmp_path, monkeypatch):
     asyncio.run(check())
 
 
-def test_provider_overflow_recovers_through_real_graph_and_model_adapter(tmp_path, monkeypatch):
+@pytest.mark.parametrize('oversized_summary', [False, True], ids=['normal_summary', 'retried_summary'])
+def test_provider_overflow_recovers_through_real_graph_and_model_adapter(tmp_path, monkeypatch, oversized_summary):
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
     service, client = make_service(tmp_path, monkeypatch)
 
@@ -189,10 +285,14 @@ def test_provider_overflow_recovers_through_real_graph_and_model_adapter(tmp_pat
         gateway = await prepared(service)
         client.responses.extend([ValueError('maximum context length exceeded'), AIMessage(content='恢复后的正文')])
         original_next = client.next
+        summary_requests = []
 
         def respond(messages):
-            if any('<history_fragment>' in str(m.content) for m in messages):
+            if any('<history_fragment>' in str(m.content) or '<summary_draft>' in str(m.content) or '<context_compaction>' in str(m.content) for m in messages):
                 client.requests.append(messages)
+                summary_requests.append(messages)
+                if oversized_summary and len(summary_requests) == 1:
+                    return AIMessage(content='不完整摘要', response_metadata={'finish_reason': 'length'})
                 return AIMessage(content='保留历史要求，继续回答当前问题。')
             return original_next(messages)
 
@@ -210,4 +310,7 @@ def test_provider_overflow_recovers_through_real_graph_and_model_adapter(tmp_pat
         audits = service.store.list('usage')
         assert any(u['purpose'] == 'deepagents_summary' and u['status'] == 'success' for u in audits)
         assert any(u['status'] == 'failed' for u in audits)
+        if oversized_summary:
+            assert len(summary_requests) >= 2
+            assert summary_requests[1][:-1] == summary_requests[0][:-1]
     asyncio.run(check())

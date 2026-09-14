@@ -70,10 +70,13 @@ const state = ref({selected:{},drafts:{},pinned:{}})
 window.useState=()=>state
 window.useSettingsDialog=()=>({openDialog:()=>{window.alert('这里会打开现有 AI 服务设置。')}})
 let onAgentEvent, demoTimer
+// 验收页独立保存虚构模型选择，不连接真实服务或账号。
+let selectedModel = JSON.parse(localStorage.getItem('qa-agent-selected-model') || 'null') || {profile_id:'local',model_id:ringPreview ? 'mimo-v2.5' : 'text-model',reasoning_effort:null}
 window.useAiApi=()=>({agentEvents:(_account,callback)=>{onAgentEvent=callback;return()=>{if(onAgentEvent===callback)onAgentEvent=null}},events:()=>()=>{},request:async(path,options={})=>{
   // ?cold=1 用于浏览器验证首次无缓存、模型配置延迟返回的场景。
   if(path==='/settings' && new URLSearchParams(location.search).has('cold')) await new Promise(resolve=>setTimeout(resolve,6000))
-  if(path==='/settings')return {defaults:{text:'local'},profiles:[{id:'local',name:'我的文本模型',model:ringPreview ? 'mimo-v2.5' : 'text-model',...(budgetPreview && !ringPreview ? {model_metadata:{reasoning_efforts:['low','medium','high']}} : {})},{id:'vision',name:'视觉模型',vision:true,model:'vision-model'}]}
+  if(path==='/settings')return {selected_model:selectedModel,defaults:{text:'local'},profiles:[{id:'local',name:'我的文本模型',model:ringPreview ? 'mimo-v2.5' : 'text-model',...(budgetPreview && !ringPreview ? {model_metadata:{reasoning_efforts:['low','medium','high']}} : {})},{id:'vision',name:'视觉模型',vision:true,model:'vision-model'}]}
+  if(path==='/selected-model'){selectedModel=clone(options.body);localStorage.setItem('qa-agent-selected-model',JSON.stringify(selectedModel));return selectedModel}
   if(path==='/agent/threads') {
     if(options.method==='POST'){const created={id:crypto.randomUUID(),username:options.body.username,title:'新的对话',scope:[options.body.username],messages:[],latest_run:''};previewThreads.unshift(created);return clone(created)}
     return clone(previewThreads.filter(item=>!options.query?.username||item.username===options.query.username).map(item=>({...item,latest_run_status:previewRuns[item.latest_run]?.status || ''})))

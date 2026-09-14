@@ -57,7 +57,7 @@ class ScriptedClient:
     def next(self, messages):
         self.requests.append(messages)
         # 内部摘要独立于业务脚本，分段数变化不能消耗下一条工具调用或最终回答。
-        if any('<history_fragment>' in str(m.content) for m in messages):
+        if any('<history_fragment>' in str(m.content) or '<context_compaction>' in str(m.content) for m in messages):
             return AIMessage(content='保留用户要求和已读取信息，依据程序状态继续未完成的分页与提交。')
         if any('完整报告遗漏核查。' in str(m.content) for m in messages if m.type == 'system'):
             page = json.loads(messages[1].content)['original_page']
@@ -71,7 +71,8 @@ class ScriptedClient:
         if isinstance(result, Exception):
             raise result
         yield AIMessageChunk(content=result.content, tool_calls=result.tool_calls,
-            usage_metadata={'input_tokens': 100, 'output_tokens': 10, 'total_tokens': 110}, id='response:' + str(len(self.requests)))
+            usage_metadata={'input_tokens': 100, 'output_tokens': 10, 'total_tokens': 110},
+            response_metadata=result.response_metadata, id='response:' + str(len(self.requests)))
 
     async def ainvoke(self, messages, **kwargs):
         result = self.next(messages)
@@ -159,6 +160,13 @@ def test_public_progress_precedes_tools_and_survives_final_answer(tmp_path, monk
         assert [item['text'] for item in records if item['kind'] == 'progress'] == [first, second]
         assert all(item['status'] == 'completed' for item in records)
         assert len(client.requests) == run['usage']['calls'] == 3
+        # 检查真正发给模型的提示词，避免新版规划过滤了沟通要求但脚本仍返回阶段文字。
+        assert service.run(run['id'])['subtask_plan_version'] == 2
+        for request in client.requests:
+            system = '\n'.join(str(message.content) for message in request if message.type == 'system')
+            assert '阶段汇报是长任务的正常工作要求' in system
+            assert '首次拿到有用资料后若仍需继续分析' in system
+            assert '阶段汇报写在面向用户的 assistant 正文中' in system
         for definition in client.definitions:
             params = definition['function']['parameters']
             assert 'progress_message' not in params.get('required', [])
@@ -297,7 +305,7 @@ def test_count_is_programmatic_and_does_not_require_model_notes(tmp_path, monkey
     asyncio.run(check())
 
 
-def test_official_subagent_receives_bound_scope_and_parent_sources(tmp_path, monkeypatch):
+def test_legacy_official_subagent_receives_bound_scope_and_parent_sources(tmp_path, monkeypatch):
     child_scope = {}
     def delegate(messages):
         return action('task', {'scope_handle': last_result(messages)['scope_handle'], 'subagent_type': 'range-analyst', 'description': '分析分配范围全部消息'})
@@ -310,7 +318,11 @@ def test_official_subagent_receives_bound_scope_and_parent_sources(tmp_path, mon
             'findings': [{'text': '报价100元', 'sources': ['a' * 24]}]}),
         AIMessage(content='报价100元。[[' + 'a' * 24 + ']]'), AIMessage(content='查证报价100元。[[' + 'a' * 24 + ']]')])
     async def check():
-        _, run = await execute(service, '完整分析')
+        thread = await service.create_thread('account', 'friend', '新的对话')
+        pending = await service.submit(thread['id'], 'account', {'text': '完整分析', 'request_id': 'legacy'})
+        service.update(pending['id'], subtask_plan_version=0)
+        await service.workers[pending['id']]
+        run = service.public_run(pending['id'], 'account')
         assert run['status'] == 'completed', run['error']
         assert run['source_count'] == 1
         assert run['analysis']['complete']
@@ -488,10 +500,10 @@ def test_only_business_tools_and_virtual_notes_are_available(tmp_path, monkeypat
         _, run = await execute(service, '查聊天')
         assert run['status'] == 'completed', run['error']
         names = {d['function']['name'] for d in client.definitions}
-        assert {'select_chat_scope', 'read_messages', 'task', 'read_file'} <= names
+        assert {'select_chat_scope', 'read_messages', 'read_file'} <= names
+        assert 'task' not in names  # 尚未形成有效并行计划时不公开委派入口。
         assert not {'execute', 'web_search', 'shell', 'send_message'} & names
-        task = next(d for d in client.definitions if d['function']['name'] == 'task')
-        assert 'scope_handle' in task['function']['parameters']['required']
+        assert 'plan_parallel_work' not in names  # 仅选择范围还没有实际分析回执。
     asyncio.run(check())
 
 

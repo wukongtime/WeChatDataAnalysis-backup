@@ -42,10 +42,6 @@
   .ai-settings .ais-tabs button { justify-content:flex-start; padding:9px; }
   .ais-tab-copy strong { white-space:nowrap; }
 }
-.ais-defaults { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 12px 14px; border: 1px solid var(--ais-border); border-radius: 8px; background: var(--ais-soft); }
-.ais-defaults label { gap: 5px; }
-.ais-defaults label > span { display: flex; gap: 6px; align-items: center; color: var(--ais-muted); font-size: 10px; }
-.ai-settings .ais-defaults select { height: 29px; border-color: transparent; background: transparent; padding-left: 0; font-weight: 550; }
 .ais-profilebar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 18px 0 10px; }
 .ais-profiles { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .ai-settings .ais-profiles button { background: var(--ais-soft); color: var(--ais-muted); border-color: transparent; max-width: 240px; font-size: 11px; }
@@ -133,7 +129,7 @@ html[data-theme="dark"] .ais-feedback.is-error { background: #422b2b; color: #ff
   .ais-audit-toolbar { flex-wrap: wrap; }.ais-metrics > div { padding: 10px; }.ais-metrics strong { font-size: 21px; }
 }
 @container (max-width: 380px) {
-  .ais-fields, .ais-defaults { grid-template-columns: 1fr; gap: 10px; }.ais-defaults { padding: 10px; }
+  .ais-fields { grid-template-columns: 1fr; gap: 10px; }
   .ais-form-body, .ais-editor-heading, .ais-editor-footer { padding-left: 12px; padding-right: 12px; }
   .ais-profilebar { align-items: flex-start; }.ais-audit-table { min-width: 430px; }
 }

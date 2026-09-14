@@ -5,7 +5,7 @@ from .agent_budget import ContextOverflow, message_payload, size
 from .messages import advance_cursor
 
 
-async def read_window(read_page, start, end, capacity, state=None):
+async def read_window(read_page, start, end, capacity, state=None, *, probe_budget=None):
     """返回左闭右开子区间；一秒内仍过大时保留消息身份及字符断点。"""
     state = copy.deepcopy(state or {})
     lo = state.get('next_time', start)
@@ -68,6 +68,9 @@ async def read_window(read_page, start, end, capacity, state=None):
             result.append({**message, **item, 'fragment_complete': True})
             result_bytes += item_bytes
             completed.append(message)
+            # 预读只多交付一条完整探测消息；下层数据库批缓存仍由原读取器管理。
+            if probe_budget is not None and result_bytes > probe_budget:
+                break
             continue
         if result:
             break

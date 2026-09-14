@@ -23,6 +23,7 @@ STREAM_PATCH_FIELDS = {
     'error', 'error_info', 'used', 'read_count', 'index_status', 'query_scope',
     'query_filters', 'time_range', 'intent', 'coverage_state', 'subtasks', 'choices',
     'answer_context', 'needs_continuation', 'can_resume', 'restart_required',
+    'context_compaction',
 }
 
 from .deep_synchronization import serialized
@@ -99,6 +100,7 @@ class AgentService(DeepAgentRuntime, DeepProjection, AgentTimeline):
                 'mode': record.get('intent', {}).get('mode', 'search'),
                 'findings': state.get('findings', 0),
                 'analyzed': sum(item.get('analyzed', 0) for item in state.get('coverage', [])),
+                'tracked': state.get('tracked', True),
             }
         if patch:
             event['patch'] = patch
@@ -183,7 +185,8 @@ class AgentService(DeepAgentRuntime, DeepProjection, AgentTimeline):
         snapshot = run['vision' if vision else 'profile']
         if not snapshot:
             return {}
-        live = self.ai.models.resolve(snapshot['id'], vision=vision)
+        # 只读取当前凭据；图片能力来自实际选中模型的快照，而非服务的默认模型。
+        live = self.ai.models.resolve(snapshot['id'])
         return snapshot | {'api_key': live.get('api_key', '')}
 
     @observed('agent.finish', id_field='run_id')

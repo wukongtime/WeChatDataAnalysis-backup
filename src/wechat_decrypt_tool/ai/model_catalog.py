@@ -13,6 +13,17 @@ PROVIDER_IDS = {
     'siliconflow': 'siliconflow-cn',
 }
 
+# 原生 SDK 供应商在 models.dev 中省略 api；复用官方入口做服务匹配，不补造模型档位。
+CATALOG_DEFAULT_APIS = {
+    'openai': 'https://api.openai.com/v1', 'anthropic': 'https://api.anthropic.com',
+    'google': 'https://generativelanguage.googleapis.com', 'groq': 'https://api.groq.com/openai/v1',
+    'mistral': 'https://api.mistral.ai/v1',
+}
+
+
+def catalog_api(provider, entry):
+    return entry.get('api') or CATALOG_DEFAULT_APIS.get(provider, '')
+
 
 def documented_metadata(profile, model):
     """仅补充官方文档明确确认、公共目录可能未列出的能力。"""
@@ -90,10 +101,17 @@ class ModelCatalog:
         provider = PROVIDER_IDS.get(profile.get('provider'), profile.get('provider'))
         host = urlparse(profile.get('base_url', '')).hostname
         # 优先按实际接口主机匹配，避免自定义代理误用官方供应商的价格和窗口。
+        matches = []
+        path = urlparse(profile.get('base_url', '')).path.rstrip('/')
         for key, value in self.data.items():
-            if isinstance(value, dict) and host and urlparse(value.get('api') or '').hostname == host:
-                provider = key
-                break
+            if not isinstance(value, dict):
+                continue
+            endpoint = urlparse(catalog_api(key, value))
+            prefix = endpoint.path.rstrip('/')
+            if host and endpoint.hostname == host and (path == prefix or path.startswith(prefix + '/') or not prefix):
+                matches.append((len(prefix), key))
+        if matches:
+            provider = max(matches, key=lambda match: (match[0], match[1] == provider))[1]
         entry = self.data.get(provider, {})
         item = entry.get('models', {}).get(model)
         match_kind = 'provider'
@@ -113,7 +131,11 @@ class ModelCatalog:
             return None
         modalities = item.get('modalities', {})
         limits = item.get('limit', {})
+        from .model_reasoning import options
         return {**{key: item[key] for key in ('name', 'family', 'description', 'reasoning', 'tool_call', 'structured_output', 'temperature', 'attachment', 'open_weights', 'knowledge', 'release_date', 'last_updated', 'cost') if key in item},
+                # 参数属于实际服务接口，不能从同名官方模型移植到未知代理。
+                **({'reasoning_options': options(item['reasoning_options'])} if match_kind == 'provider'
+                   and (not host or host == urlparse(catalog_api(provider, entry)).hostname) and 'reasoning_options' in item else {}),
                 'id': model, 'provider_id': provider, 'provider_name': entry.get('name', provider),
                 'logo_url': f'https://models.dev/logos/{quote(provider, safe="")}.svg',
                 'modalities': modalities, 'limit': limits,
@@ -152,7 +174,9 @@ class ModelCatalog:
         if not metadata:
             return None
         source = next((value for value in ('upstream', 'models.dev', 'provider-docs') if value in sources.values()), 'models.dev')
-        return {**metadata, 'id': model, 'field_sources': sources, 'source': source}
+        from .model_reasoning import controls
+        return {**metadata, 'id': model, 'field_sources': sources, 'source': source,
+                'reasoning_controls': controls(profile, metadata)}
 
     def enrich(self, profile):
         automatic = self.automatic(profile)
@@ -167,6 +191,8 @@ class ModelCatalog:
             else:
                 metadata[key] = value
                 sources[key] = 'manual'
+        from .model_reasoning import controls
+        metadata['reasoning_controls'] = controls(profile, metadata)
         result = {**profile, 'automatic_metadata': automatic, 'model_overrides': overrides, 'model_metadata': metadata}
         if metadata.get('vision') is not None:
             result['vision'] = metadata['vision']

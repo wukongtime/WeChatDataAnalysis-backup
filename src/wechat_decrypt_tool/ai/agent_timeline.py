@@ -18,10 +18,12 @@ class AgentTimeline:
         item.update(text=text, status=status, revision=item['revision'] + 1, **fields)
         if status not in ('running', 'received'):
             item['finished_at'] = now
-        # 大任务的旧过程独立存储；运行快照与前端只保留最近 200 个步骤。
+        # 普通过程保留最近 200 步；压缩节点是持久的对话分隔，不能随步骤淘汰。
         if hasattr(self,'workspace'):
             self.workspace.put(id,run['version'],f'timeline:{item["seq"]:012d}','timeline',item)
-        self.update(id, timeline=items[-200:],timeline_seq=max(x.get('seq',0) for x in items))
+        retained = [x for i, x in enumerate(items) if i >= len(items) - 200 or
+                    (x.get('kind') == 'notice' and x.get('context_job', {}).get('before') is not None)]
+        self.update(id, timeline=retained,timeline_seq=max(x.get('seq',0) for x in items))
         event = {'type':'timeline_item', 'run_id':id, 'thread_id':run['thread_id'], 'version':run['version'], 'timeline_item':item}
         if kind in ('answer', 'progress'):
             # 新标记与已校验身份同时送达，避免正文先出现、来源等待慢速快照。

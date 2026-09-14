@@ -287,7 +287,9 @@ def test_official_deepseek_auxiliary_toggle_preserves_explicit_reasoning(model):
         'base_url': 'https://api.deepseek.com/v1', 'api_key': 'test-only'}
     with model_policy(auxiliary=True):
         assert ModelService.client(profile).extra_body == {'thinking': {'type': 'disabled'}}
-        assert not ModelService.client({**profile, 'reasoning_effort': 'high'}).extra_body
+        explicit = ModelService.client({**profile, 'reasoning_effort': 'high'})
+        assert explicit.reasoning_effort == 'high'
+        assert explicit.extra_body == {'thinking': {'type': 'enabled'}}
         assert not ModelService.client({**profile, 'base_url': 'https://proxy.example/v1'}).extra_body
         assert not ModelService.client({**profile, 'model': 'deepseek-unknown'}).extra_body
     assert not ModelService.client(profile).extra_body

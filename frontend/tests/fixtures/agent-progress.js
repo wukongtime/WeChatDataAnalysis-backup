@@ -5,6 +5,8 @@ import '../../assets/css/tailwind.css'
 import '../../assets/css/agent.css'
 // 独立预览只返回明确标注的示例子任务，不连接用户聊天或模型。
 globalThis.useApiBase = () => '/preview-api'
+// 资料入口使用本地示例响应，展开预览不会连接真实账号。
+globalThis.useAiApi = () => ({request:async () => ({items:[],total:0,has_more:false})})
 const previewNow = Date.now() / 1000
 globalThis.$fetch = async path => {
   if (!path.includes('/agent/runs/progress-preview/subtasks')) throw new Error('预览未提供此操作')

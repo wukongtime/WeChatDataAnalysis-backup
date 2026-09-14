@@ -220,7 +220,7 @@ class ChatTools:
                                   'read_conversations': len(usernames) - pruned}}
         return await asyncio.to_thread(collect)
 
-    async def time_window(self, account, username, start, end, capacity, state=None, checkpoint=None, *, session=None):
+    async def time_window(self, account, username, start, end, capacity, state=None, checkpoint=None, *, session=None, probe_budget=None):
         from .agent_reading import read_window
         from .messages import iter_message_pages, filter_after
         key = (session, account, username, start, end)
@@ -269,7 +269,7 @@ class ChatTools:
                 stream.close()
         async def read_page(lo, hi, budget, cursor):
             return await asyncio.to_thread(page, lo, hi, budget, cursor)
-        return await read_window(read_page, start, end, capacity, state)
+        return await read_window(read_page, start, end, capacity, state, probe_budget=probe_budget)
 
     @asynccontextmanager
     async def open_pages(self, account, username, start, end, offset, checkpoint, count=None, *, max_batch_bytes=None):

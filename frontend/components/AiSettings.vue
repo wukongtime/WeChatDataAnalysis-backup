@@ -18,11 +18,6 @@
     <p v-if="notice" role="status" class="ais-feedback is-success"><i class="fa-solid fa-circle-check" aria-hidden="true"></i>{{ notice }}</p>
 
     <div id="ais-config" v-show="activeTab === 'config'" role="tabpanel" aria-labelledby="ais-config-tab">
-      <div class="ais-defaults">
-        <label><span><i class="fa-regular fa-file-lines" aria-hidden="true"></i>默认文本模型</span><UiSelect v-model="defaults.text" label="默认文本模型" plain :options="profileOptions(false)" placeholder="选择配置" @change="saveDefaults" /></label>
-        <label><span><i class="fa-regular fa-image" aria-hidden="true"></i>默认视觉模型</span><UiSelect v-model="defaults.vision" label="默认视觉模型" plain :options="profileOptions(true)" placeholder="选择配置" @change="saveDefaults" /></label>
-      </div>
-
       <div class="ais-profilebar">
         <div><h4>已连接的服务</h4><p class="ais-muted">统一管理聊天总结与关注提醒使用的模型。</p></div>
         <button type="button" class="ais-add" :disabled="busy" @click="startNew"><i class="fa-solid fa-plus" aria-hidden="true"></i>新增服务</button>
@@ -149,7 +144,7 @@ import UiSelect from './UiSelect.vue'
 import '~/assets/css/ai-settings.css'
 const activeTab = ref('config')
 const settingsTabs = [
-  {id:'config',label:'模型服务',hint:'连接与默认模型',icon:'fa-plug'},
+  {id:'config',label:'模型服务',hint:'连接与模型配置',icon:'fa-plug'},
   {id:'local',label:'本地检索',hint:'按意思查找聊天',icon:'fa-magnifying-glass'},
   {id:'usage',label:'用量记录',hint:'调用明细与消耗',icon:'fa-chart-simple'},
 ]
@@ -166,7 +161,6 @@ const localSettingsTarget = useSettingsDialog().focusTarget || ref('')
 watch(activeTab, () => { error.value = ''; notice.value = '' })
 watch(localSettingsTarget, target => { if (target === 'local-search') activeTab.value = 'local' }, { immediate: true })
 const formatNumber = (value) => Number(value || 0).toLocaleString('zh-CN')
-const profileOptions = vision => [{ value: '', label: '不设置默认模型' }, ...profiles.value.filter(p => !vision || p.vision).map(p => ({ value: p.id, label: p.name, description: p.model }))]
 const protocolOptions = [{ value: 'openai', label: 'OpenAI 兼容' }, { value: 'anthropic', label: 'Claude Messages' }]
 const providerPresentation = {
   deepseek: { hint: 'DeepSeek 官方接口', aliases: '深度求索' },
@@ -248,7 +242,6 @@ const exportAudit = () => {
   const link = document.createElement('a'); link.href = url; link.download = 'ai-usage-audit.json'; link.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
-const defaults = reactive({ text: '', vision: '' })
 const blank = () => ({ provider: 'deepseek', name: 'DeepSeek', protocol: 'openai', base_url: 'https://api.deepseek.com/v1', model: '', vision: false, context_window: null, model_overrides: {} })
 const form = reactive(blank())
 // 切换预设后明确清空凭据，不让后端复用原配置的密钥。
@@ -319,7 +312,7 @@ const action = async (fn) => {
 }
 const load = async () => {
   const data = await api.request('/settings')
-  profiles.value = data.profiles; presets.value = data.presets; Object.assign(defaults, data.defaults)
+  profiles.value = data.profiles; presets.value = data.presets
   await loadAudit()
 }
 const reset = () => { invalidateModels(); editId.value = ''; key.value = ''; credentialsReset.value = false; manualModel.value = false; Object.assign(form, blank()) }
@@ -345,7 +338,6 @@ const save = () => action(async () => {
   await load(); key.value = ''; dialogStep.value = ''; invalidateModels(); notice.value = '配置已保存'
   nextTick(() => returnFocus?.isConnected && returnFocus.focus())
 })
-const saveDefaults = () => action(async () => { await api.request('/defaults', { method: 'PUT', body: defaults }); notice.value = '默认模型已保存' })
 const selectModel = (keepSaved = true) => {
   const detail = selectedMetadata.value || modelDetails.value.find(x => x.id === form.model)
   const saved = profiles.value.find(x => x.id === editId.value)

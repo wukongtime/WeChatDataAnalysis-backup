@@ -8,7 +8,9 @@ export function mergeTimeline(current = [], incoming = []) {
   for (const item of incoming) {
     if (!items.has(item.id) || (item.revision || 0) > (items.get(item.id).revision || 0)) items.set(item.id, item)
   }
-  return [...items.values()].sort((a, b) => (a.seq || 0) - (b.seq || 0)).slice(-200)
+  const ordered = [...items.values()].sort((a, b) => (a.seq || 0) - (b.seq || 0))
+  // 压缩分隔及其摘要入口永久保留，普通步骤继续沿用快照上限。
+  return ordered.filter((item, index) => index >= ordered.length - 200 || (item.kind === 'notice' && Number.isFinite(item.context_job?.before)))
 }
 
 // 运行版本与更新时间同时单调前进；重放的旧预算、覆盖和状态不能覆盖新进度。

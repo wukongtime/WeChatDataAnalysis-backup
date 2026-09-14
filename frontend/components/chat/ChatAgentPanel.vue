@@ -35,7 +35,12 @@
         <template #message="{ message }">
           <div v-if="message.role === 'user'" class="agent-user"><p>{{ message.text }}</p></div>
           <AgentRun v-else-if="message.turn.detail" :run="message.turn.detail" :now="now" :near-bottom="nearBottom" :latest="message.turn.id === run?.id" :name-for="nameFor" :view-state="processView" @locate="locate" @choose="chooseContact" @continue="runAction('continue')" @restart="restartRun(message.turn.id)" @settings="settings.openDialog('ai')" />
-          <section v-else class="agent-reply"><button type="button" class="agent-process-toggle" @click="loadPastRun(message.turn.id)">查看这轮处理过程</button><AgentAnswer v-if="message.turn.answer" :text="message.turn.answer.text" :citations="message.turn.answer.citations" :references="message.turn.answer.references" @locate="locate" /><div v-if="message.turn.answer?.text" class="agent-result-actions"><AgentCopyAction :text="message.turn.answer.text" :citations="message.turn.answer.citations" :references="message.turn.answer.references" /></div></section>
+          <section v-else class="agent-reply">
+            <button v-if="pastRunLoads[pastRunKey(message.turn.id)] === 'failed'" type="button" class="agent-process-toggle" @click="loadPastRun(message.turn.id)">处理过程加载失败，点击重试</button>
+            <p v-else class="agent-loading" role="status">正在加载处理过程…</p>
+            <AgentAnswer v-if="message.turn.answer" :text="message.turn.answer.text" :citations="message.turn.answer.citations" :references="message.turn.answer.references" @locate="locate" />
+            <div v-if="message.turn.answer?.text" class="agent-result-actions"><AgentCopyAction :text="message.turn.answer.text" :citations="message.turn.answer.citations" :references="message.turn.answer.references" /></div>
+          </section>
         </template>
       </AssistantThread>
       <button v-if="newContent" type="button" class="agent-new-content" @click="toBottom">有新内容 <i class="fa-solid fa-arrow-down" aria-hidden="true"></i></button>
@@ -44,10 +49,11 @@
           <textarea ref="draftInput" v-model="draft" aria-label="给 AI 助手的消息" :placeholder="running ? '可以补充要求，例如：只看上周的…' : (contact?.username || legacyView ? '向当前聊天提问…' : '请先选择一个聊天')" rows="1" @input="resizeDraft" @keydown.enter.exact="sendOnEnter" @compositionstart="composing = true" @compositionend="composing = false" />
           <div class="agent-input-actions">
             <AgentContextRing :budget="run?.context_budget" />
-            <AgentModelPicker v-model="modelChoice" :profiles="profiles" :default-id="defaultModelId" :profiles-loading="profilesLoading" :profiles-error="profilesError" @refresh="loadProfiles" />
+            <AgentModelPicker v-model="modelChoice" :profiles="profiles" :profiles-loading="profilesLoading" :profiles-error="profilesError" @refresh="loadProfiles" />
             <button type="button" class="agent-send" :disabled="running ? stopping : (threadLoading || sending || !draft.trim() || !account || (!contact?.username && !legacyView))" :aria-label="running ? '停止处理' : '发送问题'" @click="primaryAction"><i :class="running ? 'fa-solid fa-stop' : 'fa-solid fa-arrow-up'" aria-hidden="true" /></button>
           </div>
         </div>
+        <small v-if="modelSelection.state.notice" class="agent-error" role="status">{{ modelSelection.state.notice }} <button v-if="modelSelection.state.dirty" type="button" @click="modelSelection.choose(modelChoice)">重试保存</button></small>
         <small class="agent-disclaimer" role="status">{{ running ? (stopping ? '正在停止…' : 'Enter 补充要求 · 模型设置下轮生效') : '围绕当前聊天 · 可按需查找其他聊天' }}</small>
       </footer>
       </div>
@@ -63,7 +69,6 @@
 <script setup>
 import { computed, ref, watch, onMounted, onUnmounted, nextTick, provide } from 'vue'
 import AiSidebar from './AiSidebar.vue'
-import UiSelect from '../UiSelect.vue'
 import AgentAnswer from './AgentAnswer.vue'
 import AgentCopyAction from './AgentCopyAction.vue'
 import AgentRun from './AgentRun.vue'
@@ -74,6 +79,7 @@ import AgentModelPicker from './AgentModelPicker.vue'
 import AgentThreadList from './AgentThreadList.vue'
 import { useAgentPanelResize } from '~/composables/useAgentPanelResize'
 import { mergeTimeline, mergeReferenceData, mergeRunEvent } from '~/utils/agentTimeline'
+import { agentModelSelection } from '~/lib/agent-model-selection'
 import '~/assets/css/agent.css'
 const props = defineProps({ account: String, contact: Object, contacts: Array, focusTaskId: String, locateSource: Function, prepareSource: Function })
 const emit = defineEmits(['close', 'locate', 'expanded'])
@@ -83,14 +89,14 @@ const mode = ref(props.focusTaskId ? 'tools' : 'agent'), expanded = ref(false), 
 const pastRuns = ref({})
 saved.value.process ||= {}
 saved.value.views ||= {}
-saved.value.models ||= {}
-const defaultModelId = ref(''), stopping = ref(false)
-const modelChoice = computed({ get: () => saved.value.models[props.account] || {}, set: value => { saved.value.models[props.account] = value } })
+const stopping = ref(false)
+const modelSelection = agentModelSelection(saved.value, api.request)
+const modelChoice = computed({ get: () => modelSelection.state.choice, set: value => { void modelSelection.choose(value) } })
 const processView = computed(() => saved.value.process)
 const error = ref(''), streamWarning = ref(''), syncWarning = ref(''), sending = ref(false), now = ref(Date.now()), composing = ref(false)
 const streamConnected = ref(false)
 const connectionNotice = computed(() => streamWarning.value || syncWarning.value)
-const profileId = ref(''), visionId = ref(''), profiles = ref([]), effort = ref('moderate')
+const profiles = ref([])
 const profilesLoading = ref(false), profilesError = ref('')
 let profilesRequest = null
 const history = ref([]), directory = ref([]), dialog = ref(''), dialogError = ref(''), scopeQuery = ref(''), scopeDraft = ref([])
@@ -145,15 +151,31 @@ const contactName = computed(() => legacyView.value ? '旧版全局历史' : (na
 const scopeLabel = computed(() => !thread.value ? contactName.value : thread.value.scope.length === 1 ? nameFor(thread.value.scope[0]) : `${thread.value.scope.length} 个会话`)
 const scopeContacts = computed(() => directory.value.filter(c => `${c.name} ${c.username}`.toLowerCase().includes(scopeQuery.value.toLowerCase())))
 const running = computed(() => ['queued', 'running'].includes(run.value?.status))
-const profileOptions = computed(() => [{ value:'',label:'默认模型',description:'使用全局默认文本模型' }, ...profiles.value.map(p => ({value:p.id,label:p.name,description:p.model}))])
-const visionOptions = computed(() => [{ value:'',label:'全局默认视觉模型' }, ...profiles.value.filter(p => p.vision).map(p => ({value:p.id,label:p.name,description:p.model}))])
 const suggestions = ['最近讨论了哪些重要的事？', '帮我找一下之前提过的报价', '有哪些事情还没确认？']
 const turns = computed(() => (thread.value?.messages || []).filter(m => m.role === 'user' && !m.supplement).map(m => ({id:m.run_id,question:m.text,detail:m.run_id === run.value?.id ? run.value : pastRuns.value[m.run_id],answer:thread.value.messages.find(a=>a.role==='assistant' && a.run_id===m.run_id)})))
 const assistantMessages = computed(() => turns.value.flatMap(turn => [
   { id: `${turn.id}:user`, role: 'user', text: turn.question, turn },
   { id: `${turn.id}:assistant`, role: 'assistant', text: turn.detail?.answer || turn.answer?.text || '', status: turn.detail?.status, running: ['queued', 'running'].includes(turn.detail?.status), turn },
 ]))
-const loadPastRun = id => guardAction(async () => { const account=props.account; const result=await api.request(`/agent/runs/${id}`,{query:{account}}); if(!disposed && account===props.account) pastRuns.value[id]=result })
+const pastRunLoads = ref({})
+const pastRunKey = id => JSON.stringify([props.account, thread.value?.id, id])
+// 历史过程自动读取；同一请求去重，切换会话后丢弃迟到的结果。
+const loadPastRun = async id => {
+  const key = pastRunKey(id)
+  if (!id || pastRuns.value[id] || pastRunLoads.value[key] === 'loading') return
+  const account = props.account, threadId = thread.value?.id, current = version
+  const isCurrent = () => !disposed && account === props.account && threadId === thread.value?.id && current === version
+  pastRunLoads.value[key] = 'loading'
+  try {
+    const result = await api.request(`/agent/runs/${id}`, { query: { account }, timeout: 12000 })
+    if (!result?.id) throw new Error('处理过程返回格式异常')
+    if (isCurrent()) pastRuns.value[id] = result
+  } catch {
+    if (isCurrent()) pastRunLoads.value[key] = 'failed'
+  } finally {
+    if (pastRunLoads.value[key] === 'loading') delete pastRunLoads.value[key]
+  }
+}
 
 let disposed = false, version = 0, timer, events, refreshing = false, refreshRetryTimer, refreshRetryAttempt = 0
 const cancelRefreshRetry = (reset = true) => {
@@ -175,13 +197,12 @@ const loadProfiles = () => {
   if (disposed) return Promise.resolve()
   if (profilesRequest) return profilesRequest
   profilesLoading.value = true; profilesError.value = ''
+  const modelTicket = modelSelection.beginLoad()
   profilesRequest = Promise.resolve().then(() => api.request('/settings', { timeout: 12000 })).then(data => {
     if (disposed) return
     if (!Array.isArray(data?.profiles)) throw new Error('模型配置返回格式异常')
     profiles.value = data.profiles
-    defaultModelId.value = data.defaults?.text || ''
-    if (profileId.value && !data.profiles.some(profile => profile.id === profileId.value)) profileId.value = ''
-    if (visionId.value && !data.profiles.some(profile => profile.id === visionId.value && profile.vision)) visionId.value = ''
+    modelSelection.loaded(data, modelTicket)
   }).catch(() => {
     if (!disposed) profilesError.value = '模型列表加载失败'
   }).finally(() => {
@@ -264,12 +285,16 @@ const send = async () => {
   const text = draft.value.trim(), oldKey = draftKey.value, sendKey = selectionKey.value
   sending.value = true
   await guardAction(async () => {
+    if (profilesLoading.value) await loadProfiles()
+    if (!modelChoice.value.profile_id || !profiles.value.some(p => p.id === modelChoice.value.profile_id)) throw new Error('请先在输入框下方选择模型，或在 AI 服务中添加服务配置。')
+    // 提交期间切换模型只影响下一次发送。
+    const choice = { ...modelChoice.value }
     const t = await ensureThread(), account = props.account
     // 同一份草稿失败重试时沿用请求 ID，避免网络超时造成重复调用。
     const pendingKey = `pending:${account}:${t.id}:${text}`
     const requestId = saved.value.drafts[pendingKey] ||= crypto.randomUUID()
     const previousRunId = run.value?.id || ''
-    const result = await api.request(`/agent/threads/${t.id}/messages`, {method:'POST',query:{account},body:{text,request_id:requestId,...modelChoice.value}})
+    const result = await api.request(`/agent/threads/${t.id}/messages`, {method:'POST',query:{account},body:{text,request_id:requestId,...choice}})
     delete saved.value.drafts[pendingKey]; if ((saved.value.drafts[oldKey] || '').trim() === text) saved.value.drafts[oldKey] = ''
     if (account === props.account && thread.value?.id === t.id) {
       if (draft.value.trim() === text) draft.value = ''
@@ -413,6 +438,15 @@ watch([() => props.account, () => props.contact?.username], ([account], [oldAcco
   thread.value = null; run.value = null; pastRuns.value = {}; threadLoading.value = false; pendingThreadId.value = ''; error.value = ''; streamWarning.value = ''; syncWarning.value = ''; historyError.value = ''; newContent.value = false; streamConnected.value = false
   runStatuses.value = {}; history.value = []; directory.value = []; expanded.value = false
   connect(); void loadHistory(); void guardAction(loadSelection)
+})
+// 新一轮开始后保留上一轮过程，避免退回加载占位。
+watch(run, (next, previous) => {
+  if (previous?.id && previous.id !== next?.id && previous.thread_id === thread.value?.id && (!previous.account || previous.account === props.account)) pastRuns.value[previous.id] = previous
+}, { flush: 'sync' })
+watch(() => [props.account, thread.value?.id, run.value?.id, ...turns.value.map(turn => `${turn.id}:${turn.detail ? 'ready' : pastRunLoads.value[pastRunKey(turn.id)] || ''}`)], () => {
+  for (const turn of turns.value) {
+    if (!turn.detail && !pastRunLoads.value[pastRunKey(turn.id)]) void loadPastRun(turn.id)
+  }
 })
 watch(() => [props.account, run.value?.id, run.value?.status], () => { if (run.value && (!run.value.account || run.value.account === props.account)) rememberStatus(run.value.id, run.value.status) })
 watch(() => props.focusTaskId, id => { if (id) mode.value = 'tools' })

@@ -28,11 +28,15 @@ class TaskBackend(BackendProtocol):
         return str(PurePosixPath(value))
 
     def files(self):
-        self.guard()
+        run = self.guard()
+        from .deep_conversation import origins
+        files = {}
         with self.service.store.connection() as db:
-            rows = db.execute("SELECT id,body FROM agent_piece WHERE run_id=? AND version=? AND kind='deep_file'",
-                (self.run_id, self.version)).fetchall()
-        return {r[0].removeprefix('file:'): json.loads(r[1]) for r in rows}
+            for origin in [*origins(self.service, run), {'run_id': self.run_id, 'version': self.version}]:
+                rows = db.execute("SELECT id,body FROM agent_piece WHERE run_id=? AND version=? AND kind='deep_file'",
+                    (origin['run_id'], origin['version'])).fetchall()
+                files.update({r[0].removeprefix('file:'): json.loads(r[1]) for r in rows})
+        return files
 
     def data(self, path):
         run = self.guard()
@@ -43,10 +47,22 @@ class TaskBackend(BackendProtocol):
             if value:
                 from .deep_tools import ChatGateway
                 gateway = ChatGateway(self.service, self.run_id, self.version)
-                if not run.get('scope_handle') or not gateway.permits(gateway.scope(run['scope_handle']), value):
+                if run.get('scope_handle') and not gateway.permits(gateway.scope(run['scope_handle']), value):
                     raise ValueError('原文不在当前查询范围')
+                if run.get('manifest_id'):
+                    fragments = self.service.analysis_plans.assigned_messages(run, source)
+                    return self.file_data(json.dumps({'fragments': [{k: v for k, v in m.items() if k != 'media'} for m in fragments]},
+                        ensure_ascii=False, indent=2))
                 return self.file_data(json.dumps({k: v for k, v in value.items() if k != 'media'}, ensure_ascii=False, indent=2))
-        return self.service.workspace.get(self.run_id, self.version, 'file:' + path)
+        local = self.service.workspace.get(self.run_id, self.version, 'file:' + path)
+        if local is not None:
+            return local
+        from .deep_conversation import origins
+        for origin in reversed(origins(self.service, run)):
+            data = self.service.workspace.get(origin['run_id'], origin['version'], 'file:' + path)
+            if data is not None:
+                return data
+        return None
 
     @staticmethod
     def file_data(content):
@@ -78,6 +94,9 @@ class TaskBackend(BackendProtocol):
             path = self.path(file_path)
             if path.startswith(('/materials/', '/skills/')):
                 return WriteResult(error='原始资料及应用说明只读')
+            local = self.service.workspace.get(self.run_id, self.version, 'file:' + path)
+            if local is None and self.data(path) is not None:
+                return WriteResult(error='继承的历史资料只读，请使用新的文件路径')
             if len(content.encode('utf-8')) > 8 * 1024 * 1024:
                 return WriteResult(error='单份内部文件过大，请拆分保存')
             self.service.workspace.put(self.run_id, self.version, 'file:' + path, 'deep_file', self.file_data(content))

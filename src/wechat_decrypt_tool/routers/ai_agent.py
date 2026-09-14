@@ -137,6 +137,31 @@ def materials(id: str, account: str, kind: str = Query('sources', pattern='^(sou
         raise HTTPException(409,str(exc)) from None
 
 
+@router.get('/runs/{id}/context-compactions/{job_id}')
+def context_compaction(id: str, job_id: str, account: str, version: int = Query(..., ge=1)):
+    service = get_agent_service()
+    try:
+        run = service.run(id, account_name(account))
+        # 历史版本也可阅读，但必须来自同一个账号、任务及确切的压缩记录。
+        if version > run['version']:
+            raise ValueError('上下文压缩记录不存在。')
+        record = service.workspace.get(id, version, 'context:job:' + job_id)
+        if not record or record.get('id') != job_id:
+            raise ValueError('上下文压缩记录不存在。')
+        summary = record.get('summary') if record.get('status') == 'completed' else None
+        if summary is None and record.get('status') == 'completed':
+            # 旧记录只能回读同一次快照，不能把后一次摘要误当作前一次结果。
+            event = service.workspace.get(id, version, 'context:event') or {}
+            if event.get('context_revision') == job_id:
+                content = event.get('summary_message', {}).get('data', {}).get('content', '')
+                if isinstance(content, str) and '<compacted-summary>\n' in content:
+                    summary = content.split('<compacted-summary>\n', 1)[1].split('\n</compacted-summary>', 1)[0]
+        return {key: record.get(key) for key in ('id', 'status', 'reason', 'before', 'after', 'model_window', 'created_at', 'finished_at')} | {
+            'version': version, 'summary': summary, 'summary_available': bool(summary)}
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from None
+
+
 @router.get('/runs/{id}/subtasks')
 def subtasks(id: str, account: str, offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100),
              version: int | None = None):

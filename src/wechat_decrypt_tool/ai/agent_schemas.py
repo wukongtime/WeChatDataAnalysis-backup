@@ -36,6 +36,8 @@ class TurnInput(BaseModel):
     vision_profile_id: str = ''
     model_id: str = Field('', max_length=200)
     reasoning_effort: str | None = Field(None, max_length=40)
+    thinking_mode: Literal['enabled', 'disabled'] | None = None
+    thinking_budget: int | None = Field(None, ge=0, le=10000000, strict=True)
 
     @field_validator('text')
     @classmethod

@@ -264,7 +264,7 @@ def test_internal_notes_survive_multiple_turns_without_querying_wechat(tmp_path,
         client.responses.extend([action('read_file', {'file_path': '/history/notes.json'}), AIMessage(content='你让我叫你小王')])
         _, third = await execute(service, '刚才记下的称呼是什么？', request='third', thread=thread)
         assert third['status'] == 'completed', third['error']
-        saved = service.workspace.get(third['id'], 1, 'file:/history/notes.json')
+        saved = service.workspace.get(third['id'], 1, 'file:' + service.run(third['id'])['prior_notes_path'])
         assert '小王' in saved['content']
         assert not service.tools.calls
         client.responses.append(AIMessage(content='另一个对话'))
@@ -508,7 +508,8 @@ def test_summary_failure_does_not_release_history(tmp_path, monkeypatch, archive
 
 async def prepared(service, text='查聊天'):
     _, run = await execute(service, text)
-    service.update(run['id'], status='running', finished_at=None)
+    # 本文件的手动分页合同保留旧检查点路径；新内容编排另有独立合同测试。
+    service.update(run['id'], status='running', finished_at=None, subtask_plan_version=0)
     return ChatGateway(service, run['id'], run['version'])
 
 
@@ -521,7 +522,8 @@ def test_tools_release_foreground_priority(tmp_path, monkeypatch, outcome):
         index = local.LocalSearch(tmp_path / 'index')
         monkeypatch.setattr(local, '_service', index)
         entered, release = asyncio.Event(), asyncio.Event()
-        request = SimpleNamespace(tool_call={'id': 'read', 'name': 'read_messages', 'args': {}})
+        scope = await gateway.select()
+        request = SimpleNamespace(tool_call={'id': 'read', 'name': 'read_messages', 'args': {'scope_handle': scope['scope_handle']}})
         async def handler(_):
             assert index.foreground_queries == 1
             entered.set()
@@ -772,7 +774,11 @@ def test_framework_summary_archives_history_and_retains_originals(tmp_path, monk
             [(len(ms), sum(len(str(m.content)) for m in ms)) for ms in client.requests], list(result))
         assert any(u['purpose'] == 'deepagents_summary' for u in audits)
         assert service.run(gateway.id)['evidence']['a' * 24]['text'] == '可回查原文'
-        assert any(path.startswith('/conversation_history/') for path in TaskBackend(service, gateway.id, 1).files())
+        backend = TaskBackend(service, gateway.id, 1)
+        manifests = [path for path in backend.files() if path.startswith('/context/history/') and path.endswith('/index.json')]
+        assert manifests
+        assert any('历史要求' in ''.join(backend.data(part['path'])['content']
+            for part in json.loads(backend.data(path)['content'])['chunks']) for path in manifests)
     asyncio.run(check())
 
 

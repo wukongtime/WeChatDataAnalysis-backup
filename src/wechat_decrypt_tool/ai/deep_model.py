@@ -16,7 +16,7 @@ from pydantic import Field
 from langsmith import tracing_context
 
 from .agent_model import AgentModel, ActionFormatError
-from .agent_budget import check_request, input_limit, output_limit, ContextOverflow, is_context_error
+from .agent_budget import check_request, input_limit, output_limit, model_output_limit, ContextOverflow, is_context_error
 from .model_scheduler import scheduler, subtask_id
 from .providers import ProviderFailure
 from .model_execution import model_policy
@@ -132,6 +132,9 @@ class DeepChatModel(BaseChatModel):
         saved = self.service.store.get('deep_model_compatibility', key) or {}
         fallback = profile.get('model_metadata', {}).get('tool_call') is False or (
             saved.get('json') and saved.get('expires', 0) > time.time())
+        if self.purpose == 'summary':
+            # 摘要重放原前缀并仅返回文本，不进入工具执行或 JSON 行动协议。
+            fallback = False
         feedback = []
         total_deadline = time.monotonic() + MODEL_TOTAL_SECONDS
         for attempt in range(3):
@@ -141,11 +144,13 @@ class DeepChatModel(BaseChatModel):
             request = (self.compatibility_messages(messages) if fallback and self.bound_tools else list(messages)) + feedback
             extra = self.bound_tools if self.bound_tools and not fallback else None
             try:
-                measured = check_request(profile, request, extra)
+                measured = check_request({**profile, 'context_purpose': self.purpose}, request, extra,
+                    output_tokens=model_output_limit(profile, self.purpose))
             except ContextOverflow as exc:
                 from langchain_core.exceptions import ContextOverflowError
                 raise ContextOverflowError(str(exc)) from None
-            self.service.publish_context(run['id'], measured)
+            if self.purpose == 'agent':
+                self.service.publish_context(run['id'], measured)
             audit = {'id': uuid.uuid4().hex, 'account': run['account'], 'task_id': run.get('parent_run_id') or run['id'],
                 'subtask_id': run.get('parent_run_id') and run['id'] or subtask_id.get(), 'profile_id': profile['id'],
                 'profile_name': profile.get('name'), 'model': profile['model'], 'provider': profile.get('provider'),
@@ -166,11 +171,12 @@ class DeepChatModel(BaseChatModel):
                         from .model_catalog import documented_metadata
                         correction_effort = documented_metadata(profile, profile['model']).get('correction_reasoning_effort')
                         request_profile = {**profile, 'reasoning_effort': correction_effort} if (correction_effort
-                            and self.purpose in ('evidence_adjudication', 'citation_repair') and not profile.get('reasoning_effort')) else profile
+                            and self.purpose in ('evidence_adjudication', 'citation_repair') and not profile.get('reasoning_effort')
+                            and profile.get('thinking_mode') is None and profile.get('thinking_budget') is None) else profile
                         client = self.service.ai.models.client(request_profile)
                     if extra:
-                        client = client.bind_tools(extra, tool_choice='auto')
-                    opts = {'max_tokens': min(output_limit(profile), 16384 if self.purpose in ('evidence_adjudication', 'citation_repair') else 8192)}
+                        client = client.bind_tools(extra, tool_choice='none' if self.purpose == 'summary' else 'auto')
+                    opts = {'max_tokens': model_output_limit(profile, self.purpose)}
                     if profile.get('protocol') == 'openai' and profile.get('model_metadata', {}).get('structured_output') is True and ((fallback and self.bound_tools) or self.purpose in ('evidence_review', 'evidence_adjudication')):
                         opts['response_format'] = {'type': 'json_object'}
                     sent_at = time.time()
@@ -239,7 +245,7 @@ class DeepChatModel(BaseChatModel):
                 audit['status'] = 'success'
                 from .context_meter import active_meter
                 if active_meter.get():
-                    active_meter.get().observe(profile, request, extra, audit.get('usage'))
+                    active_meter.get().observe({**profile, 'context_purpose': self.purpose}, request, extra, audit.get('usage'))
                 return
             except asyncio.CancelledError:
                 audit['status'] = 'cancelled'
