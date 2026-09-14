@@ -49,7 +49,7 @@ def setup(tmp_path, monkeypatch, data=None):
     return service, client
 
 
-def fake_workers(service, monkeypatch, *, delay=.2, failures=None):
+def fake_workers(service, monkeypatch, *, delay=.2, failures=None, started=None, release=None):
     stats = {'active': 0, 'peak': 0, 'runs': [], 'commits': []}
     failures = failures if failures is not None else set()
 
@@ -59,6 +59,10 @@ def fake_workers(service, monkeypatch, *, delay=.2, failures=None):
         stats['peak'] = max(stats['peak'], stats['active'])
         stats['runs'].append(id)
         try:
+            if started is not None and stats['active'] == 4:
+                started.set()
+            if release is not None:
+                await release.wait()
             await asyncio.sleep(delay)
             if child.get('manifest_id') in failures:
                 service.finish(id, 'failed', '模拟临时失败')
@@ -157,16 +161,43 @@ def test_multiple_plans_share_parent_slots_and_queue_is_bounded(tmp_path, monkey
         gateway = await prepared(service)
         selected = [await gateway.select(conversations=[user], complete=True) for user in ['friend', 'other']]
         parent = service.run(gateway.id)
-        stats = fake_workers(service, monkeypatch)
+        workers_full, queue_full, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        stats = fake_workers(service, monkeypatch, started=workers_full, release=release)
         plans = [service.analysis_plans.get(parent, s['plan_handle']) for s in selected]
         original = service.analysis_plans.enqueue
+        queue_peak = 0
         def enqueue(parent, plan):
+            nonlocal queue_peak
             result = original(parent, plan)
-            assert service.analysis_plans.queued_count(parent) <= 8
+            queued = service.analysis_plans.queued_count(parent)
+            queue_peak = max(queue_peak, queued)
+            assert queued <= 8
+            if queued == 8:
+                queue_full.set()
             return result
         monkeypatch.setattr(service.analysis_plans, 'enqueue', enqueue)
-        await asyncio.wait_for(asyncio.gather(*(service.execute_plan(parent, p) for p in plans)), 45)
-        assert 1 < stats['peak'] <= 4 and gateway.validate_complete()
+
+        async def release_full_queue():
+            # 先阻塞四个工作槽，让两个计划真正填满共享队列，再验证排空和完整覆盖。
+            await asyncio.gather(workers_full.wait(), queue_full.wait())
+            assert stats['active'] == 4
+            release.set()
+
+        tasks = [asyncio.create_task(release_full_queue()),
+                 *(asyncio.create_task(service.execute_plan(parent, p)) for p in plans)]
+        try:
+            # 数千次真实 SQLite 连接在 Windows CI 上较慢；此期限只防死锁，不衡量性能。
+            await asyncio.wait_for(asyncio.gather(*tasks), 180)
+        finally:
+            release.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        assert stats['peak'] == 4 and queue_peak == 8
+        assert gateway.validate_complete()
+        assert len(stats['commits']) == len(set(stats['commits']))
+        assert {source for source, _, _ in stats['commits']} == {row['source'] for row in data.rows}
     asyncio.run(check())
 
 
