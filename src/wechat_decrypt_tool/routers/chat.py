@@ -97,6 +97,7 @@ from ..session_last_message import (
 from ..sns_realtime_autosync import SNS_REALTIME_AUTOSYNC
 from ..sqlite_diagnostics import collect_sqlite_diagnostics, format_sqlite_diagnostics
 from ..source_fallback import build_source_fallback_meta
+from .chat_contacts import _load_enterprise_contact_info
 from ..wcdb_realtime import (
     WCDBRealtimeError,
     WCDB_REALTIME,
@@ -3856,6 +3857,7 @@ def _postprocess_full_messages(
     base_url: str,
     contact_db_path: Path,
     head_image_db_path: Path,
+    rt_conn: Any = None,
 ) -> None:
     _postprocess_transfer_messages(merged)
 
@@ -3951,6 +3953,7 @@ def _postprocess_full_messages(
         sender_usernames=uniq_senders,
     )
 
+    enterprise_contacts = _load_enterprise_contact_info(contact_db_path, sender_usernames, rt_conn=rt_conn)
     for m in merged:
         # If appmsg doesn't provide sourcedisplayname, try mapping sourceusername to display name.
         if (not str(m.get("from") or "").strip()) and str(m.get("fromUsername") or "").strip():
@@ -3965,6 +3968,7 @@ def _postprocess_full_messages(
 
         su = str(m.get("senderUsername") or "")
         if su:
+            m["senderEnterpriseName"] = enterprise_contacts.get(su, {}).get("enterpriseName", "")
             m["senderDisplayName"] = _resolve_sender_display_name(
                 sender_username=su,
                 sender_contact_rows=sender_contact_rows,
@@ -4866,6 +4870,34 @@ def list_chat_sessions(
         if username:
             usernames.append(username)
 
+    enterprise_groups: set[str] = set()
+    group_usernames = [u for u in usernames if u.endswith("@chatroom")]
+    if group_usernames:
+        quoted_groups = ",".join("'" + u.replace("'", "''") + "'" for u in group_usernames)
+        # chat_room_status_ bit 17 marks WeCom interoperability groups.
+        group_sql = (
+            "SELECT username_ AS username FROM chat_room_info_detail "
+            "WHERE (chat_room_status_ & 131072) != 0 "
+            f"AND username_ IN ({quoted_groups})"
+        )
+        try:
+            group_rows = []
+            if rt_conn is not None:
+                with rt_conn.lock:
+                    group_rows = _wcdb_exec_query(rt_conn.handle, kind="contact", path=None, sql=group_sql)
+            elif contact_db_path.exists():
+                group_conn = sqlite3.connect(str(contact_db_path))
+                group_conn.row_factory = sqlite3.Row
+                try:
+                    group_rows = group_conn.execute(group_sql).fetchall()
+                finally:
+                    group_conn.close()
+            enterprise_groups = {
+                str(_session_row_get(row, "username", "") or "") for row in group_rows
+            }
+        except Exception as exc:
+            logger.warning("[sessions] failed to read enterprise group flags: %s", exc)
+
     contact_rows = _load_contact_rows(contact_db_path, usernames)
     local_avatar_usernames = _query_head_image_usernames(head_image_db_path, usernames)
     trace(
@@ -5133,6 +5165,7 @@ def list_chat_sessions(
                 "lastMessageTime": last_time,
                 "unreadCount": int(r["unread_count"] or 0),
                 "isGroup": bool(username.endswith("@chatroom")),
+                "isEnterpriseGroup": username in enterprise_groups,
                 "isTop": bool(top_flags.get(str(username or "").strip(), False)),
             }
         )
@@ -7349,6 +7382,10 @@ def list_chat_messages(
         groupNicknameCount=len(group_nicknames),
     )
 
+    enterprise_contacts = _load_enterprise_contact_info(
+        contact_db_path, sender_usernames_in_page,
+        rt_conn=rt_conn if source_norm == "realtime" else None,
+    )
     for m in messages_window:
         # If appmsg doesn't provide sourcedisplayname, try mapping sourceusername to display name.
         if (not str(m.get("from") or "").strip()) and str(m.get("fromUsername") or "").strip():
@@ -7363,6 +7400,7 @@ def list_chat_messages(
 
         su = str(m.get("senderUsername") or "")
         if su:
+            m["senderEnterpriseName"] = enterprise_contacts.get(su, {}).get("enterpriseName", "")
             m["senderDisplayName"] = _resolve_sender_display_name(
                 sender_username=su,
                 sender_contact_rows=sender_contact_rows,
@@ -8498,6 +8536,7 @@ async def get_chat_messages_around(
                 base_url=base_url,
                 contact_db_path=contact_db_path,
                 head_image_db_path=head_image_db_path,
+                rt_conn=rt_conn,
             )
 
             anchor_id_canon = f"{rt_db_path.stem}:{rt_table_name}:{int(anchor_local_id)}"

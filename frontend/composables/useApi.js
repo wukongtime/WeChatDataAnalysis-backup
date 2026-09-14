@@ -834,6 +834,17 @@ export const useApi = () => {
     return await request(url, params?.signal ? { signal: params.signal } : {})
   }
 
+  const getChatGroupMembers = async (params) => {
+    const query = new URLSearchParams({
+      account: params.account,
+      username: params.username,
+      limit: String(params.limit ?? 40),
+      offset: String(params.offset ?? 0),
+      source: 'auto'
+    })
+    return await request(`/chat/contacts/group_members?${query}`, { signal: params.signal })
+  }
+
   const exportChatContacts = async (payload = {}) => {
     return await request('/chat/contacts/export', {
       method: 'POST',
@@ -1219,6 +1230,7 @@ export const useApi = () => {
     cancelSnsExport,
     listChatContacts,
     getChatContactProfile,
+    getChatGroupMembers,
     exportChatContacts,
     createAccountArchiveExport,
     getAccountArchiveExport,

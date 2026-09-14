@@ -10,6 +10,14 @@
 
     <ResourceSidebar :state="chatState" />
     <VoiceTranscriptionSidebar :state="chatState" />
+    <GroupMembersSidebar
+      v-if="groupMembersSidebarOpen && selectedContact?.isGroup"
+      :key="`${selectedAccount}:${selectedContact.username}`"
+      :account="selectedAccount"
+      :username="selectedContact.username"
+      :privacy-mode="privacyMode"
+      :state="chatState"
+    />
     <ChatAgentPanel v-if="aiSidebarOpen" :account="selectedAccount" :contact="selectedContact" :contacts="contacts" :focus-task-id="aiFocusTaskId" :locate-source="locateAiSource" :prepare-source="prepareAiSource" @close="aiSidebarOpen = false" />
     <ChatOverlays :state="chatState" />
   </div>
@@ -21,6 +29,7 @@ import { storeToRefs } from 'pinia'
 
 import ResourceSidebar from '~/components/chat/ResourceSidebar.vue'
 import VoiceTranscriptionSidebar from '~/components/chat/VoiceTranscriptionSidebar.vue'
+import GroupMembersSidebar from '~/components/chat/GroupMembersSidebar.vue'
 import ChatAgentPanel from '~/components/chat/ChatAgentPanel.vue'
 import { useApi } from '~/composables/useApi'
 import { createEmptySearchContext, useChatSearch } from '~/composables/chat/useChatSearch'
@@ -967,6 +976,7 @@ const onGlobalKeyDown = (event) => {
     if (searchState.messageSearchOpen.value) searchState.closeMessageSearch()
     if (searchState.timeSidebarOpen.value) searchState.closeTimeSidebar()
     if (voiceSidebarOpen.value) closeVoiceSidebar()
+    groupMembersSidebarOpen.value = false
     if (searchContext.value?.active) exitSearchContext()
   }
 }
@@ -1191,6 +1201,32 @@ watch(
 )
 
 const aiSidebarOpen = ref(false)
+const groupMembersSidebarOpen = ref(false)
+const toggleGroupMembersSidebar = () => {
+  if (groupMembersSidebarOpen.value) {
+    groupMembersSidebarOpen.value = false
+    return
+  }
+  if (!selectedContact.value?.isGroup) return
+  aiSidebarOpen.value = false
+  closeVoiceSidebar()
+  messageState.closeResourceSidebar()
+  searchState.closeMessageSearch('group-members')
+  searchState.closeTimeSidebar()
+  groupMembersSidebarOpen.value = true
+}
+watch([selectedAccount, () => selectedContact.value?.username], () => {
+  groupMembersSidebarOpen.value = false
+})
+watch([
+  aiSidebarOpen,
+  voiceSidebarOpen,
+  messageState.resourceSidebarOpen,
+  searchState.messageSearchOpen,
+  searchState.timeSidebarOpen
+], (opened) => {
+  if (opened.some(Boolean)) groupMembersSidebarOpen.value = false
+})
 const aiFocusTaskId = ref('')
 watch(selectedAccount, () => { aiFocusTaskId.value = '' })
 const aiNavigation = useState('ai-navigation-target', () => null)
@@ -1241,6 +1277,8 @@ watch(aiNavigation, () => { void consumeAiNavigation() })
 onMounted(() => { void consumeAiNavigation() })
 
 const chatState = {
+  groupMembersSidebarOpen,
+  toggleGroupMembersSidebar,
   aiSidebarOpen,
   toggleAiSidebar,
   chatAccounts,
