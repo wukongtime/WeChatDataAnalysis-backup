@@ -7,23 +7,40 @@
       </header>
 
       <div v-if="!account" class="lss-feedback">请先在聊天页面选择账号。现在也可以下载模型，之后再开始整理。</div>
-      <div v-if="job && (form.enabled || job.status==='error')" ref="statusRef" class="lss-status" tabindex="-1" :class="{ 'is-error': job.status==='error' }" aria-live="polite">
-        <div class="lss-row">
-          <div class="lss-status-title"><i class="fa-solid" :class="running ? 'fa-circle-notch fa-spin' : job.status==='done' ? (hasSearchData ? 'fa-circle-check' : 'fa-circle-info') : 'fa-circle-pause'" aria-hidden="true"></i><strong>{{ job.status==='done' ? completedTitle : stage(job) }}</strong></div>
-          <span class="lss-note">用时 {{ elapsed(job) }}</span>
+      <div v-if="job && (form.enabled || job.status==='error')" ref="statusRef" class="lss-status" tabindex="-1" :class="{ 'is-error': job.status==='error', 'is-paused': job.status==='paused' }">
+        <div class="lss-status-heading">
+          <div class="lss-status-title" role="status"><i class="fa-solid" :class="running ? 'fa-circle-notch fa-spin' : job.status==='error' ? 'fa-circle-exclamation' : job.status==='done' ? (hasSearchData ? 'fa-circle-check' : 'fa-circle-info') : 'fa-circle-pause'" aria-hidden="true"></i><strong>{{ job.status==='done' ? completedTitle : stage(job) }}</strong></div>
+          <div class="lss-status-meta"><span class="lss-device-badge"><i class="fa-solid fa-microchip" aria-hidden="true"></i>{{ actualDevice }}</span><span class="lss-note">用时 {{ elapsed(job) }}</span></div>
         </div>
-        <p class="lss-live-count">{{ job.status==='done' ? '本次检查' : '已读取' }} {{ job.read_count ?? job.processed ?? 0 }} 条消息 · {{ running ? '本次生成' : '本次已保存' }} {{ running ? (job.embedded_count ?? job.embedded ?? 0) : (job.embedded ?? 0) }} 个片段 · {{ actualDevice }}</p>
-        <p v-if="indexStats" class="lss-index-total">当前索引：{{ indexStats.messages }} 条消息 · {{ indexStats.chunks }} 个片段</p>
-        <p v-if="job.mode" class="lss-note">{{ indexMode(job.mode) }}</p>
-        <p v-if="job.unchanged" class="lss-note">已复用 {{ job.unchanged }} 条未变化消息，无需重复生成片段。</p>
-        <p v-if="job.status==='done' && !job.embedded && hasSearchData" class="lss-note">内容没有变化，已复用现有搜索数据，无需重复生成片段。</p>
-        <p v-if="running || job.status==='paused' || job.status==='error'" class="lss-note">已保存 {{ job.processed || 0 }} 条消息的进度<template v-if="running"> · {{ job.chat_index || 0 }} / {{ job.segments?.length || job.config?.usernames?.length || form.usernames.length }} 个{{ job.segments ? '会话时间段' : '聊天' }}已完成</template></p>
-        <p v-if="running && job.read_batch_size_effective" class="lss-note">当前每批最多 {{ job.read_batch_size_effective }} 条 · 根据可用内存调整</p>
-        <p v-if="running" class="lss-note">可以离开这个页面，整理会在后台继续。</p>
-        <p v-else-if="job.status==='done' && hasSearchData" class="lss-note">在聊天搜索中切换到「智能搜索」，或直接向 AI 助手提问。</p>
-        <p v-else-if="job.status==='done' && indexStats && !hasSearchData" class="lss-note">请调整聊天或时间范围；只有图片等尚未提取文字的内容无法生成搜索片段。</p>
-        <p v-if="job.warning" class="lss-note">{{ job.warning }}</p><p v-if="job.error" :class="job.status==='paused' ? 'lss-note' : 'lss-error'">{{ job.error }}</p>
-        <div class="lss-actions" v-if="running"><button type="button" :disabled="busy" @click="act(()=>request('/index/pause',{method:'POST'},true))">暂停整理</button></div>
+        <div class="lss-progress-heading">
+          <span>{{ progress.total ? (progress.unit==='消息' ? '已保存消息进度' : `${progress.unit}进度`) : job.status==='done' ? '本轮整理进度' : job.stage==='counting' ? '统计完成后显示总量' : '正在确认整理范围' }}<span v-if="progress.total" class="lss-progress-count">{{ number(progress.completed) }} / {{ number(progress.total) }} 已完成</span></span>
+          <strong>{{ progress.percent === null ? '—' : `${progress.percent}%` }}</strong>
+        </div>
+        <progress class="lss-index-progress" :value="progress.percent ?? undefined" max="100" :aria-label="`${progress.unit}整理进度`" />
+        <dl class="lss-metrics">
+          <div class="lss-metric" data-metric="read"><dt>{{ job.status==='done' ? '本次检查消息' : '已读取消息' }}<template v-if="messageTotal.value !== null"> / 本轮总量</template></dt><dd><strong class="lss-read-total">{{ number(job.read_count ?? job.processed ?? 0) }}<span v-if="messageTotal.value !== null" class="lss-total-denominator">/ {{ number(messageTotal.value) }}</span></strong><span>{{ messageTotal.value !== null ? '条消息' : messageTotal.hint }}</span></dd></div>
+          <div class="lss-metric lss-metric-saved" data-metric="saved"><dt>已保存进度</dt><dd><strong>{{ number(job.processed ?? 0) }}</strong><span>条消息</span></dd></div>
+          <div class="lss-metric" data-metric="generated"><dt>{{ running ? '本次生成片段' : '本次已保存片段' }}</dt><dd><strong>{{ number(running ? (job.embedded_count ?? job.embedded ?? 0) : (job.embedded ?? 0)) }}</strong><span>个片段</span></dd></div>
+          <div class="lss-metric lss-metric-index" data-metric="indexed"><dt>当前索引片段</dt><dd><strong>{{ indexStats ? number(indexStats.chunks) : '—' }}</strong><span>{{ indexStats ? `覆盖 ${number(indexStats.messages)} 条消息` : '等待索引统计' }}</span></dd></div>
+        </dl>
+        <p v-if="job.warning" class="lss-status-warning" role="status"><i class="fa-solid fa-circle-info" aria-hidden="true"></i>{{ job.warning }}</p>
+        <p v-if="job.error" :class="job.status==='paused' ? 'lss-note' : 'lss-error'" :role="job.status==='paused' ? 'status' : 'alert'">{{ job.error }}</p>
+        <div class="lss-status-footer">
+          <p class="lss-note">{{ statusHint }}</p>
+          <button v-if="running" type="button" :disabled="busy" @click="act(()=>request('/index/pause',{method:'POST'},true))"><i class="fa-solid fa-pause" aria-hidden="true"></i>暂停整理</button>
+        </div>
+        <details class="lss-status-details">
+          <summary>处理详情<i class="fa-solid fa-chevron-down" aria-hidden="true"></i></summary>
+          <div>
+            <p v-if="job.mode" class="lss-note">{{ indexMode(job.mode) }}</p>
+            <p v-if="job.unchanged" class="lss-note">已复用 {{ number(job.unchanged) }} 条未变化消息，无需重复生成片段。</p>
+            <p v-if="job.status==='done' && !job.embedded && hasSearchData" class="lss-note">内容没有变化，已复用现有搜索数据，无需重复生成片段。</p>
+            <p class="lss-note">已读取 {{ number(job.read_count ?? job.processed ?? 0) }} 条消息，已保存 {{ number(job.processed ?? 0) }} 条消息的进度。生成中的片段以保存后结果为准。</p>
+            <p class="lss-note">开始整理前先统计完整消息总量，本轮总量固定不变；新增消息留到下一轮。暂停或重启后继续使用同一总量。</p>
+            <p v-if="running && job.read_batch_size_effective" class="lss-note">当前每批最多 {{ number(job.read_batch_size_effective) }} 条 · 根据可用内存调整</p>
+            <p class="lss-note">进度按已保存的{{ progress.unit }}计算，不代表剩余用时。</p>
+          </div>
+        </details>
       </div>
 
       <div class="lss-setup">
@@ -217,6 +234,38 @@ const selectedModel=computed(()=>state.value.models?.find(m=>m.id===form.model))
 const displayModel=computed(()=>selectedModel.value || state.value.models?.find(m=>m.recommended) || state.value.models?.[0])
 const modelReady=computed(()=>!!selectedModel.value?.downloaded)
 const running=computed(()=>['running','queued'].includes(job.value?.status))
+const number=value=>Number(value ?? 0).toLocaleString('zh-CN')
+const messageTotal=computed(()=>{
+  const current=job.value, total=state.value.message_total
+  // 固定总量从统计快照读取，完成、暂停和实时读取事件都不能改写分母。
+  if(total?.job_id===current?.id && total?.status==='ready' && total.fixed===true && typeof total.value==='number' && Number.isFinite(total.value) && total.value>=0){
+    return {value:total.value}
+  }
+  if(current?.status==='done')return {value:current.processed ?? 0}
+  const status=total?.job_id===current?.id ? total?.status : null
+  return {value:null,hint:status==='unavailable' ? '总量统计未完成' : !running.value ? '总量未统计完' : '总量统计中…'}
+})
+const progress=computed(()=>{
+  const current=job.value, total=messageTotal.value.value
+  if(total!==null){
+    const completed=Math.min(total,Math.max(0,Number(current?.processed) || 0))
+    return {total,completed,unit:'消息',percent:total ? Math.floor(completed/total*100) : current?.status==='done' ? 100 : 0}
+  }
+  if(current?.stage==='counting')return {total:0,completed:0,unit:'消息',percent:null}
+  // 旧任务尚未迁移固定消息清单时，继续展示原来已有的会话进度。
+  const segments=current?.segments?.length ?? current?.config?.usernames?.length ?? 0
+  const completed=Math.min(segments,Math.max(0,Number(current?.chat_index) || 0))
+  return {total:segments,completed,unit:current?.segments ? '会话时间段' : '聊天',percent:segments ? Math.floor(completed/segments*100) : null}
+})
+const statusHint=computed(()=>{
+  if(running.value && job.value?.stage==='counting')return '正在统计本轮消息总量，统计完成后开始整理。'
+  if(running.value)return '本轮范围已固定，新增消息留到下一轮；可以离开此页面。'
+  if(job.value?.status==='paused')return '进度已保存，可继续整理。'
+  if(job.value?.status==='error')return '已保存的进度会保留，可在下方重试整理。'
+  if(job.value?.status==='done' && hasSearchData.value)return '本轮整理已完成。在聊天搜索中切换到「智能搜索」，或直接向 AI 助手提问。'
+  if(job.value?.status==='done' && indexStats.value)return '请调整聊天或时间范围；只有图片等尚未提取文字的内容无法生成搜索片段。'
+  return '本轮整理已结束。'
+})
 const selectedChatNames=computed(()=>form.usernames.map(id=>chats.value.find(c=>c.username===id)?.name).filter(Boolean).slice(0,3).join('、')+(form.usernames.length>3?' 等':''))
 const dialogTitle=computed(()=>({models:'选择检索模型',scope:'选择聊天',import:'离线导入'}[dialog.value] || ''))
 const invalidDates=computed(()=>period.value==='custom' && (!startDate.value || !endDate.value || startDate.value>endDate.value))
@@ -230,7 +279,7 @@ const actualDevice=computed(()=>state.value.device?.actual_device==='cuda' ? (st
 const bytes=n=>!n ? '0 B' : n<1024**2 ? `${(n/1024).toFixed(0)} KB` : n<1024**3 ? `${(n/1024**2).toFixed(1)} MB` : `${(n/1024**3).toFixed(2)} GB`
 const date=n=>n ? new Date(n*1000).toLocaleString() : '—'
 const elapsed=j=>`${Math.max(0,Math.floor((j.finished || (['paused','done','error'].includes(j.status) ? j.updated : now.value) || now.value)-j.started))} 秒`
-const stage=j=>!j ? '未下载' : ({importing:'导入中',pausing:'正在暂停',queued:'等待整理',connecting:'连接中',downloading:'下载中',retry_wait:'等待重试',paused:'已暂停',verifying:'校验中',verified:'校验完成',loading:'测试模型',done:'已完成',error:'处理失败',reading:'读取聊天记录',organizing:'整理消息片段',embedding:'正在理解聊天内容',saving:'正在保存搜索数据',installing:'安装加速组件'}[j.status==='error' || j.status==='paused' ? j.status : j.stage] || '处理中')
+const stage=j=>!j ? '未下载' : ({counting:'正在统计消息总量',importing:'导入中',pausing:'正在暂停',queued:'等待整理',connecting:'连接中',downloading:'下载中',retry_wait:'等待重试',paused:'已暂停',verifying:'校验中',verified:'校验完成',loading:'测试模型',done:'已完成',error:'处理失败',reading:'读取聊天记录',organizing:'整理消息片段',embedding:'正在理解聊天内容',saving:'正在保存搜索数据',installing:'安装加速组件'}[j.status==='error' || j.status==='paused' ? j.status : j.stage] || '处理中')
 const request=(path,options={},scoped=false)=>api.request(`/local-search${path}${scoped && account.value ? `${path.includes('?')?'&':'?'}account=${encodeURIComponent(account.value)}`:''}`,options)
 let refreshDone=Promise.resolve()
 let timer, loading=false, version=0, gpuVersion=0, needsReset=false, previousFocus, stopEvents
@@ -381,10 +430,28 @@ onBeforeUnmount(()=>{clearInterval(timer);stopEvents?.()})
 .lss-start p{font-size:11px}.lss-start strong{font-size:12px}
 .lss-start-actions{display:flex;gap:8px;flex-wrap:wrap;flex-shrink:0}
 @container (max-width:600px){.lss-start-actions button{flex:1}}
-.lss-status{border:1px solid var(--app-border,#e7e9ed);border-radius:8px;background:var(--app-surface-soft,#f7f8fa);padding:14px 16px;margin-bottom:14px}
-.lss-status-title{display:flex;align-items:center;gap:8px}.lss-status-title>i{color:#079b57}
-.lss-live-count{font-variant-numeric:tabular-nums}
+.lss-status{--lss-green:#07834b;--lss-blue:#526d9e;border:1px solid color-mix(in srgb,var(--app-border,#e7e9ed),#079b57 20%);border-radius:12px;background:var(--app-surface-bg,#fff);padding:20px;margin-bottom:16px;container-type:inline-size;font-variant-numeric:tabular-nums}
+.lss-status-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.lss-status-title{display:flex;align-items:center;gap:8px;font-size:14px;min-width:0}.lss-status-title>i{color:var(--lss-green);flex-shrink:0}
+.lss-status-meta{display:flex;align-items:center;gap:12px;min-width:0;margin-left:auto}.lss-status-meta>.lss-note{white-space:nowrap}
+.lss-device-badge{display:inline-flex;align-items:center;gap:6px;min-width:0;font-size:11px;padding:4px 9px;border-radius:6px;background:var(--app-accent-soft,#edf8f1);color:var(--lss-green);overflow-wrap:anywhere}
+.lss-progress-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:20px 0 8px;color:var(--app-text-secondary,#687582);font-size:11px}
+.lss-progress-heading strong{color:var(--lss-blue);font-size:16px;flex-shrink:0}.lss-progress-count{margin-left:10px}
+.local-search-settings .lss-index-progress{display:block;width:100%;height:8px;appearance:none;border:0;border-radius:8px;overflow:hidden;background:var(--app-accent-soft,#e6f0eb);accent-color:#07bf63}
+.lss-index-progress::-webkit-progress-bar{background:var(--app-accent-soft,#e6f0eb)}.lss-index-progress::-webkit-progress-value{background:#07bf63;border-radius:8px}.lss-index-progress::-moz-progress-bar{background:#07bf63;border-radius:8px}
+.lss-index-progress:indeterminate{opacity:.6}.is-paused .lss-index-progress{accent-color:var(--app-text-secondary,#687582)}.is-paused .lss-index-progress::-webkit-progress-value{background:var(--app-text-secondary,#687582)}.is-paused .lss-index-progress::-moz-progress-bar{background:var(--app-text-secondary,#687582)}
+.lss-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin:24px 0}
+.lss-metric{display:flex;flex-direction:column;align-items:center;text-align:center;min-width:0}.lss-metric dt{order:2;margin-top:5px;font-size:11px;font-weight:400;color:var(--app-text-secondary,#687582)}
+.lss-metric dd{display:contents;margin:0}.lss-metric dd>strong{font-size:clamp(18px,3.4cqw,24px);font-weight:600;overflow-wrap:anywhere;max-width:100%}.lss-metric{font-size:24px;font-weight:600;line-height:1.3}.lss-metric dd>span{order:3;margin-top:5px;font-size:10px;font-weight:400;color:var(--app-text-secondary,#687582)}
+.lss-metric-saved{color:var(--lss-green)}.lss-metric-index{color:var(--lss-blue);border-left:1px solid var(--app-border,#e7e9ed)}
+.lss-read-total{display:flex;align-items:baseline;justify-content:center;flex-wrap:wrap;gap:4px}.lss-total-denominator{font-size:14px;font-weight:400;white-space:nowrap;color:var(--app-text-secondary,#687582)}
+.lss-status-footer{display:flex;align-items:center;justify-content:space-between;gap:16px}.lss-status-footer>.lss-note{margin:0;font-size:11px}.lss-status-footer button{flex-shrink:0}
+.lss-status-details{border-top:1px solid var(--app-border,#e7e9ed);margin-top:16px;padding-top:12px}.lss-status-details summary{display:flex;align-items:center;gap:8px;width:fit-content;min-height:28px;font-size:11px;color:var(--app-text-secondary,#687582);list-style:none}.lss-status-details summary::-webkit-details-marker{display:none}.lss-status-details summary>i{font-size:9px}.lss-status-details[open] summary>i{transform:rotate(180deg)}.lss-status-details summary:hover{color:var(--lss-green)}.lss-status-details>div{padding-top:4px}
+.lss-status :is(.lss-error,.lss-status-warning){overflow-wrap:anywhere;margin-bottom:12px}.lss-status-warning{display:flex;align-items:baseline;gap:7px}
 .lss-status.is-error{border-color:var(--danger-color,#cb4b43)}
+.lss-status.is-error .lss-status-title>i{color:var(--danger-color,#cb4b43)}
+:global([data-theme=dark] .lss-status){--lss-green:#64d49c;--lss-blue:#9aafd7}
+@container(max-width:520px){.lss-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 12px}.lss-metric-index{border-left:0}.lss-progress-count{display:block;margin:4px 0 0}.lss-status-footer{align-items:flex-start;flex-wrap:wrap}.lss-status-footer button{margin-left:auto}.lss-metric{font-size:22px}}
 .lss-bottom-note{display:flex;align-items:flex-start;gap:7px;font-size:10px;color:var(--app-text-secondary,#687582);padding:12px 1px;line-height:1.7}
 .lss-bottom-note>i{margin-top:3px}
 .lss-advanced{border:1px solid var(--app-border,#e7e9ed);border-radius:9px;margin-top:14px;background:var(--app-surface-soft,#f7f7f7);overflow:hidden}

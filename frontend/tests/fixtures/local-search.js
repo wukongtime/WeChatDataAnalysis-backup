@@ -14,6 +14,22 @@ const models=[
 {id:'multilingual-e5-small',name:'Multilingual E5 Small',description:'适合中英文及多语言聊天',repo:'intfloat/multilingual-e5-small',revision:'614241f622f53c4eeff9890bdc4f31cfecc418b3',license:'MIT',size:492421556,downloaded:false},
 ]
 let config={enabled:false,model:'bge-small-zh',usernames:[],days:90,start:null,end:null,device:'auto',device_id:0,auto_update:true,revision:1},jobs=[]
+// 固定的整理快照用于视觉与交互检查，不会读取真实聊天或启动索引。
+const progressPreview=new URLSearchParams(location.search).get('progress')
+let indexStats,messageTotal
+if(progressPreview){
+  config={...config,enabled:true,agent_global:true,days:0,start:0,read_batch_size:0}
+  const initial=progressPreview==='initial',done=progressPreview==='done'
+  const started=Date.now()/1000-(initial?1:86)
+  jobs=[{id:'progress-preview',status:initial?'running':progressPreview,stage:initial?'counting':done?'done':'embedding',mode:'initial',started,updated:Date.now()/1000,
+    ...(['paused','error','done'].includes(progressPreview)?{finished:Date.now()/1000}:{}),
+    read_count:initial?0:26286,processed:initial?0:25833,embedded:initial?0:4180,embedded_count:initial?0:4260,
+    chat_index:initial?0:done?1560:686,segments:Array.from({length:1560},()=>({})),read_batch_size_effective:1000,config:{...config},
+    ...(progressPreview==='error'?{error:'模型运行中断，请检查运行设备后重试。'}:{})}]
+  indexStats={messages:initial?0:25833,chunks:initial?0:4180}
+  messageTotal={job_id:'progress-preview',status:initial?'counting':'ready',value:58735,fixed:true,estimated:false}
+  if(done){jobs[0].read_count=58735;jobs[0].processed=58735}
+}
 // 分类弹窗验收使用与设计稿一致的虚构数据，覆盖长列表与部分选择。
 const scopePreview=new URLSearchParams(location.search).has('scope')
 const groupNames=['周末羽毛球群','产品讨论群','同学交流群','摄影分享群','城市徒步群','读书交流群']
@@ -27,7 +43,7 @@ const mac=navigator.userAgent.includes('Mac')
 const gpu={supported:!mac,platform:mac?'darwin':'win32',size:1671874915,installed:false,job:null}
 let gpuTimer
 globalThis.useAiApi=()=>({request:async(path,options={})=>{
-  if(path.startsWith('/local-search/status'))return JSON.parse(JSON.stringify({config,models,jobs,device:{actual_device:'cpu'},gpu,audit:[]}))
+  if(path.startsWith('/local-search/status'))return JSON.parse(JSON.stringify({config,models,jobs,index_stats:indexStats,message_total:messageTotal,device:{actual_device:'cpu'},gpu,audit:[]}))
   // 模拟组件状态，供按钮交互验收；不会下载真实文件。
   if(path==='/local-search/gpu/download'){
     if(!['queued','running'].includes(gpu.job?.status)){

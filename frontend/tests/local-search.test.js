@@ -5,17 +5,18 @@ import LocalSearchSettings from '../components/LocalSearchSettings.vue'
 
 const account=ref('test-account'),request=vi.fn()
 vi.mock('~/stores/chatAccounts',()=>({useChatAccountsStore:()=>({selectedAccount:account})}))
-let wrapper,config,models,jobs,gpu,onEvent,indexStats,conversations
+let wrapper,config,models,jobs,gpu,onEvent,indexStats,conversations,messageTotal
 beforeEach(()=>{
   account.value='test-account'
   models=[{id:'bge-small-zh',name:'BGE Small 中文',description:'适合中文聊天',recommended:true,repo:'Xenova/bge-small-zh-v1.5',revision:'a'.repeat(40),license:'MIT',downloaded:false,size:95000000}]
   jobs=[]
   indexStats=undefined
+  messageTotal=undefined
   conversations=[{username:'current',name:'当前聊天'},{username:'other',name:'其他聊天'}]
   gpu={supported:true,size:1000}
   config={enabled:false,model:null,usernames:[],days:90,start:null,end:null,device:'auto',device_id:0,auto_update:true,revision:1}
   request.mockReset().mockImplementation(async(path,options)=>{
-    if(path.includes('/status'))return {config:{...config},models,device:{actual_device:null},jobs,gpu,index_stats:indexStats}
+    if(path.includes('/status'))return {config:{...config},models,device:{actual_device:null},jobs,gpu,index_stats:indexStats,message_total:messageTotal}
     if(path.includes('/conversations'))return conversations
     if(path.includes('/settings')){config={...options.body,revision:config.revision+1};return config}
     return []
@@ -148,9 +149,9 @@ it('重复检查零新增时展示现有索引总数，说明复用',async()=>{
   jobs=[{id:'done',status:'done',processed:6601,embedded:0,started:1,finished:13}]
   await open()
   expect(wrapper.find('.lss-status-title').text()).toContain('搜索数据已是最新')
-  expect(wrapper.find('.lss-index-total').text()).toContain('6601 条消息 · 601 个片段')
+  expect(wrapper.find('[data-metric=indexed]').text()).toContain('601覆盖 6,601 条消息')
   expect(wrapper.find('.lss-status').text()).toContain('已复用现有搜索数据')
-  expect(wrapper.find('.lss-live-count').text()).toContain('本次已保存 0 个片段')
+  expect(wrapper.find('[data-metric=generated]').text()).toBe('本次已保存片段0个片段')
 })
 it('没有可用片段时不能显示智能搜索已准备好',async()=>{
   ready();config.enabled=true;indexStats={messages:10,chunks:0}
@@ -160,16 +161,57 @@ it('没有可用片段时不能显示智能搜索已准备好',async()=>{
   expect(wrapper.find('.lss-status').text()).not.toContain('可以智能搜索了')
   expect(wrapper.find('.lss-status').text()).toContain('请调整聊天或时间范围')
 })
+it('进度按任务时间段计算，实时读取量不冒充已保存进度',async()=>{
+  ready();config.enabled=true
+  jobs=[{id:'run',status:'running',stage:'reading',chat_index:1,segments:[{},{},{},{}],read_count:1680,processed:1000,embedded:80,embedded_count:92,started:1}]
+  await open({accountWide:true})
+  expect(wrapper.find('.lss-index-progress').attributes('value')).toBe('25')
+  expect(wrapper.find('.lss-index-progress').attributes('aria-label')).toBe('会话时间段整理进度')
+  expect(wrapper.find('[data-metric=read] strong').text()).toBe('1,680')
+  expect(wrapper.find('[data-metric=saved] dd').text()).toBe('1,000条消息')
+  expect(wrapper.find('[data-metric=generated] dd').text()).toBe('92个片段')
+  expect(wrapper.find('[data-metric=indexed]').text()).toContain('等待索引统计')
+  expect(wrapper.find('.lss-status-details').attributes('open')).toBeUndefined()
+})
+it('未知任务范围不使用当前表单推算百分比，空范围不回退到聊天总数',async()=>{
+  ready();config.enabled=true
+  jobs=[{id:'run',status:'queued',stage:'queued',started:1,updated:1}]
+  await open()
+  expect(wrapper.find('.lss-index-progress').attributes('value')).toBeUndefined()
+  onEvent({kind:'local_search_index',account:'test-account',body:{...jobs[0],updated:2,segments:[],config:{usernames:['current']}}})
+  await flushPromises()
+  expect(wrapper.find('.lss-index-progress').attributes('value')).toBeUndefined()
+})
+it('首次零进度与完成进度明确区分',async()=>{
+  ready();config.enabled=true
+  jobs=[{id:'run',status:'running',stage:'reading',chat_index:0,segments:[{},{}],started:1,updated:1}]
+  await open()
+  expect(wrapper.find('.lss-index-progress').attributes('value')).toBe('0')
+  jobs=[{...jobs[0],status:'done',chat_index:2,updated:2,finished:2}]
+  onEvent({kind:'local_search_index',account:'test-account',body:jobs[0]})
+  await flushPromises()
+  expect(wrapper.find('.lss-index-progress').attributes('value')).toBe('100')
+  expect(button('暂停整理')).toBeUndefined()
+})
+it('失败保留真实进度并直接显示错误，不藏进详情',async()=>{
+  ready();config.enabled=true
+  jobs=[{id:'fail',status:'error',stage:'embedding',chat_index:1,segments:[{},{}],processed:100,embedded:8,error:'模型运行中断',started:1,finished:2}]
+  await open()
+  expect(wrapper.find('.lss-index-progress').attributes('value')).toBe('50')
+  expect(wrapper.find('.lss-status-title .fa-circle-exclamation').exists()).toBe(true)
+  expect(wrapper.find('.lss-status > [role=alert]').text()).toBe('模型运行中断')
+  expect(wrapper.find('[data-metric=saved] dd').text()).toBe('100条消息')
+})
 it('暂停后的片段数量以事务保存结果为准，手动暂停不是错误',async()=>{
   ready();config.enabled=true;config.agent_global=true
   jobs=[{id:'paused',status:'paused',stage:'embedding',processed:1617,read_count:2117,
     embedded:244,embedded_count:308,error:'处理已暂停',started:1,finished:37,config:{revision:1}}]
   indexStats={messages:1617,chunks:244}
   await open({accountWide:true})
-  expect(wrapper.find('.lss-live-count').text()).toContain('本次已保存 244 个片段')
-  expect(wrapper.find('.lss-live-count').text()).not.toContain('308')
+  expect(wrapper.find('[data-metric=generated]').text()).toBe('本次已保存片段244个片段')
+  expect(wrapper.find('[data-metric=generated]').text()).not.toContain('308')
   expect(wrapper.find('.lss-status .lss-error').exists()).toBe(false)
-  expect(wrapper.find('.lss-status').text()).toContain('已保存 1617 条消息的进度')
+  expect(wrapper.find('.lss-status').text()).toContain('已保存 1,617 条消息的进度')
   expect(primary().text()).toBe('继续整理')
 })
 it('大批量未保存时实时显示读取增长，旧事件不能倒退数量',async()=>{
@@ -181,8 +223,8 @@ it('大批量未保存时实时显示读取增长，旧事件不能倒退数量'
     onEvent({kind:'local_search_index',account:'test-account',body:{...jobs[0],updated,read_count}})
     await flushPromises()
   }
-  expect(wrapper.find('.lss-live-count').text()).toContain('已读取 1680 条消息')
-  expect(wrapper.find('.lss-status').text()).toContain('已保存 1000 条消息的进度')
+  expect(wrapper.find('[data-metric=read] strong').text()).toBe('1,680')
+  expect(wrapper.find('.lss-status').text()).toContain('已保存 1,000 条消息的进度')
   expect(request.mock.calls).toHaveLength(requests)
 })
 it('轮询旧响应不会覆盖读取中的实时数量',async()=>{
@@ -192,7 +234,7 @@ it('轮询旧响应不会覆盖读取中的实时数量',async()=>{
   await open()
   onEvent({kind:'local_search_index',account:'test-account',body:{...jobs[0],updated:3,read_count:700}})
   await vi.advanceTimersByTimeAsync(1500);await flushPromises()
-  expect(wrapper.find('.lss-live-count').text()).toContain('已读取 700 条消息')
+  expect(wrapper.find('[data-metric=read] strong').text()).toBe('700')
 })
 it('高级设置可选择更大批量并保存，不提交聊天草稿',async()=>{
   ready();config.usernames=[];await open();await selectScope()
@@ -426,4 +468,61 @@ it('macOS 展示 CPU 运行说明，不显示 NVIDIA 选项或组件下载',asyn
   expect(button('下载加速组件')).toBeUndefined()
   expect(button('CPU').attributes('disabled')).toBeUndefined()
   expect(wrapper.find('.lss-advanced-copy').text()).not.toContain('GPU 加速')
+})
+
+
+it('消息分母固定，进度条按已保存消息占总量计算',async()=>{
+  ready();config.enabled=true
+  jobs=[{id:'run',status:'running',stage:'reading',read_count:26286,processed:25000,chat_index:1,segments:[{},{}],started:1}]
+  messageTotal={job_id:'run',status:'ready',value:58735,fixed:true}
+  await open()
+  expect(wrapper.find('[data-metric=read] strong').text()).toBe('26,286/ 58,735')
+  expect(wrapper.find('[data-metric=read] dt').text()).toContain('本轮总量')
+  expect(wrapper.find('.lss-index-progress').attributes('value')).toBe('42')
+})
+it.each([
+  [{job_id:'old',status:'ready',value:100},'总量统计中'],
+  [{job_id:'run',status:'counting'},'总量统计中'],
+  [{job_id:'run',status:'unavailable'},'总量统计未完成'],
+  [{job_id:'run',status:'ready',value:5,estimated:true},'总量统计中'],
+])('缺失或失效总量不伪造消息分母：%j',async(total,hint)=>{
+  ready();config.enabled=true
+  jobs=[{id:'run',status:'running',stage:'reading',processed:10,started:1}]
+  messageTotal=total
+  await open()
+  expect(wrapper.find('.lss-total-denominator').exists()).toBe(false)
+  expect(wrapper.find('[data-metric=read]').text()).toContain(hint)
+})
+it('历史完成任务缺少固定清单时兼容实际读取数，包括零消息',async()=>{
+  ready();config.enabled=true
+  jobs=[{id:'done',status:'done',stage:'done',processed:0,started:1,finished:2}]
+  messageTotal={job_id:'done',status:'ready',value:20,estimated:true}
+  await open()
+  expect(wrapper.find('[data-metric=read] strong').text()).toBe('0/ 0')
+  expect(wrapper.find('[data-metric=read] dt').text()).toContain('本轮总量')
+})
+
+
+it('统计阶段不展示临时总量与假百分比',async()=>{
+  ready();config.enabled=true
+  jobs=[{id:'count',status:'running',stage:'counting',processed:0,started:1,segments:[{},{}]}]
+  messageTotal={job_id:'count',status:'counting',value:10000}
+  await open()
+  expect(wrapper.find('.lss-status-title').text()).toBe('正在统计消息总量')
+  expect(wrapper.find('.lss-index-progress').attributes('value')).toBeUndefined()
+  expect(wrapper.find('.lss-total-denominator').exists()).toBe(false)
+  expect(wrapper.find('.lss-status-footer').text()).toContain('统计完成后开始整理')
+})
+it('固定分母在暂停和完成时保持一致，不按结果重写',async()=>{
+  ready();config.enabled=true
+  jobs=[{id:'run',status:'paused',stage:'embedding',processed:100,started:1,updated:1}]
+  messageTotal={job_id:'run',status:'ready',value:500,fixed:true}
+  await open()
+  expect(wrapper.find('.lss-total-denominator').text()).toBe('/ 500')
+  jobs=[{...jobs[0],status:'done',processed:499,updated:2,finished:2}]
+  onEvent({kind:'local_search_index',account:'test-account',body:jobs[0]})
+  await flushPromises()
+  // 即便旧接口给了不一致的完成数，界面也不偷偷降低分母或补成 100%。
+  expect(wrapper.find('.lss-total-denominator').text()).toBe('/ 500')
+  expect(wrapper.find('.lss-index-progress').attributes('value')).toBe('99')
 })

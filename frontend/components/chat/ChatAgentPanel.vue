@@ -30,7 +30,7 @@
       <p v-if="threadLoading" class="agent-loading" role="status">正在打开对话…</p>
       <AssistantThread :key="thread?.id || selectionKey" :messages="assistantMessages" :running="running" @scroll="onScroll" @ready="onThreadReady">
         <template #welcome>
-        <div v-if="!thread?.messages?.length && !threadLoading" class="agent-welcome"><span class="agent-welcome-symbol"><i class="fa-regular fa-comment-dots" aria-hidden="true" /></span><h3>想从聊天里了解什么？</h3><p>查找消息、梳理进展，或继续追问。<br>从当前聊天开始，可按需查找其他聊天，回答附上原文出处。</p><button v-for="q in suggestions" :key="q" type="button" @click="draft = q">{{ q }}<i class="fa-solid fa-arrow-up" aria-hidden="true"></i></button></div>
+        <div v-if="!thread?.messages?.length && !threadLoading" class="agent-welcome"><span class="agent-welcome-symbol"><i class="fa-regular fa-comment-dots" aria-hidden="true" /></span><h3>想从聊天里了解什么？</h3><p>查找消息、梳理进展，或继续追问。<br>从当前聊天开始，可按需查找其他聊天，回答附上原文出处。</p><button v-for="q in suggestions" :key="q" type="button" :disabled="sending || running || !account || (!contact?.username && !legacyView)" @click="sendSuggestion(q)">{{ q }}<i class="fa-solid fa-arrow-up" aria-hidden="true"></i></button></div>
         </template>
         <template #message="{ message }">
           <div v-if="message.role === 'user'" class="agent-user"><p>{{ message.text }}</p></div>
@@ -54,7 +54,6 @@
           </div>
         </div>
         <small v-if="modelSelection.state.notice" class="agent-error" role="status">{{ modelSelection.state.notice }} <button v-if="modelSelection.state.dirty" type="button" @click="modelSelection.choose(modelChoice)">重试保存</button></small>
-        <small class="agent-disclaimer" role="status">{{ running ? (stopping ? '正在停止…' : 'Enter 补充要求 · 模型设置下轮生效') : '围绕当前聊天 · 可按需查找其他聊天' }}</small>
       </footer>
       </div>
       <AgentSourceInspector v-if="inspectedSource" :source="inspectedSource.source" :number="inspectedSource.number" :prepare="prepareSource" :locate="locateSource" @close="closeInspector(true)" />
@@ -280,7 +279,7 @@ const ensureThread = async () => {
   saved.value.selected[key] = created.id; thread.value = created; saved.value.drafts[draftKey.value] = oldDraft; void loadHistory(); return created
 }
 const send = async () => {
-  if (threadLoading.value || sending.value || !draft.value.trim() || (!props.contact?.username && !legacyView.value)) return
+  if (threadLoading.value || sending.value || !props.account || !draft.value.trim() || (!props.contact?.username && !legacyView.value)) return
   if (new TextEncoder().encode(draft.value.trim()).length > 1048576) { error.value = '输入超过 1 MiB，请分次发送。'; return }
   const text = draft.value.trim(), oldKey = draftKey.value, sendKey = selectionKey.value
   sending.value = true
@@ -308,6 +307,11 @@ const send = async () => {
     if (account === props.account) void loadHistory()
   })
   if (sendKey === selectionKey.value) sending.value = false
+}
+const sendSuggestion = async question => {
+  if (threadLoading.value || sending.value || running.value || !props.account || (!props.contact?.username && !legacyView.value)) return
+  draft.value = question
+  await send()
 }
 const primaryAction = async () => {
   if (!running.value) return send()

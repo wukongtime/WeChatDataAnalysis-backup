@@ -12,6 +12,7 @@ import { computed, reactive, ref, watchEffect } from 'vue'
 import AgentRun from '../../components/chat/AgentRun.vue'
 const showSubtasks = ref(new URLSearchParams(location.search).has('subtasks'))
 const metadataPreview = new URLSearchParams(location.search).has('metadata')
+const nodesPreview = new URLSearchParams(location.search).has('nodes')
 const now = Date.now(), start = now / 1000 - (showSubtasks.value ? 570 : 42)
 const complete = ref(!showSubtasks.value && !metadataPreview), dark = ref(false), views = reactive({'大视图':{},'窄侧栏':{}})
 watchEffect(() => { document.documentElement.dataset.theme = dark.value ? 'dark' : 'light'; globalThis.progressPreviewCompleted = complete.value })
@@ -31,6 +32,17 @@ const run = computed(() => ({
   ],
   answer:complete.value?'主要讨论了三件事：\n\n- **工作安排**：聊到了接下来的打算，以及还有哪些事项待确认。\n- **电脑配件**：比较了升级成本，也讨论了继续使用现有配置。\n- **约饭与费用**：更新了碰面安排和费用处理方式。':'',
   citations:[],usage:{calls:4,input_tokens:2400,output_tokens:620},
+  // 节点详情使用合成分页数据，核对长列表与窄侧栏中的展开效果。
+  ...(nodesPreview ? {
+    read_count:1554,elapsed_seconds:212,answer:'最近主要讨论了工作安排、电脑配件和约饭。',
+    timeline:[{id:'scope',seq:1,kind:'tool',action:'select_chat_scope',text:'确定查询范围',status:'completed',started_at:start,finished_at:start+7},
+      ...[176,174,168,172,174,136,176,174,174,30].map((returned,index)=>({
+        id:`read-${index}`,seq:index+2,kind:'tool',action:'read_messages',text:'读取聊天记录',username:'sample',
+        status:complete.value || index!==1?'completed':'running',started_at:start+7+index*5,
+        ...(complete.value || index!==1?{finished_at:start+12+index*5}:{}),
+        start:1789142400,end:1789401600,offset:index*200,result:{returned,has_more:index<9},
+      }))],
+  } : {}),
   // 复现长状态区的示例，验证折叠后在大视图与窄侧栏中的信息密度。
   ...(metadataPreview ? {
     read_count:1000,source_count:1000,used:{models:8,media:0},

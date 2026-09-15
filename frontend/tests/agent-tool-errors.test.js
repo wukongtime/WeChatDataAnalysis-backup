@@ -1,6 +1,33 @@
 import { mount } from '@vue/test-utils'
+import { reactive } from 'vue'
 import { expect, it } from 'vitest'
 import AgentToolCall from '../components/chat/AgentToolCall.vue'
+
+it.each([true, false])('读取节点独立展开并在进度更新后保留选择（外部状态：%s）', async external => {
+  const items = [0, 1].map(index => ({ id:`read-${index}`,action:'read_messages',status:'completed',username:'sample',offset:index*200,started_at:100,finished_at:105,result:{returned:176-index*2} }))
+  const viewState = external ? reactive({}) : undefined
+  const props = {items,viewState,now:105000,nameFor:()=> '测试聊天'}
+  let view = mount(AgentToolCall, {props})
+  const group = view.find('.agent-tool')
+  group.element.open = true; await group.trigger('toggle')
+  const nodes = view.findAll('.agent-tool-inspection')
+  expect(nodes.every(node => !node.element.open)).toBe(true)
+  nodes[0].element.open = true; await nodes[0].trigger('toggle')
+  expect(nodes[1].element.open).toBe(false)
+  const panel = nodes[0].find('.agent-tool-inspection-panel')
+  expect(panel.find('header').text()).toBe('读取聊天记录')
+  expect(panel.find('.agent-tool-request').text()).toContain('分页位置：0')
+  expect(panel.find('.agent-tool-response').text()).toContain('176 条结果')
+  expect(panel.find('footer').text()).toContain('已完成')
+  await view.setProps({items:items.map(item=>({...item})),now:110000})
+  expect(view.findAll('.agent-tool-inspection')[0].element.open).toBe(true)
+  expect(view.findAll('.agent-tool-inspection')[1].element.open).toBe(false)
+  if (external) {
+    view.unmount(); view = mount(AgentToolCall, {props})
+    expect(view.findAll('.agent-tool-inspection')[0].element.open).toBe(true)
+  }
+  view.unmount()
+})
 
 const failed = { id: 'failed', action: 'search_messages', text: '搜索聊天记录', status: 'failed',
   result: { error: '本轮尚未选择查询范围，请先调用 select_chat_scope', error_code: 'scope_required' } }
