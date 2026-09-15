@@ -332,8 +332,10 @@ def test_index_failure_resume_and_unchanged_update(tmp_path,monkeypatch):
         monkeypatch.setattr(service,'enrichment_version',lambda _:[])
         await service.configure('a',{'enabled':True,'model':'bge-small-zh','days':0,'end':1000,'usernames':['allowed']})
         job=await service.build('a');await service.jobs[job['id']]
-        assert job['status']=='error' and job['processed']==2
-        assert service.index('a').progress(job['id'])['offset']==2
+        # 统计未完成不能提前建索引；统计本身的分页断点可继续。
+        assert job['status']=='error' and job['processed']==0
+        assert service.index('a').progress(job['id']) is None
+        assert service.message_plan(job).segment(0)['offset']==2
         resumed=await service.resume('a',job['id']);await service.jobs[job['id']]
         assert resumed['status']=='done' and resumed['processed']==6
         assert calls==[0,2,2,4]
@@ -407,7 +409,8 @@ def test_model_switch_and_forced_rebuild_recompute_all_vectors(tmp_path, monkeyp
         resumed = await service.resume('a', replacement['id'])
         await service.jobs[resumed['id']]
         assert resumed['status'] == 'done' and resumed['unchanged'] == 0
-        assert reads == [(0, 0)]
+        # 推理失败后直接使用原清单，不重读源消息或更改总量。
+        assert reads == []
         assert sum(count for _, count in encoded) == first['embedded'] == resumed['embedded']
         assert all(root == model_dir(service.downloads.root, target_model) for root, _ in encoded)
         assert service.config('a')['active']['generation'] == resumed['generation']

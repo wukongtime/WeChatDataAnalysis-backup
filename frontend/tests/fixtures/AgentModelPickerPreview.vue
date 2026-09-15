@@ -18,7 +18,7 @@ onMounted(() => { document.querySelectorAll('.agent-model-menu').forEach(menu =>
     <section v-for="width in [440, 320]" :key="width" class="agent-panel preview-panel" :style="{ width: `${width}px` }">
       <header class="agent-header"><strong>AI 助手</strong><span>{{ width }}px</span></header>
       <div class="preview-conversation"><p>模型和思考强度，放在同一个入口。</p><p>点击浮层中间选择模型，选好后回到滑杆。</p></div>
-      <footer class="agent-composer"><div class="agent-input-box"><textarea aria-label="示例问题" placeholder="向当前聊天提问…" rows="1" /><div class="agent-input-actions"><AgentContextRing /><AgentModelPicker v-model="choices[width]" :profiles="profiles" /><button type="button" class="agent-send" aria-label="发送示例问题" disabled><i class="fa-solid fa-arrow-up" /></button></div></div><small class="agent-disclaimer">围绕当前聊天 · 可按需查找其他聊天</small></footer>
+      <footer class="agent-composer"><div class="agent-input-box"><textarea aria-label="示例问题" placeholder="向当前聊天提问…" rows="1" /><div class="agent-input-actions"><AgentContextRing /><AgentModelPicker v-model="choices[width]" :profiles="profiles" /><button type="button" class="agent-send" aria-label="发送示例问题" disabled><i class="fa-solid fa-arrow-up" /></button></div></div></footer>
     </section>
   </main>
   <output class="preview-state">{{ choices }}</output>

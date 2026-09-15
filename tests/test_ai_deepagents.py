@@ -164,9 +164,11 @@ def test_public_progress_precedes_tools_and_survives_final_answer(tmp_path, monk
         assert service.run(run['id'])['subtask_plan_version'] == 2
         for request in client.requests:
             system = '\n'.join(str(message.content) for message in request if message.type == 'system')
-            assert '阶段汇报是长任务的正常工作要求' in system
-            assert '首次拿到有用资料后若仍需继续分析' in system
-            assert '阶段汇报写在面向用户的 assistant 正文中' in system
+            assert '鼓励在长任务中主动分享简短的阶段性进展' in system
+            assert '不要求每次读取、搜索或工具调用都回复' in system
+            assert '不必等到重大新发现才开口' in system
+            assert '避免长任务从头到尾只显示工具记录' in system
+            assert '写在面向用户的 assistant 正文中' in system
         for definition in client.definitions:
             params = definition['function']['parameters']
             assert 'progress_message' not in params.get('required', [])

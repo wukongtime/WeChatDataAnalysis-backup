@@ -43,6 +43,42 @@ const mountPanel = () => mount(ChatAgentPanel, {attachTo:document.body,props:{ac
 const send = async (wrapper,text) => { await wrapper.find('textarea').setValue(text); await wrapper.find('textarea').trigger('keydown',{key:'Enter'}); await flushPromises() }
 
 describe('聊天 Agent', () => {
+  it('点击推荐问题直接发送，提交期间重复点击不会重复请求', async () => {
+    const original = request.getMockImplementation()
+    let release
+    request.mockImplementation(async (path, options) => {
+      if (path.endsWith('/messages')) await new Promise(resolve => { release = resolve })
+      return original(path, options)
+    })
+    const w = mountPanel(); await flushPromises()
+    const suggestion = w.find('.agent-welcome > button')
+    const question = suggestion.text()
+    await suggestion.trigger('click'); await flushPromises()
+    expect(suggestion.attributes('disabled')).toBeDefined()
+    await suggestion.trigger('click'); await flushPromises()
+    const sends = request.mock.calls.filter(([path]) => path.endsWith('/messages'))
+    expect(sends).toHaveLength(1)
+    expect(sends[0][1].body.text).toBe(question)
+    release(); await flushPromises()
+    expect(w.find('.agent-user').text()).toBe(question)
+    expect(w.find('textarea').element.value).toBe('')
+    expect(w.find('.agent-live-step .agent-shimmer').exists()).toBe(true)
+    w.unmount()
+  })
+  it('推荐问题发送失败后保留问题供重试', async () => {
+    const original = request.getMockImplementation()
+    request.mockImplementation((path, options) => {
+      if (path.endsWith('/messages')) return Promise.reject(new Error('发送失败，请重试'))
+      return original(path, options)
+    })
+    const w = mountPanel(); await flushPromises()
+    const suggestion = w.find('.agent-welcome > button'), question = suggestion.text()
+    await suggestion.trigger('click'); await flushPromises()
+    expect(w.find('textarea').element.value).toBe(question)
+    expect(w.find('[role="alert"]').text()).toBe('发送失败，请重试')
+    expect(w.find('.agent-send').attributes('disabled')).toBeUndefined()
+    w.unmount()
+  })
   it('未发送时切换即保存，跨账号、新对话和重新挂载沿用最后模型', async () => {
     const original = request.getMockImplementation()
     let choice = { profile_id: 'model', model_id: 'fixture' }

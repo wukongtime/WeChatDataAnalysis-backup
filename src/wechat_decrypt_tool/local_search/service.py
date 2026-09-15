@@ -17,6 +17,7 @@ from .downloads import ModelDownloads
 from .index import SemanticIndex, make_chunks, fuse
 from .inference import LocalInference, InferenceFailure
 from .progressive import ProgressiveIndex, reading_segments, committed_coverage, coverage_complete
+from .totals import MessageTotals
 
 
 DEFAULTS = {'enabled': False, 'model': None, 'usernames': [], 'days': 90,
@@ -24,7 +25,7 @@ DEFAULTS = {'enabled': False, 'model': None, 'usernames': [], 'days': 90,
             'read_batch_size': 0, 'agent_global': False}
 
 
-class LocalSearch(ProgressiveIndex):
+class LocalSearch(ProgressiveIndex, MessageTotals):
     def __init__(self, root=None, model_root=None, reader=None, engine=None):
         self.root = Path(root or get_output_dir() / 'local_search')
         self.store = AIStore(self.root)
@@ -52,6 +53,7 @@ class LocalSearch(ProgressiveIndex):
         cfg = self.config(account) if account else None
         jobs = self.store.list('index_job', account, limit=5) if account else []
         result = {'config': cfg, 'models': self.downloads.models(), 'device': self.engine.status, 'jobs': jobs, 'event_cursor': event_cursor,
+                  'message_total': self.store.get('index_message_total', jobs[0]['id']) if jobs else None,
                   'gpu': {**self.gpu.status(), 'failed': self.engine.gpu_failed}, 'audit': self.store.list('local_usage', account, limit=20) if account else []}
         if account:
             index = self.index(account)
@@ -80,6 +82,7 @@ class LocalSearch(ProgressiveIndex):
         self.store.put('config', cfg, id=account, account=account)
         # 范围或设备变更后，旧任务不得继续提交过期配置。
         await self.pause_account(account)
+        await asyncio.to_thread(self.clear_message_plans, account)
         if cfg.get('active'):
             start=cfg['start'] if cfg['start'] is not None else max(0,int(time.time())-cfg['days']*86400) if cfg['days'] else 0
             await asyncio.to_thread(self.index(account).prune,cfg['active']['generation'],cfg['usernames'],start,cfg['end'] or 2**53)
@@ -146,7 +149,7 @@ class LocalSearch(ProgressiveIndex):
         for id, task in self.jobs.items():
             job = self.store.get('index_job', id)
             if not task.done() and job and job['account'] == account: return job
-        end = cfg['end'] or int(time.time())
+        end = min(cfg['end'] or int(time.time()), int(time.time()))
         start = cfg['start'] if cfg['start'] is not None else max(0, end - cfg['days'] * 86400) if cfg['days'] else 0
         active = cfg.get('active') or {}
         new_generation = rebuild or active.get('model') != cfg['model'] or not active.get('generation')
@@ -204,7 +207,7 @@ class LocalSearch(ProgressiveIndex):
                 await asyncio.gather(task, return_exceptions=True)
 
     @asynccontextmanager
-    async def open_pages(self, account, username, start, end, offset, checkpoint, page_size=0, on_progress=None, on_batch_size=None, cursor=None):
+    async def open_pages(self, account, username, start, end, offset, checkpoint, page_size=0, on_progress=None, on_batch_size=None, cursor=None, frozen=None):
         """在专用线程中顺序推进和关闭游标，避免线程池切换破坏 SQLite 连接。"""
         from ..ai.messages import iter_message_pages
         from .reading import choose_read_batch_size
@@ -222,7 +225,18 @@ class LocalSearch(ProgressiveIndex):
             return size
 
         def pages():
-            if self.reader:
+            if frozen:
+                plan, segment = frozen
+                position = offset
+                while True:
+                    result = plan.page(segment, position, batch_size(), check)
+                    position += len(result['messages'])
+                    if on_progress:
+                        loop.call_soon_threadsafe(on_progress, position)
+                    yield result
+                    if not result['has_more']:
+                        return
+            elif self.reader:
                 # 保留可注入的分页数据源，进度仍按事务提交的消息数量计算。
                 position = offset
                 while True:
@@ -254,6 +268,7 @@ class LocalSearch(ProgressiveIndex):
     @observed('search.run', id_field='task_id', execution=True)
     async def run(self, job):
         cfg, account = job['config'], job['account']
+        plan = None
         def cancelled(): return job['id'] in self.cancelled or account in self.revoked
         def check():
             if cancelled(): raise InferenceFailure('任务已暂停', 'cancelled')
@@ -266,6 +281,7 @@ class LocalSearch(ProgressiveIndex):
                 tokenizer = Tokenizer.from_file(str(root / 'tokenizer.json'))
                 index = self.index(account)
                 self.update(job, status='running', read_count=job['processed'], embedded_count=job['embedded'])
+                plan = await self.count_message_total(job, check)
                 segments = job.get('segments')
                 for position in range(job['chat_index'], len(segments) if segments is not None else len(cfg['usernames'])):
                     segment = segments[position] if segments is not None else None
@@ -287,7 +303,8 @@ class LocalSearch(ProgressiveIndex):
 
                     async with self.open_pages(account, username, read_start, read_end, offset, check,
                             page_size=cfg.get('read_batch_size', 0), on_progress=reading_progress,
-                            on_batch_size=batch_size_changed, cursor=job.get('cursor') if offset else None) as next_page:
+                            on_batch_size=batch_size_changed, cursor=job.get('cursor') if offset else None,
+                            frozen=(plan, position)) as next_page:
                         while True:
                             check()
                             await self.yield_to_queries(check)
@@ -353,6 +370,9 @@ class LocalSearch(ProgressiveIndex):
                             if not more: break
                             offset += len(messages)
                 check()
+                frozen_total = (await asyncio.to_thread(plan.metadata))['total']
+                if job['processed'] != frozen_total:
+                    raise InferenceFailure('本轮消息清单与已保存数量不一致，已保留进度，请重试。', 'count_mismatch')
                 current = self.config(account)
                 if current.get('revision') != cfg.get('revision'): raise InferenceFailure('配置已更新', 'cancelled')
                 # 完成清理、范围约束和统计后才发布成功状态。
@@ -368,6 +388,10 @@ class LocalSearch(ProgressiveIndex):
                 self.store.put('config', current, id=account, account=account)
                 await asyncio.to_thread(index.clear, job['generation'])
                 self.update(job, status='done', stage='done', index_stats=stats, finished=time.time())
+                try:
+                    await asyncio.to_thread(plan.discard)
+                except OSError as error:
+                    failures.report('search.plan.cleanup', error)
             except InferenceFailure as error:
                 diagnostic_event('index.execution.interrupted' if error.category=='cancelled' else 'index.execution.failed',
                                  level=logging.INFO if error.category=='cancelled' else logging.ERROR, error=error)
@@ -376,6 +400,8 @@ class LocalSearch(ProgressiveIndex):
                 diagnostic_event('index.execution.failed', level=logging.ERROR, error=error)
                 self.update(job, status='error', error='索引处理失败，已保留进度，请检查数据源和模型后重试', error_type=type(error).__name__, finished=time.time())
             finally:
+                if account in self.revoked:
+                    await asyncio.to_thread(self.clear_message_plans, account)
                 self.store.put('local_usage', {'kind': 'index', 'account': account, 'model': cfg['model'], 'status':job['status'],
                     'messages': job['processed'], 'chunks': job['embedded'], 'seconds': time.time()-job['started'], **self.engine.status},id=job['id'],account=account)
 
@@ -464,15 +490,21 @@ class LocalSearch(ProgressiveIndex):
         if not cfg['enabled']: cfg['model']=None
         self.store.put('config', cfg, id=account, account=account)
         await asyncio.to_thread(self.index(account).clear)
+        await asyncio.to_thread(self.clear_message_plans, account)
         self.queries.clear()
 
     @observed('search.purge', id_field='task_id')
     def purge(self, account):
         self.revoked.add(account)
-        for job in self.store.list('index_job',account): self.cancelled.add(job['id'])
+        active = False
+        for job in self.store.list('index_job',account):
+            self.cancelled.add(job['id'])
+            active |= job['id'] in self.jobs and not self.jobs[job['id']].done()
         self.store.purge_account(account)
         self.index(account).clear()
         self.queries.clear()
+        if not active:
+            self.clear_message_plans(account)
 
     @observed('search.start', id_field='task_id')
     async def start(self):

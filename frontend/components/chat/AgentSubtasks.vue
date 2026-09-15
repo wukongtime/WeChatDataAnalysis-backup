@@ -20,7 +20,7 @@
       <li v-for="item in items" :key="item.id" class="subtask-item">
         <div class="subtask-heading">
           <strong>{{ item.name }}</strong>
-          <span class="subtask-status" :class="`is-${item.status}`"><i class="fa-solid" :class="statusIcons[item.status] || 'fa-circle-info'" aria-hidden="true" />{{ labels[item.status] || item.status }}</span>
+          <span class="subtask-status" :class="[`is-${item.status}`, { 'agent-shimmer': item.status === 'running' }]"><i v-if="item.status !== 'running'" class="fa-solid" :class="statusIcons[item.status] || 'fa-circle-info'" aria-hidden="true" />{{ labels[item.status] || item.status }}</span>
           <small class="subtask-elapsed">用时 {{ elapsed(item) }}</small>
         </div>
         <p v-if="item.scope_names?.length" class="subtask-range">{{ item.scope_names.join('、') }}</p>
@@ -87,7 +87,7 @@ const rangeLabel = range => {
 }
 const loading = ref(false), error = ref(''), hasMore = ref(false), opened = ref(['queued', 'running'].includes(props.run.status)), locating = ref(false)
 const labels = { queued:'等待执行', running:'分析中', completed:'已完成', failed:'未完成', interrupted:'已暂停', cancelled:'已停止', superseded:'已更新范围' }
-const statusIcons = { queued:'fa-clock', running:'fa-spinner fa-spin', completed:'fa-check', failed:'fa-circle-exclamation', interrupted:'fa-pause', superseded:'fa-rotate' }
+const statusIcons = { queued:'fa-clock', completed:'fa-check', failed:'fa-circle-exclamation', interrupted:'fa-pause', superseded:'fa-rotate' }
 // 只限制默认摘要的篇幅，原始进展始终可以展开查看。
 const progressText = item => String(item.latest_progress?.text || '')
 const objectivePreview = item => { const first = String(item.objective || '').split('\n')[0]; return first.length > 72 ? `${first.slice(0, 72)}…` : first }

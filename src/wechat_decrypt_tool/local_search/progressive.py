@@ -69,8 +69,8 @@ class ProgressiveIndex:
             return None
         jobs = self.store.list('index_job', account, limit=1)
         current_job = jobs[0] if jobs and jobs[0]['config'].get('revision') == cfg.get('revision') else None
-        # 保留当前全账号任务的暂停/错误状态；刷新会话目录不能偷偷恢复用户暂停。
-        if current_job and (current_job['status'] == 'paused' or (cfg.get('agent_global') and current_job['status'] == 'error')):
+        # 本轮聊天范围固定；新会话不能在后台刷新时改配置、打断任务或扩大总量。
+        if current_job and (current_job['status'] == 'paused' or (cfg.get('agent_global') and current_job['status'] in {'queued', 'running', 'error'})):
             return current_job
         from ..ai.agent_tools import ChatTools
         contacts = await ChatTools().conversations(account)

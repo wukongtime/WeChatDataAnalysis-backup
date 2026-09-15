@@ -1,25 +1,30 @@
 <template>
   <details class="agent-tool" :class="[`is-${status}`, { 'is-grouped': grouped }]" :open="expanded" @toggle="expanded = $event.target.open">
     <summary>
-      <i :class="icon" aria-hidden="true" />
-      <span class="agent-tool-title"><span class="agent-tool-label">{{ label }}</span><small v-if="first.query" class="agent-tool-query" :title="first.query">{{ first.query }}</small><small v-if="grouped" class="agent-tool-count">{{ items.length }} 次</small></span>
+      <i v-if="status !== 'running'" :class="icon" aria-hidden="true" />
+      <span class="agent-tool-title"><span class="agent-tool-label" :class="{ 'agent-shimmer': status === 'running' }">{{ label }}</span><small v-if="first.query" class="agent-tool-query" :title="first.query">{{ first.query }}</small><small v-if="grouped" class="agent-tool-count">{{ items.length }} 次</small></span>
       <span v-if="status !== 'completed'" class="agent-tool-outcome">{{ groupOutcome }}</span>
       <span v-else class="agent-tool-summary">{{ summary }}</span>
       <i class="fa-solid fa-chevron-right agent-tool-chevron" aria-hidden="true" />
     </summary>
     <div class="agent-tool-detail" :class="{ 'agent-tool-timeline': grouped }">
       <section v-for="(item, index) in items" :key="item.id" class="agent-tool-attempt">
-        <component :is="grouped ? 'details' : 'div'" class="agent-tool-inspection" :open="grouped && viewState?.[`tool-detail:${item.id}`]" @toggle="viewState && (viewState[`tool-detail:${item.id}`] = $event.target.open)">
-        <summary v-if="grouped" class="agent-tool-attempt-row" :title="item.action === 'commit_findings' ? '展开本次保存详情' : '展开本次读取详情'">
+        <component :is="grouped ? 'details' : 'div'" class="agent-tool-inspection" :open="grouped && inspectionOpen(item.id)" @toggle.stop="setInspectionOpen(item.id, $event.target.open)">
+        <summary v-if="grouped" class="agent-tool-attempt-row" :title="item.action === 'commit_findings' ? '展开本次保存详情' : '展开本次读取详情'" :aria-controls="`tool-inspection-${item.id}`">
           <i class="fa-solid fa-circle agent-tool-node" aria-hidden="true" />
           <strong>{{ item.action === 'commit_findings' ? (index === 0 ? '首次保存' : `第 ${index + 1} 次保存`) : item.action === 'compact_context' ? `第 ${index + 1} 次整理` : item.cached ? '复用已读结果' : index === 0 ? '首次读取' : `第 ${index + 1} 次读取` }}</strong>
           <span>{{ item.status !== 'completed' ? outcome(item.status) : item.cached ? '无需重复读取' : callSummary(item) }}</span>
+          <i class="fa-solid fa-chevron-right agent-attempt-chevron" aria-hidden="true" />
         </summary>
-          <header v-if="!grouped"><strong>{{ toolLabel(item.action) }}</strong><span>{{ outcome(item.status) }} · {{ duration(elapsed(item)) }}</span></header>
-        <p v-if="item.username">会话：{{ nameFor(item.username) }}</p>
+        <div :id="`tool-inspection-${item.id}`" class="agent-tool-inspection-panel" :class="`is-${item.status}`">
+          <header><strong>{{ toolLabel(item.action) }}</strong></header>
+        <div class="agent-tool-request">
+        <p v-if="item.username">会话：{{ nameFor(item.username) || item.username }}</p>
         <p v-if="item.query">搜索：{{ item.query }}</p>
-        <p v-if="item.start || item.end">范围：{{ date(item.start) }} — {{ date(item.end) }}</p>
-        <p v-if="item.offset">分页位置：{{ item.offset }}</p>
+        <p v-if="item.start != null || item.end != null">范围：{{ date(item.start) }} — {{ date(item.end) }}</p>
+        <p v-if="item.offset != null">分页位置：{{ item.offset }}</p>
+        </div>
+        <div class="agent-tool-response">
         <p v-if="item.detail && item.status === 'running'">{{ item.detail }}</p>
         <p v-if="item.action === 'compact_context' && item.result?.saved">笔记已保存 · 上下文 {{ item.result.before }} → {{ item.result.after }} 预算单位 · {{ item.result.covered_fragments }} 个原文片段</p>
         <p v-else-if="item.action === 'commit_findings' && item.status === 'completed'">{{ saveSummary(item) }}</p>
@@ -32,6 +37,12 @@
         <p v-if="item.result?.warning" class="agent-coverage">{{ item.result.warning }}</p>
         <p v-if="item.result?.note && item.result.note !== item.result.error">{{ item.result.note }}</p>
         <p v-if="['failed','paused','superseded'].includes(item.status)">{{ recovered.has(item.id) ? '本次保存失败，后续已重试并保存成功。' : item.status === 'failed' ? '这一步未完成，已读取资料会保留。' : item.status === 'superseded' ? '已根据补充要求调整。' : '这一步已暂停。' }}</p>
+        </div>
+        <footer class="agent-tool-inspection-status">
+          <span>{{ duration(elapsed(item)) }}</span>
+          <span :class="{ 'agent-shimmer': item.status === 'running' }"><i v-if="item.status !== 'running'" :class="item.status === 'completed' ? 'fa-solid fa-check' : item.status === 'failed' ? 'fa-solid fa-circle-exclamation' : 'fa-regular fa-circle-pause'" aria-hidden="true" />{{ outcome(item.status) || '状态未知' }}</span>
+        </footer>
+        </div>
         </component>
       </section>
     </div>
@@ -46,6 +57,10 @@ const grouped = computed(() => props.items.length > 1)
 // 过程面板展开时先显示操作摘要，逐次读取明细由用户按需展开。
 const localExpanded = ref(false)
 const expanded = computed({get:()=>props.viewState?.[`tool:${first.value.id}`] ?? localExpanded.value,set:value=>{if(props.viewState) props.viewState[`tool:${first.value.id}`]=value; else localExpanded.value=value}})
+// 每个读取节点独立展开，刷新进度与收起外层时保留用户的阅读位置。
+const localInspections = ref({})
+const inspectionOpen = id => !!(props.viewState || localInspections.value)[`tool-detail:${id}`]
+const setInspectionOpen = (id, value) => { (props.viewState || localInspections.value)[`tool-detail:${id}`] = value }
 // 只有同一范围、页面和输入版本的后续明确保存成功，才能解除历史失败提示。
 // 旧记录缺少标识时保留原状态，不能根据相邻顺序猜测已恢复。
 const pageKey = item => item.action === 'commit_findings' && item.scope_handle && item.page_id && item.input_version != null
@@ -64,8 +79,8 @@ const recovered = computed(() => {
 const effectiveItems = computed(() => props.items.filter(item => !recovered.value.has(item.id)))
 // 未恢复的失败、运行或暂停仍显露，不能被另一页的成功掩盖。
 const status = computed(() => ['running', 'failed', 'paused', 'cancelled', 'interrupted', 'superseded'].find(status => effectiveItems.value.some(item => item.status === status)) || effectiveItems.value[0]?.status)
-const icon = computed(() => status.value === 'running' ? 'fa-solid fa-spinner fa-spin' : status.value === 'failed' ? 'fa-solid fa-circle-exclamation' : status.value !== 'completed' ? 'fa-regular fa-circle-pause' : first.value.action?.includes('search') ? 'fa-solid fa-magnifying-glass' : first.value.action === 'analyze_media' ? 'fa-regular fa-images' : 'fa-regular fa-file-lines')
-const toolLabel = action => ({ commit_findings: '保存分析发现', search_messages: '搜索聊天记录', read_messages: '读取消息', read_context: '读取消息上下文', analyze_media: '分析媒体', find_conversations: '查找会话', search_material: '搜索附件内容', read_material: '读取附件', read_results: '读取分析结果' }[action] || '工具调用')
+const icon = computed(() => status.value === 'failed' ? 'fa-solid fa-circle-exclamation' : status.value !== 'completed' ? 'fa-regular fa-circle-pause' : first.value.action?.includes('search') ? 'fa-solid fa-magnifying-glass' : first.value.action === 'analyze_media' ? 'fa-regular fa-images' : 'fa-regular fa-file-lines')
+const toolLabel = action => ({ compact_context: '整理上下文', select_chat_scope: '确定查询范围', commit_findings: '保存分析发现', search_messages: '搜索聊天记录', read_messages: '读取聊天记录', read_context: '读取消息上下文', analyze_media: '分析媒体', find_conversations: '查找会话', search_material: '搜索附件内容', read_material: '读取附件', read_results: '读取分析结果' }[action] || '工具调用')
 const label = computed(() => first.value.action === 'compact_context' ? '整理上下文' : ['search_messages', 'read_context'].includes(first.value.action) ? toolLabel(first.value.action) : (first.value.text || toolLabel(first.value.action)).replace(/^(核对|读取)了/, '$1'))
 const outcome = status => ({ completed: '已完成', running: '进行中', failed: '失败', paused: '已暂停', cancelled: '已停止', interrupted: '已中断', superseded: '已调整' }[status] || '')
 const groupOutcome = computed(() => status.value !== 'running' && grouped.value && props.items.some(item => item.status === 'completed') && props.items.some(item => item.status !== 'completed') ? '部分完成' : outcome(status.value))
@@ -94,6 +109,6 @@ const summary = computed(() => {
   const reused = props.items.filter(item => item.cached).length
   return [fresh.length ? `${fresh.reduce((sum, item) => sum + returned(item), 0)} 条消息` : '', reused ? `含 ${reused} 次复用` : ''].filter(Boolean).join(' · ')
 })
-const date = value => value ? new Date(value * 1000).toLocaleString() : '不限'
+const date = value => value != null ? new Date(value * 1000).toLocaleString() : '不限'
 const retrievalLabel = item => item.result?.data_source === 'realtime_keyword' ? '实时关键词回查 · 无关原文仅在本机过滤' : item.result?.retrieval_mode === 'hybrid' ? '智能检索：关键词＋语义（按意思查找）' : item.result?.retrieval_mode === 'keyword' ? '已退回关键词检索 · 展开查看原因' : item.status === 'running' ? '正在确认检索方式' : '此步骤未记录实际检索方式'
 </script>

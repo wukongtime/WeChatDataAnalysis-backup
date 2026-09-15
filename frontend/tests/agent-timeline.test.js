@@ -76,36 +76,23 @@ it('旧任务只提供新引擎重新运行入口', async () => {
 describe('Agent 执行对话流',()=>{
   it('运行中的模型调用次数使用 SSE 增量，不把尚未汇总的用量显示为零', async () => {
     const w = setup({run:{...base(),used:{models:5},usage:{calls:0,input_tokens:0,output_tokens:0}}})
-    expect(w.find('.agent-run-metadata').text()).toContain('5 次模型调用')
     expect(w.find('.agent-usage').text()).not.toContain('输入 0')
-    expect(w.find('.agent-usage').text()).toContain('本轮结束后汇总')
+    expect(w.find('.agent-usage').text()).toBe('输入 待汇总 · 输出 待汇总 Token')
     await w.setProps({run:{...base(),status:'completed',used:{models:5},usage:{calls:5,input_tokens:1200,output_tokens:300}}})
     expect(w.find('.agent-usage').text()).toContain('输入 1200 · 输出 300 Token')
     w.unmount()
   })
-  it('全账号覆盖按需分页，进度刷新和重新挂载保留展开状态及页码', async () => {
-    const coverage = Array.from({length:779}, (_,i) => ({username:`聊天${i}`,read:i===400?5:0,analyzed:0,complete:false,warning:i===400?'读取尚未完成':''}))
-    const viewState = reactive({run1:true})
-    const r = {...base(),analysis:{known:true,coverage,complete:false}}
-    const props = {run:r,viewState,nameFor:value=>value}
-    let w = setup(props)
-    await w.find('[aria-controls="run-details-run1"]').trigger('click')
-    expect(w.find('[aria-label="逐聊天读取覆盖"]').exists()).toBe(false)
-    await w.find('[aria-controls="reading-coverage-run1"]').trigger('click')
-    const region = () => w.find('[aria-label="逐聊天读取覆盖"]')
-    expect(region().findAll('p')).toHaveLength(20)
-    expect(region().text()).toContain('第 1 / 39 页')
-    const next = () => region().findAll('button').find(b=>b.text()==='下一页覆盖')
-    for(let i=0;i<20;i++) await next().trigger('click')
-    expect(region().text()).toContain('聊天400：读取 5 条，分析 0 条 · 待继续 · 读取尚未完成')
-    await w.setProps({run:{...r,updated_at:200}})
-    expect(region().text()).toContain('第 21 / 39 页')
-    w.unmount(); w=setup(props)
-    expect(region().text()).toContain('第 21 / 39 页')
-    viewState['run1:coveragePage']=38
-    await w.setProps({now:201000})
-    expect(region().findAll('p')).toHaveLength(19)
-    expect(next().attributes('disabled')).toBeDefined()
+  it('用量直接显示，旧详情展开状态不会恢复已移除的统计和入口', () => {
+    const w = setup({run:{...base(),status:'completed',usage:{calls:6,input_tokens:100,output_tokens:20,unknown:1},
+      query_filters:{conversations:['friend']},time_range:{start:100,end:200},
+      analysis:{known:true,coverage:[{username:'friend',read:50}],segments:2},
+      index_status:{enabled:true,message:'语义索引已暂停'}},viewState:reactive({'run1:details':true,'run1:readingCoverage':true})})
+    expect(w.find('.agent-usage').isVisible()).toBe(true)
+    expect(w.find('.agent-usage').text()).toBe('输入 100 · 输出 20 Token')
+    expect(w.find('.agent-usage').attributes('title')).toContain('已知部分')
+    expect(w.find('.agent-run-details').exists()).toBe(false)
+    for (const label of ['运行详情','执行统计','聊天范围','查询时间','逐聊天覆盖','语义索引已暂停','查看用量审计']) expect(w.text()).not.toContain(label)
+    expect(w.find('.agent-materials-link').exists()).toBe(true)
     w.unmount()
   })
   it('Agent 小提示使用实际分析进度，长时间等待说明也留在过程区域', async () => {
@@ -151,7 +138,8 @@ describe('Agent 执行对话流',()=>{
     expect(w.find('.agent-process').isVisible()).toBe(false)
     expect(w.find('.agent-live-step').isVisible()).toBe(true)
     expect(w.find('.agent-live-caption').text()).toBe('AI 助手')
-    expect(w.find('.agent-live-step .fa-spin').exists()).toBe(true)
+    expect(w.find('.agent-live-step .fa-spin').exists()).toBe(false)
+    expect(w.find('.agent-live-step .agent-shimmer').text()).toBe(w.find('.agent-stream-status').text())
     expect(w.find('.agent-stream-status').text()).toBe('理解问题与读取范围')
     expect(w.find('.agent-process-title').text()).toBe('执行中')
     expect(w.find('.agent-process-meta').text()).toBe('0分5秒')
@@ -207,9 +195,8 @@ describe('Agent 执行对话流',()=>{
     expect(text.indexOf('2分21秒')).toBeLessThan(text.indexOf('搜索报价'))
     expect(text).not.toContain('用量与读取范围')
     expect(w.find('.agent-run-metadata > summary').exists()).toBe(false)
-    expect(w.find('.agent-run-metadata').text()).toContain('6 次模型调用')
-    expect(w.find('.agent-run-details').isVisible()).toBe(false)
-    await w.find('[aria-controls="run-details-run1"]').trigger('click')
+    expect(w.find('.agent-run-details').exists()).toBe(false)
+    expect(w.find('.agent-usage').text()).toBe('输入 100 · 输出 20 Token')
     expect(w.find('.agent-usage').isVisible()).toBe(true)
     await w.find('.agent-process-toggle').trigger('click')
     expect(w.find('.agent-final-answer').isVisible()).toBe(true)
