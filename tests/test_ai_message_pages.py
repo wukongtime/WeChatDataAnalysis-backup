@@ -349,12 +349,18 @@ def test_index_stream_resumes_only_committed_batches(message_source, tmp_path, m
         assert job['status'] == 'error' and job['processed'] == 500
         assert job['read_count'] == 1000
         assert service.index('a').progress(job['id'])['offset'] == 500
-        assert state['closed'] == 1
+        assert state['opens'] == state['closed'] == 1
+        assert service.status('a')['message_total']['value'] == 1250
+        scanned = state['scanned']
+        # 本轮清单已固定，恢复仅处理尚未提交的批次；源消息变化也不能触发重新扫描。
+        state['rows'].clear()
         resumed = await service.resume('a', job['id'])
         await service.jobs[job['id']]
         assert resumed['status'] == 'done'
         assert resumed['processed'] == resumed['read_count'] == 1250
-        assert state['opens'] == state['closed'] == 2
+        assert state['opens'] == state['closed'] == 1
+        assert state['scanned'] == scanned
+        assert service.status('a')['message_total']['value'] == 1250
         with service.index('a').connection() as db:
             assert db.execute('SELECT count(*) FROM messages').fetchone()[0] == 1250
         events = service.store.events()

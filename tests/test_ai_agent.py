@@ -266,7 +266,8 @@ def test_supplement_received_while_waiting_and_no_duplicate_worker(service):
         service.model.waiting.set()
         # 首个旧动作会被丢弃，补充后需要重新执行读取。
         service.model.actions.insert(1, AgentAction(action='read_messages', username='friend'))
-        await asyncio.wait_for(replacement, 5)
+        # CI 的 SQLite 持久化可能超过 5 秒；超时应报告等待失败，不能取消任务后误判为业务中断。
+        await asyncio.wait_for(asyncio.shield(replacement), 60)
         saved = service.run(task['id'])
         assert saved['version'] == saved['applied_version'] == 2
         assert saved['status'] == 'completed', saved
