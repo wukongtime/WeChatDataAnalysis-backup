@@ -177,3 +177,119 @@ def test_cancelled_request_remains_in_audit(tmp_path):
     row = service.store.list("usage")[0]
     assert row["status"] == "cancelled" and row["usage_known"] is False
     assert row["finished_at"] >= row["started_at"]
+
+
+@pytest.mark.parametrize('bad', ['', 'private model text', '{"overview":123}'])
+def test_schema_retry_adds_safe_feedback_and_explicit_json_mode(tmp_path, monkeypatch, bad):
+    from types import SimpleNamespace
+    calls = []
+    class Client:
+        async def ainvoke(self, messages, **kwargs):
+            calls.append((list(messages), kwargs))
+            return SimpleNamespace(content=bad if len(calls) == 1 else '{"overview":"ok","topics":[],"conclusions":[],"todos":[]}',
+                usage_metadata={'input_tokens': 10, 'output_tokens': 2}, response_metadata={'finish_reason': 'stop'})
+    async def no_wait(*args): pass
+    monkeypatch.setattr(asyncio, 'sleep', no_wait)
+    service = ModelService(AIStore(tmp_path)); service.client = lambda p: Client()
+    result = asyncio.run(service.invoke({'id':'p', 'protocol':'openai', 'model_metadata':{'structured_output':True}}, 'private source', Summary))
+    assert result['overview'] == 'ok'
+    assert len(calls) == 2
+    assert all(kwargs['response_format'] == {'type':'json_object'} for _, kwargs in calls)
+    correction = calls[1][0][-1].content
+    assert '上次结果未通过' in correction
+    assert 'private model text' not in correction and 'private source' not in correction
+    rows = service.store.list('usage')
+    failed = next(r for r in rows if r['status'] == 'failed')
+    assert failed['validation_errors'] and failed['response_chars'] == len(bad)
+    assert failed['finish_reason'] == 'stop'
+    assert 'private' not in json.dumps(rows)
+
+
+def test_unsupported_json_mode_falls_back_without_changing_profile(tmp_path):
+    from types import SimpleNamespace
+    calls = []
+    class Client:
+        async def ainvoke(self, messages, **kwargs):
+            calls.append(kwargs)
+            if 'response_format' in kwargs:
+                error = RuntimeError('unsupported'); error.status_code = 400
+                raise error
+            return SimpleNamespace(content='{"overview":"ok","topics":[],"conclusions":[],"todos":[]}', usage_metadata={})
+    profile = {'id':'p', 'protocol':'openai', 'model_metadata':{'structured_output':True}}
+    service = ModelService(AIStore(tmp_path)); service.client = lambda p: Client()
+    assert asyncio.run(service.invoke(profile, '资料', Summary))['overview'] == 'ok'
+    assert len(calls) == 2 and 'response_format' not in calls[1]
+    assert profile['model_metadata']['structured_output'] is True
+
+
+def test_xiaomi_settings_profile_uses_confirmed_capabilities_without_invented_effort(tmp_path):
+    from wechat_decrypt_tool.ai.schemas import ProviderInput
+    from wechat_decrypt_tool.ai.providers import analysis_messages
+
+    preset = next(p for p in PRESETS if p['provider'] == 'xiaomi')
+    saved = ProviderInput(**preset, model='mimo-v2.5', api_key='test-only').model_dump()
+    service = ModelService(AIStore(tmp_path))
+    # 目录列出多模态和窗口；JSON 能力由官方文档补充，不制造推理等级。
+    service.metadata.data = {'xiaomi': {'api': preset['base_url'], 'models': {
+        'mimo-v2.5': {'reasoning': True, 'reasoning_options': [{'type': 'toggle'}],
+            'limit': {'context': 1048576, 'output': 131072},
+            'modalities': {'input': ['text', 'image', 'audio', 'video'], 'output': ['text']}}
+    }}}
+    service.store.put('profile', saved, id='xiaomi-profile')
+    profile = service.resolve_turn('xiaomi-profile')
+    assert profile['context_window'] == 1048576 and profile['vision'] is True
+    metadata = profile['model_metadata']
+    assert metadata['structured_output'] is True
+    assert metadata['field_sources']['structured_output'] == 'provider-docs'
+    assert not metadata.get('reasoning_efforts')
+    with pytest.raises(ProviderFailure, match='未声明'):
+        service.resolve_turn('xiaomi-profile', reasoning_effort='high')
+    client = service.client(profile)
+    payload = client._get_request_payload(analysis_messages('测试', Summary),
+        response_format={'type': 'json_object'}, max_tokens=131072)
+    assert payload['model'] == 'mimo-v2.5'
+    assert payload['max_completion_tokens'] == 131072
+    assert payload['response_format'] == {'type': 'json_object'}
+    assert 'reasoning_effort' not in payload
+    assert service.store.get('profile', 'xiaomi-profile')['model'] == 'mimo-v2.5'
+
+
+@pytest.mark.parametrize('changes', [
+    {'base_url': 'https://proxy.example/v1'}, {'base_url': 'https://api.xiaomimimo.com:8443/v1'},
+    {'base_url': 'https://api.xiaomimimo.com/proxy/v1'},
+    {'protocol': 'anthropic'}, {'model': 'mimo-v2.5-future'},
+])
+def test_documented_xiaomi_capabilities_do_not_leak_to_other_endpoints(tmp_path, changes):
+    from wechat_decrypt_tool.ai.model_catalog import ModelCatalog
+    profile = {'provider': 'xiaomi', 'base_url': 'https://api.xiaomimimo.com/v1',
+        'protocol': 'openai', 'model': 'mimo-v2.5', **changes}
+    assert ModelCatalog(tmp_path).automatic(profile) is None
+
+
+def test_xiaomi_explicit_upstream_and_manual_capabilities_override_documentation(tmp_path):
+    service = ModelService(AIStore(tmp_path))
+    profile = {'id': 'p', 'provider': 'xiaomi', 'base_url': 'https://api.xiaomimimo.com/v1',
+        'protocol': 'openai', 'model': 'mimo-v2.5'}
+    service.metadata.remember(profile, [{'id': 'mimo-v2.5', 'structured_output': False}])
+    metadata = service.metadata.automatic(profile)
+    assert metadata['structured_output'] is False
+    assert metadata['field_sources']['structured_output'] == 'upstream'
+    profile['model_overrides'] = {'structured_output': True}
+    metadata = service.metadata.enrich(profile)['model_metadata']
+    assert metadata['structured_output'] is True
+    assert metadata['field_sources']['structured_output'] == 'manual'
+
+
+@pytest.mark.parametrize('model', ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'])
+def test_official_deepseek_auxiliary_toggle_preserves_explicit_reasoning(model):
+    from wechat_decrypt_tool.ai.model_execution import model_policy
+    profile = {'provider': 'deepseek', 'protocol': 'openai', 'model': model,
+        'base_url': 'https://api.deepseek.com/v1', 'api_key': 'test-only'}
+    with model_policy(auxiliary=True):
+        assert ModelService.client(profile).extra_body == {'thinking': {'type': 'disabled'}}
+        explicit = ModelService.client({**profile, 'reasoning_effort': 'high'})
+        assert explicit.reasoning_effort == 'high'
+        assert explicit.extra_body == {'thinking': {'type': 'enabled'}}
+        assert not ModelService.client({**profile, 'base_url': 'https://proxy.example/v1'}).extra_body
+        assert not ModelService.client({**profile, 'model': 'deepseek-unknown'}).extra_body
+    assert not ModelService.client(profile).extra_body

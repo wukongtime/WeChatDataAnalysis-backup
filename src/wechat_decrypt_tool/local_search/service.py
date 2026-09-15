@@ -3,7 +3,7 @@ from ..ai.diagnostics import observed, event as diagnostic_event, context as dia
 import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 import hashlib
 from pathlib import Path
 import threading
@@ -16,14 +16,15 @@ from .catalog import model_dir, model_spec
 from .downloads import ModelDownloads
 from .index import SemanticIndex, make_chunks, fuse
 from .inference import LocalInference, InferenceFailure
+from .progressive import ProgressiveIndex, reading_segments, committed_coverage, coverage_complete
 
 
 DEFAULTS = {'enabled': False, 'model': None, 'usernames': [], 'days': 90,
             'start': None, 'end': None, 'device': 'auto', 'device_id': 0, 'auto_update': True,
-            'read_batch_size': 0}
+            'read_batch_size': 0, 'agent_global': False}
 
 
-class LocalSearch:
+class LocalSearch(ProgressiveIndex):
     def __init__(self, root=None, model_root=None, reader=None, engine=None):
         self.root = Path(root or get_output_dir() / 'local_search')
         self.store = AIStore(self.root)
@@ -34,6 +35,7 @@ class LocalSearch:
         self.reader = reader
         self.jobs, self.cancelled, self.revoked, self.queries = {}, set(), set(), {}
         self.restarting=set()
+        self.foreground_queries = 0
         self.queue_lock = asyncio.Lock()
         self.model_lock = asyncio.Lock()
         self.loop_task = None
@@ -86,6 +88,9 @@ class LocalSearch:
             cfg['active'] = {**active, 'usernames': [u for u in active.get('usernames', []) if u in cfg['usernames']],
                              'start': max(active.get('start', start), start),
                              'end': min(active.get('end', cfg['end'] or 2**53), cfg['end'] or 2**53)}
+            if 'coverage' in active:
+                cfg['active']['coverage'] = committed_coverage({'config': cfg, 'generation': active['generation'],
+                    'start': cfg['active']['start'], 'end': cfg['active']['end']})
             self.store.put('config', cfg, id=account, account=account)
         self.queries.clear()
         return cfg
@@ -129,6 +134,11 @@ class LocalSearch:
 
     @observed('search.build', id_field='task_id')
     async def build(self, account, rebuild=False, incremental=True):
+        # 后台调度和前台提问可能同时触发；创建任务与配置更新共用锁。
+        async with self.model_lock:
+            return await self._build(account, rebuild, incremental)
+
+    async def _build(self, account, rebuild=False, incremental=True):
         cfg = self.config(account)
         if not cfg['enabled']: raise ValueError('请先启用本地语义检索')
         if not cfg['usernames']: raise ValueError('请选择需要建立索引的聊天')
@@ -158,6 +168,9 @@ class LocalSearch:
                'incremental': recent_only, 'enrichment': enrichment,
                'start': start, 'end': end, 'chat_index': 0, 'offset': 0, 'processed': 0,
                'embedded': 0, 'unchanged': 0, 'status': 'queued', 'stage': 'queued', 'started': time.time(), 'warning': '', 'error': ''}
+        if cfg.get('agent_global'):
+            job['segments'] = reading_segments(cfg['usernames'], read_starts, end)
+            job['coverage'] = {}
         self.update(job)
         self.jobs[job['id']] = asyncio.create_task(self.run(job))
         return job
@@ -253,10 +266,13 @@ class LocalSearch:
                 tokenizer = Tokenizer.from_file(str(root / 'tokenizer.json'))
                 index = self.index(account)
                 self.update(job, status='running', read_count=job['processed'], embedded_count=job['embedded'])
-                for position in range(job['chat_index'], len(cfg['usernames'])):
-                    username = cfg['usernames'][position]
+                segments = job.get('segments')
+                for position in range(job['chat_index'], len(segments) if segments is not None else len(cfg['usernames'])):
+                    segment = segments[position] if segments is not None else None
+                    username = segment['username'] if segment else cfg['usernames'][position]
                     offset = job['offset'] if position == job['chat_index'] else 0
-                    read_start = job.get('read_starts', {}).get(username, job.get('read_start', job['start']))
+                    read_start = segment['start'] if segment else job.get('read_starts', {}).get(username, job.get('read_start', job['start']))
+                    read_end = segment['end'] if segment else job['end']
                     read_base = job['processed'] - offset
 
                     def reading_progress(count):
@@ -269,11 +285,12 @@ class LocalSearch:
                         if not cancelled() and job.get('read_batch_size_effective') != size:
                             self.update(job, read_batch_size_effective=size)
 
-                    async with self.open_pages(account, username, read_start, job['end'], offset, check,
+                    async with self.open_pages(account, username, read_start, read_end, offset, check,
                             page_size=cfg.get('read_batch_size', 0), on_progress=reading_progress,
                             on_batch_size=batch_size_changed, cursor=job.get('cursor') if offset else None) as next_page:
                         while True:
                             check()
+                            await self.yield_to_queries(check)
                             self.update(job, stage='reading', current_chat=username)
                             page_started = time.monotonic()
                             diagnostic_event('index.page.started', username=username, offset=offset, start=read_start, end=job['end'])
@@ -281,11 +298,13 @@ class LocalSearch:
                             check()
                             messages = result['messages']
                             diagnostic_event('index.page.finished', username=username, offset=offset, count=len(messages), has_more=result.get('has_more',False), duration_ms=(time.monotonic()-page_started)*1000)
+                            await self.yield_to_queries(check)
                             for m in messages:
                                 raw = m.get('media') or {}
                                 m['sender_id'] = raw.get('senderUsername') or m.get('sender', '')
                                 m['name'] = result.get('name', username)
                             await asyncio.to_thread(self.local_text, account, messages)
+                            await self.yield_to_queries(check)
                             self.update(job, stage='organizing', read_count=job['processed'] + len(messages))
                             unchanged = await asyncio.to_thread(index.existing, job['generation'], messages)
                             changed = await asyncio.to_thread(index.affected_messages, job['generation'], [m for m in messages if m['source'] not in unchanged])
@@ -296,6 +315,7 @@ class LocalSearch:
                             if chunks: self.update(job, stage='embedding')
                             for batch_start in range(0, len(chunks), 8):
                                 check()
+                                await self.yield_to_queries(check)
                                 batch = chunks[batch_start:batch_start + 8]
                                 strategy = cfg['device']
                                 # 语音任务占用显卡时，本地索引主动让出。
@@ -320,9 +340,15 @@ class LocalSearch:
                                         'processed': job['processed'] + len(messages), 'embedded': job['embedded'] + len(chunks),
                                         'unchanged': job.get('unchanged', 0) + len(unchanged),
                                         'warning': result.get('warning', ''), 'source': result.get('source', 'snapshot')}
+                            next_job['coverage'] = {**job.get('coverage', {}), str(position): {
+                                'username': username, 'start': read_start, 'end': read_end,
+                                'last_time': result.get('cursor', {}).get('time') if result.get('cursor') else None,
+                                'processed': offset + len(messages), 'complete': not more,
+                                'warning': result.get('warning', '')}}
                             self.update(job, stage='saving')
                             await asyncio.to_thread(index.commit, job['generation'], changed, chunks, vectors, next_job, check)
                             job.update(next_job)
+                            self.publish_partial(job)
                             self.update(job)
                             if not more: break
                             offset += len(messages)
@@ -332,9 +358,12 @@ class LocalSearch:
                 # 完成清理、范围约束和统计后才发布成功状态。
                 await asyncio.to_thread(index.prune, job['generation'], cfg['usernames'], job['start'], job['end'])
                 stats = await asyncio.to_thread(index.stats, job['generation'])
+                coverage = committed_coverage(job) if cfg.get('agent_global') else job.get('coverage', {})
                 current['active'] = {'generation': job['generation'], 'model': cfg['model'], 'start': job['start'],
                                      'end': job['end'], 'usernames': cfg['usernames'], 'updated': time.time(), 'source': job.get('source'),
                                      'revision': cfg['revision'], 'enrichment': job.get('enrichment'),
+                                     'coverage': coverage,
+                                     'partial': cfg.get('agent_global', False) and not coverage_complete(coverage, cfg['usernames'], job['start'], job['end']),
                                      'reconciled': cfg.get('active',{}).get('reconciled',time.time()) if job.get('incremental') else time.time()}
                 self.store.put('config', current, id=account, account=account)
                 await asyncio.to_thread(index.clear, job['generation'])
@@ -373,18 +402,27 @@ class LocalSearch:
             diagnostic_event('search.ticket.expired', offset=offset, cached=False)
             offset=0
         began = time.monotonic()
+        snapshot_keyword, committed_keyword_hits = keyword, []
+        self.foreground_queries += 1
         try:
+            scope_start = cfg['start'] if cfg['start'] is not None else max(0, int(time.time())-cfg['days']*86400) if cfg['days'] else 0
+            query_start, query_end = max(start or 0, scope_start), min(end if end is not None else 2**53, cfg['end'] if cfg['end'] is not None else 2**53)
+            index = self.index(account)
+            def as_hit(m):
+                return {**m.get('media', {}), 'id': m['anchor'], 'anchorId': m['anchor'], 'username': m['username'],
+                        'conversationName': m.get('name', m['username']), 'senderDisplayName': m['sender'],
+                        'senderUsername': m.get('sender_id', m['sender']), 'createTime': m['time'],
+                        # 索引正文已经包含标题、引用和转写；AI 适配器不能再次拼接这些字段。
+                        'content': m['text'], 'aiText': m['text'], 'snippet': m['text'], 'renderType': m['kind']}
+            literal = await asyncio.to_thread(index.keyword, active['generation'], q, sorted(allowed), query_start, query_end, sender, kinds, 200)
+            # 渐进索引里的新消息可能尚未进入旧全文索引，原文命中必须独立于向量召回。
+            committed_keyword_hits = [as_hit(m) for m in literal]
+            keyword = {**keyword, 'hits': fuse([*committed_keyword_hits, *keyword.get('hits', [])], [])}
             spec = model_spec(active['model'])
             root = model_dir(self.downloads.root, active['model'])
             vectors = await asyncio.to_thread(self.engine.encode, root, spec, [q], cfg['device'], cfg['device_id'], True)
-            scope_start = cfg['start'] if cfg['start'] is not None else max(0, int(time.time())-cfg['days']*86400) if cfg['days'] else 0
-            rows = await asyncio.to_thread(self.index(account).search, active['generation'], vectors[0], sorted(allowed), max(start or 0, scope_start), min(end or 2**53, cfg['end'] or 2**53), sender, kinds, 200)
-            semantic = []
-            for row in rows:
-                m = row['message']
-                semantic.append({**m.get('media', {}), 'id': m['anchor'], 'anchorId': m['anchor'], 'username': m['username'],
-                    'conversationName': m.get('name', m['username']), 'senderDisplayName': m['sender'], 'createTime': m['time'],
-                    'content': m['text'], 'snippet': m['text'], 'renderType': m['kind']})
+            rows = await asyncio.to_thread(index.search, active['generation'], vectors[0], sorted(allowed), query_start, query_end, sender, kinds, 200)
+            semantic = [as_hit(row['message']) for row in rows]
             # 同一片段内的消息共享向量分数；直接匹配原文的消息应先于相邻闲聊。
             needle = q.strip().casefold()
             if needle:
@@ -393,7 +431,8 @@ class LocalSearch:
             diagnostic_event('search.recall.finished', keyword_count=len(keyword.get('hits',[])), semantic_count=len(semantic), returned=len(hits), actual_device=self.engine.status.get('actual_device'))
             coverage = {'message': '语义结果来自已建立的本地索引；新消息、未解析图片和范围外历史可能尚未覆盖。',
                         'start': active['start'], 'end': active['end'], 'updated': active['updated'],
-                        'partial': bool(set(usernames)-allowed) or len(rows) >= 200, 'source': active.get('source')}
+                        'partial': bool(active.get('partial')) or bool(set(usernames)-allowed) or len(rows) >= 200 or len(literal) >= 200,
+                        'ranges': active.get('coverage', {}), 'source': active.get('source')}
             ticket = uuid.uuid4().hex
             response = {**keyword, 'retrievalMode': 'hybrid', 'coverage': coverage, 'total': len(hits), 'searchTicket': ticket,
                         'device': self.engine.status, 'status': 'success', 'resetSearch':reset_search}
@@ -408,7 +447,14 @@ class LocalSearch:
             diagnostic_event('search.keyword.fallback', level=logging.WARNING, error=error, reason_code='semantic_failed')
             self.store.put('local_usage',{'kind':'search','account':account,'model':active.get('model'),'status':'error',
                 'seconds':time.monotonic()-began,'error_type':type(error).__name__,**self.engine.status},account=account)
-            return {**keyword, 'retrievalMode':'keyword','coverage':{'message':'语义检索暂不可用，当前展示关键词结果，请检查本地模型'}}
+            # 旧全文结果已经按 offset 分页，不能再对它重复切片。
+            fallback_hits = fuse([*committed_keyword_hits[offset:offset+limit], *snapshot_keyword.get('hits', [])], [])
+            return {**keyword, 'hits': fallback_hits[:limit],
+                    'total': max(snapshot_keyword.get('total', 0), len(committed_keyword_hits), offset + len(fallback_hits)),
+                    'hasMore': offset + limit < len(committed_keyword_hits) or len(fallback_hits) > limit or bool(snapshot_keyword.get('hasMore')),
+                    'retrievalMode':'keyword','coverage':{'message':'语义检索暂不可用，当前展示关键词结果，请检查本地模型'}}
+        finally:
+            self.foreground_queries -= 1
 
     @observed('search.clear', id_field='task_id')
     async def clear(self, account):
@@ -452,12 +498,11 @@ class LocalSearch:
                     try: self.engine.close()
                     finally: self.engine.lock.release()
                 for cfg in self.store.list('config'):
-                    if not cfg['enabled'] or not cfg['auto_update'] or not cfg.get('active'): continue
-                    jobs = self.store.list('index_job', cfg['account'], limit=1)
-                    if jobs and jobs[0]['status'] != 'done': continue
-                    if cfg.get('end') and cfg['active']['end'] >= cfg['end']:
-                        if await asyncio.to_thread(self.enrichment_version,cfg['account'])==cfg['active'].get('enrichment'): continue
-                    try: await self.build(cfg['account'], incremental=True)
+                    if not cfg['enabled'] or not cfg['auto_update']: continue
+                    # 已开启自动更新的旧配置也迁移为全账号，不必等用户首次提问。
+                    # ensure_global 保留显式暂停、检查模型可用性并只发布已提交覆盖。
+                    try:
+                        await self.ensure_global(cfg['account'])
                     except ValueError as error: failures.report('search.schedule.'+cfg['account'], error)
                 failures.recovered('search.scheduler')
             except Exception as error:
@@ -491,6 +536,21 @@ class LocalSearch:
 
 
 _service = None
+
+
+@contextmanager
+def prioritize_foreground():
+    """仅协调当前已运行的索引；嵌套查询、异常及取消都准确归还计数。"""
+    service = _service
+    if service is not None:
+        service.foreground_queries += 1
+    try:
+        yield
+    finally:
+        if service is not None:
+            service.foreground_queries -= 1
+
+
 def get_local_search():
     global _service
     if _service is None: _service = LocalSearch()

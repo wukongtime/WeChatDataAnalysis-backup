@@ -26,7 +26,6 @@
             <button
               type="button"
               class="calendar-nav-btn"
-              :disabled="timeSidebarLoading"
               title="上个月"
               @click="prevTimeSidebarMonth"
             >
@@ -38,7 +37,6 @@
               <select
                 v-model.number="timeSidebarYear"
                 class="calendar-ym-select"
-                :disabled="timeSidebarLoading"
                 title="选择年份"
                 @change="onTimeSidebarYearMonthChange"
               >
@@ -49,7 +47,6 @@
               <select
                 v-model.number="timeSidebarMonth"
                 class="calendar-ym-select"
-                :disabled="timeSidebarLoading"
                 title="选择月份"
                 @change="onTimeSidebarYearMonthChange"
               >
@@ -61,7 +58,6 @@
             <button
               type="button"
               class="calendar-nav-btn"
-              :disabled="timeSidebarLoading"
               title="下个月"
               @click="nextTimeSidebarMonth"
             >
@@ -71,10 +67,14 @@
             </button>
           </div>
 
-          <ErrorNotice v-if="timeSidebarError" :message="timeSidebarError" compact class="time-sidebar-status time-sidebar-status-error" />
+          <div v-if="timeSidebarError" class="time-sidebar-status time-sidebar-status-error" role="status">
+            <ErrorNotice :message="timeSidebarError" compact />
+            <button type="button" class="mt-2 rounded border border-current px-2 py-1" @click="retryTimeSidebarMonth">重试</button>
+          </div>
           <div v-else class="time-sidebar-status">
             <span v-if="timeSidebarLoading">加载中...</span>
-            <span v-else>本月 {{ timeSidebarTotal }} 条消息，{{ timeSidebarActiveDays }} 天有聊天</span>
+            <span v-else-if="timeSidebarReady">本月 {{ timeSidebarTotal }} 条消息，{{ timeSidebarActiveDays }} 天有聊天</span>
+            <span v-else>尚未完成统计</span>
           </div>
 
           <div class="calendar-weekdays">

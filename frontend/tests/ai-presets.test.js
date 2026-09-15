@@ -31,12 +31,26 @@ const choose = async provider => {
 const manualInput = () => wrapper.findAll('label').find(label => label.text().includes('手动输入（备用）')).find('input')
 
 describe('AI 服务预设', () => {
+  it('通过设置保存已确认的原生等级，清空后恢复自动识别', async () => {
+    await open(); await choose('ollama')
+    const levels = wrapper.find('[aria-label="供应商确认的原生推理等级"]')
+    await levels.setValue('low， high, max, low')
+    await levels.trigger('change')
+    await wrapper.find('form').trigger('submit'); await flushPromises()
+    expect(request.mock.calls.find(([path]) => path === '/profiles')[1].body.model_overrides.reasoning_efforts).toEqual(['low', 'high', 'max'])
+    await wrapper.find('.ais-add').trigger('click'); await choose('ollama')
+    const cleared = wrapper.find('[aria-label="供应商确认的原生推理等级"]')
+    await cleared.setValue('low, high'); await cleared.trigger('change')
+    await cleared.setValue(''); await cleared.trigger('change')
+    await wrapper.find('form').trigger('submit'); await flushPromises()
+    expect(request.mock.calls.filter(([path]) => path === '/profiles').at(-1)[1].body.model_overrides.reasoning_efforts).toBeUndefined()
+  })
   it('显示全部预设，自定义位于末尾，搜索别名并清空无结果状态', async () => {
     await open()
-    expect(wrapper.findAll('.ais-provider-choice')).toHaveLength(14)
+    expect(wrapper.findAll('.ais-provider-choice')).toHaveLength(presets.length)
     expect(wrapper.findAll('.ais-provider-choice').at(-1).text()).toContain('自定义')
     const search = wrapper.find('.ais-provider-search input')
-    for (const [query, provider] of [['谷歌', 'gemini'], ['千问', 'qwen'], [' gLm ', 'zhipu'], ['火山', 'doubao'], ['SiliconCloud', 'siliconflow'], ['lmstudio', 'lmstudio']]) {
+    for (const [query, provider] of [['小米', 'xiaomi'], ['MiMo', 'xiaomi'], ['谷歌', 'gemini'], ['千问', 'qwen'], [' gLm ', 'zhipu'], ['火山', 'doubao'], ['SiliconCloud', 'siliconflow'], ['lmstudio', 'lmstudio']]) {
       await search.setValue(query)
       expect(wrapper.findAll('.ais-provider-choice')).toHaveLength(1)
       expect(wrapper.find(`.ais-provider-choice [data-provider="${provider}"]`).exists()).toBe(true)
@@ -44,7 +58,7 @@ describe('AI 服务预设', () => {
     await search.setValue('没有这家服务')
     expect(wrapper.find('[role=status]').text()).toContain('没有匹配的 AI 服务')
     await wrapper.findAll('button').find(button => button.text() === '清空搜索').trigger('click')
-    expect(wrapper.findAll('.ais-provider-choice')).toHaveLength(14)
+    expect(wrapper.findAll('.ais-provider-choice')).toHaveLength(presets.length)
   })
 
   it.each(presets)('$name 正确预填并支持保存，不内置模型或图片能力', async preset => {
@@ -90,7 +104,7 @@ describe('AI 服务预设', () => {
     expect(wrapper.text()).not.toContain('old-model')
     expect(wrapper.find('.ais-primary').attributes('disabled')).toBeDefined()
     await wrapper.find('.ais-change-provider').trigger('click')
-    expect(wrapper.findAll('.ais-provider-choice')).toHaveLength(14)
+    expect(wrapper.findAll('.ais-provider-choice')).toHaveLength(presets.length)
   })
 
   it.each(['ollama', 'lmstudio'])('%s 失败提示检查本地服务，仍可手动填写后保存', async provider => {
@@ -170,7 +184,7 @@ describe('AI 服务预设', () => {
 it('模块导航统一显示用途，并支持键盘切换', async()=>{
   wrapper=mount(AiSettings,{attachTo:document.body,global:{stubs:{LocalSearchSettings:true}}})
   await flushPromises()
-  expect(wrapper.findAll('[role=tab]').map(tab=>tab.text())).toEqual(['模型服务连接与默认模型','本地检索按意思查找聊天','用量记录调用明细与消耗'])
+  expect(wrapper.findAll('[role=tab]').map(tab=>tab.text())).toEqual(['模型服务连接与模型配置','本地检索按意思查找聊天','用量记录调用明细与消耗'])
   await wrapper.find('#ais-config-tab').trigger('keydown',{key:'ArrowRight'});await flushPromises()
   expect(wrapper.find('#ais-local-tab').attributes('aria-selected')).toBe('true')
   expect(document.activeElement.id).toBe('ais-local-tab')
@@ -263,5 +277,5 @@ it('恢复自动识别可清除手动覆盖，切换模型不会沿用上个模�
   await wrapper.find('input[placeholder="上游不支持获取列表时手动填写"]').setValue('unknown-model')
   expect(wrapper.find('input[type=number]').element.value).toBe('')
   expect(wrapper.find('[role=switch]').element.checked).toBe(false)
-  expect(wrapper.text()).not.toContain('恢复自动识别')
+  expect(wrapper.findAll('button').some(button => button.text() === '恢复自动识别')).toBe(false)
 })

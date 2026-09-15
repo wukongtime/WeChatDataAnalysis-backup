@@ -5,7 +5,7 @@
   "main": "src/main.cjs",
   "scripts": {
     "dev": "node scripts/dev.cjs",
-    "dev:static": "npm --prefix ../frontend run generate && cross-env ELECTRON_START_URL=http://127.0.0.1:10392 electron .",
+    "dev:static": "npm --prefix ../frontend run generate && cross-env WECHAT_TOOL_STATIC_UI=1 electron .",
     "build:ui": "npm --prefix ../frontend run generate && node scripts/copy-ui.cjs",
     "build:backend": "uv sync --no-editable --extra build --extra voice-transcription && node scripts/build-backend.cjs",
     "build:icon": "node scripts/build-icon.cjs",

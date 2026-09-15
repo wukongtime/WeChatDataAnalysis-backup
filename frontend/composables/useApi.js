@@ -368,7 +368,37 @@ export const useApi = () => {
     if (params && params.month != null) query.set('month', String(params.month))
     if (params && params.source) query.set('source', params.source)
     const url = '/chat/messages/daily_counts' + (query.toString() ? `?${query.toString()}` : '')
-    return await request(url)
+    // 外部 signal 存在时也必须生效；部分 fetch 包装器会跳过自身的 timeout。
+    const controller = new AbortController()
+    const abort = () => controller.abort(params.signal?.reason)
+    let rejectAbort
+    const aborted = new Promise((_, reject) => { rejectAbort = reject })
+    const onAbort = () => rejectAbort(controller.signal.reason || new DOMException('请求已取消', 'AbortError'))
+    controller.signal.addEventListener('abort', onAbort, { once: true })
+    params.signal?.addEventListener('abort', abort, { once: true })
+    if (params.signal?.aborted) abort()
+    const timer = setTimeout(() => {
+      controller.abort(new DOMException('加载日历超时，请重试', 'TimeoutError'))
+    }, 20_000)
+    try {
+      if (controller.signal.aborted) return await aborted
+      return await Promise.race([
+        aborted,
+        request(url, { signal: controller.signal, timeout: 20_000, retry: 0 })
+      ])
+    } catch (error) {
+      if (controller.signal.reason?.name === 'TimeoutError') {
+        throw new Error('加载日历超时，请重试')
+      }
+      if (controller.signal.aborted) throw controller.signal.reason || error
+      // 保留后端的中文错误，网络错误使用可读的中文提示。
+      if (error?.status || error?.statusCode) throw error
+      throw new Error('加载日历失败，请检查连接后重试')
+    } finally {
+      clearTimeout(timer)
+      params.signal?.removeEventListener('abort', abort)
+      controller.signal.removeEventListener('abort', onAbort)
+    }
   }
 
   // 聊天记录定位锚点：某日第一条 / 会话最早一条

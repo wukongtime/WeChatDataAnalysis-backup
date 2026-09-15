@@ -8,10 +8,12 @@
     <div class="agent-thread-items" :aria-busy="loading">
       <p v-if="loading && !items.length" class="agent-thread-empty" role="status">正在加载会话…</p>
       <p v-else-if="!filtered.length" class="agent-thread-empty">{{ query ? '没有匹配的会话' : '还没有对话，点击上方开始。' }}</p>
-      <article v-for="item in filtered" :key="item.id" class="agent-thread-item" :class="{ 'is-current': item.id === current, 'has-menu': menu === item.id }">
+      <article v-for="item in filtered" :key="item.id" class="agent-thread-item" :class="{ 'is-current': item.id === current, 'has-menu': menu === item.id, 'is-running': isRunning(item) }">
         <button type="button" class="agent-thread-select" :aria-current="item.id === current ? 'page' : undefined" :title="item.title || '新的对话'" @click="$emit('select', item)"><span>{{ item.title || '新的对话' }}</span><small><span>{{ nameFor(item.username) }}</span></small></button>
-        <span v-if="isRunning(item)" class="agent-thread-running" role="status" :aria-label="`${item.title || '新的对话'}：正在处理`" title="正在处理"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true" /></span>
-        <button type="button" class="agent-thread-more" :aria-label="`管理会话：${item.title || '新的对话'}`" aria-haspopup="menu" :aria-controls="menu === item.id ? menuId : undefined" :aria-expanded="menu === item.id" @click="openMenu(item, $event)"><i class="fa-solid fa-ellipsis" aria-hidden="true" /></button>
+        <div class="agent-thread-actions">
+          <span v-if="isRunning(item)" class="agent-thread-running" role="status" :aria-label="`${item.title || '新的对话'}：正在处理`" title="正在处理"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true" /></span>
+          <button type="button" class="agent-thread-more" :aria-label="`管理会话：${item.title || '新的对话'}`" aria-haspopup="menu" :aria-controls="menu === item.id ? menuId : undefined" :aria-expanded="menu === item.id" @click="openMenu(item, $event)"><i class="fa-solid fa-ellipsis" aria-hidden="true" /></button>
+        </div>
       </article>
     </div>
     <div v-if="selected" :id="menuId" ref="popup" popover="auto" class="agent-thread-management" :class="{ 'is-confirming': editing || deleting }" :role="editing || deleting ? 'dialog' : 'menu'" :aria-label="editing ? '重命名对话' : deleting ? '删除对话' : '会话操作'" @keydown="onKeydown" @toggle="onToggle">

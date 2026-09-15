@@ -869,6 +869,8 @@ export const useChatMessages = ({
       toggleImageGroupExpanded(groupKey, true)
     }
     await nextTick()
+    // 跨会话替换列表后先等待布局提交；平滑滚动可能被路由布局更新中断。
+    await new Promise(resolve => requestAnimationFrame(resolve))
     const container = messageContainerRef.value
     let element = container?.querySelector?.(`[data-msg-id="${CSS.escape(target)}"]`)
     if (!element) {
@@ -879,8 +881,12 @@ export const useChatMessages = ({
       }
     }
     if (!element || typeof element.scrollIntoView !== 'function') return false
-    element.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    return true
+    element.scrollIntoView({ block: 'center', behavior: 'instant' })
+    await new Promise(resolve => requestAnimationFrame(resolve))
+    // “定位成功”必须代表原消息已进入可见区，而非仅发出了滚动请求。
+    if (messageContainerRef.value !== container || !container.contains(element)) return false
+    const viewport = container.getBoundingClientRect(), bounds = element.getBoundingClientRect()
+    return bounds.height > 0 && bounds.bottom > viewport.top && bounds.top < viewport.bottom
   }
 
   const toImagePreviewItem = (url, source = {}) => {

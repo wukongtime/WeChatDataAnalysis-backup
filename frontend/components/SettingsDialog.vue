@@ -1110,7 +1110,12 @@ const scrollToFocusTarget = async () => {
     scrollToSection('voice')
     return
   }
-  if (focusTarget !== 'log-file') return
+  if (focusTarget !== 'log-file') {
+    // 弹窗重新挂载后滚动区回到顶部，同步栏目标题，避免沿用上次高亮。
+    await nextTick()
+    onContentScroll()
+    return
+  }
   await nextTick()
   activeSection.value = 'desktop'
   const scrollHost = contentScrollRef.value

@@ -1,8 +1,51 @@
 import { mount } from '@vue/test-utils'
 import { reactive } from 'vue'
 import { describe, expect, it } from 'vitest'
+import { scanExports } from 'unimport'
+import { resolve } from 'node:path'
 import AgentRun from '../components/chat/AgentRun.vue'
-import { mergeTimeline, groupTimelineTools } from '../utils/agentTimeline'
+import { mergeTimeline, groupTimelineTools, mergeRunEvent } from '../utils/agentTimeline'
+
+it('Nuxt 扫描时间线工具时不把函数参数注册成全局导出', async () => {
+  const scanned = await scanExports(resolve('utils/agentTimeline.js'), false)
+  expect(scanned.map(item => item.name).sort()).toEqual([
+    'groupTimelineTools', 'mergeReferenceData', 'mergeRunEvent', 'mergeTimeline',
+  ])
+})
+
+it('SSE 重放按任务版本和时间合并预算、覆盖和状态', () => {
+  const original = {id:'r',version:1,updated_at:10,status:'running',answer:'已显示内容',timeline:[]}
+  const next = mergeRunEvent(original, {run_id:'r',version:2,updated_at:20,status:'running',
+    context_budget:{run_id:'r',version:2,used:60},coverage:{run_id:'r',version:2,complete:false,conversations:[{username:'new'}]}})
+  expect(next.version).toBe(2)
+  expect(next.answer).toBe('已显示内容')
+  expect(mergeRunEvent(next, {run_id:'r',version:1,updated_at:30,status:'completed'})).toBe(next)
+  const replay = mergeRunEvent(next, {run_id:'r',version:2,updated_at:15,status:'completed',context_budget:{used:99},coverage:{complete:true,conversations:[]}})
+  expect(replay).toEqual(next)
+  const foreign = mergeRunEvent(next, {run_id:'r',version:2,updated_at:21,context_budget:{run_id:'other',version:2,used:5},coverage:{run_id:'r',version:1,complete:true}})
+  expect(foreign.context_budget.used).toBe(60)
+  expect(foreign.analysis.coverage).toEqual([{username:'new'}])
+  expect(mergeRunEvent(next, {run_id:'other',version:9})).toBe(next)
+})
+
+it('重复的同版步骤不覆盖已显示的来源身份', () => {
+  const item = {id:'answer:r',kind:'answer',revision:2,text:'已显示正文'}
+  const current = {id:'r',version:1,timeline:[item],references:[{id:'p',name:'乙'}]}
+  const next = mergeRunEvent(current, {run_id:'r',version:1,timeline_item:{...item},references:[{id:'p',name:'错误姓名'}]})
+  expect(next.references[0].name).toBe('乙')
+})
+
+it('终态 SSE 快照补齐回答、用量、覆盖和全部引用', () => {
+  const current = {id:'r',version:1,updated_at:10,status:'running',answer:'流式草稿',timeline:[],citations:[],references:[]}
+  const event = {type:'run_snapshot',run_id:'r',version:1,updated_at:20,status:'completed',
+    patch:{answer:'最终回答',finished_at:20,usage:{calls:2,input_tokens:10,output_tokens:5},source_count:3,
+      analysis:{known:true,complete:true,coverage:[],segments:1,findings:2,analyzed:3}},
+    citations:[{source:'a'}],references:[{id:'p',kind:'person'}]}
+  const next = mergeRunEvent(current,event)
+  expect(next).toMatchObject({status:'completed',answer:'最终回答',finished_at:20,source_count:3,usage:{calls:2},analysis:{complete:true}})
+  expect(next.citations).toEqual([{source:'a'}])
+  expect(next.references).toEqual([{id:'p',kind:'person'}])
+})
 
 const base = () => ({id:'run1',status:'running',stage:'搜索聊天记录',segment_started:100,stage_started_at:101,elapsed_seconds:0,read_count:50,timeline:[
   {id:'tool1',seq:1,revision:2,kind:'tool',text:'搜索报价',status:'completed',started_at:100,finished_at:102,result:{returned:8}},
@@ -11,18 +54,71 @@ const base = () => ({id:'run1',status:'running',stage:'搜索聊天记录',segme
 ],answer:'',citations:[]})
 const setup = (extra={}) => mount(AgentRun,{attachTo:document.body,props:{run:base(),now:105000,nearBottom:true,latest:true,viewState:reactive({}),...extra}})
 
+it('DeepAgents 简单对话隐藏查询元信息和空出处', () => {
+  const wrapper = setup({ run: { ...base(), status: 'completed', coverage_state: 'not_applicable', answer: '你好！',
+    read_count: 0, source_count: 0, timeline: [], citations: [], analysis: { known: false } } })
+  expect(wrapper.text()).not.toContain('范围覆盖情况未知')
+  expect(wrapper.text()).not.toContain('查看出处')
+  expect(wrapper.text()).not.toContain('语义索引')
+  wrapper.unmount()
+})
+
+it('旧任务只提供新引擎重新运行入口', async () => {
+  const wrapper = setup({ run: { ...base(), status: 'interrupted', engine: 'legacy', restart_required: true, can_resume: false } })
+  const restart = wrapper.findAll('button').find(button => button.text() === '使用新引擎重新运行')
+  expect(restart).toBeTruthy()
+  await restart.trigger('click')
+  expect(wrapper.emitted('restart')).toHaveLength(1)
+  expect(wrapper.findAll('button').some(button => button.text() === '继续')).toBe(false)
+  wrapper.unmount()
+})
+
 describe('Agent 执行对话流',()=>{
+  it('运行中的模型调用次数使用 SSE 增量，不把尚未汇总的用量显示为零', async () => {
+    const w = setup({run:{...base(),used:{models:5},usage:{calls:0,input_tokens:0,output_tokens:0}}})
+    expect(w.find('.agent-run-metadata').text()).toContain('5 次模型调用')
+    expect(w.find('.agent-usage').text()).not.toContain('输入 0')
+    expect(w.find('.agent-usage').text()).toContain('本轮结束后汇总')
+    await w.setProps({run:{...base(),status:'completed',used:{models:5},usage:{calls:5,input_tokens:1200,output_tokens:300}}})
+    expect(w.find('.agent-usage').text()).toContain('输入 1200 · 输出 300 Token')
+    w.unmount()
+  })
+  it('全账号覆盖按需分页，进度刷新和重新挂载保留展开状态及页码', async () => {
+    const coverage = Array.from({length:779}, (_,i) => ({username:`聊天${i}`,read:i===400?5:0,analyzed:0,complete:false,warning:i===400?'读取尚未完成':''}))
+    const viewState = reactive({run1:true})
+    const r = {...base(),analysis:{known:true,coverage,complete:false}}
+    const props = {run:r,viewState,nameFor:value=>value}
+    let w = setup(props)
+    await w.find('[aria-controls="run-details-run1"]').trigger('click')
+    expect(w.find('[aria-label="逐聊天读取覆盖"]').exists()).toBe(false)
+    await w.find('[aria-controls="reading-coverage-run1"]').trigger('click')
+    const region = () => w.find('[aria-label="逐聊天读取覆盖"]')
+    expect(region().findAll('p')).toHaveLength(20)
+    expect(region().text()).toContain('第 1 / 39 页')
+    const next = () => region().findAll('button').find(b=>b.text()==='下一页覆盖')
+    for(let i=0;i<20;i++) await next().trigger('click')
+    expect(region().text()).toContain('聊天400：读取 5 条，分析 0 条 · 待继续 · 读取尚未完成')
+    await w.setProps({run:{...r,updated_at:200}})
+    expect(region().text()).toContain('第 21 / 39 页')
+    w.unmount(); w=setup(props)
+    expect(region().text()).toContain('第 21 / 39 页')
+    viewState['run1:coveragePage']=38
+    await w.setProps({now:201000})
+    expect(region().findAll('p')).toHaveLength(19)
+    expect(next().attributes('disabled')).toBeDefined()
+    w.unmount()
+  })
   it('Agent 小提示使用实际分析进度，长时间等待说明也留在过程区域', async () => {
     const r={...base(),stage:'正在分段分析',analysis:{known:true,analyzed:20,complete:false}}
     const w=setup({run:r,now:132000})
-    expect(w.find('.agent-live-hint').text()).toBe('已读取 50 条，已分析 20 条。')
+    expect(w.find('.agent-live-hint').text()).toBe('已读取 50 条，已提交分析 20 条。')
     expect(w.find('.agent-live-step .agent-wait-note').exists()).toBe(true)
     await w.find('.agent-process-toggle').trigger('click')
     expect(w.find('.agent-process').isVisible()).toBe(false)
     expect(w.find('.agent-live-step').isVisible()).toBe(true)
     expect(w.find('.agent-run-metadata').isVisible()).toBe(false)
     await w.setProps({run:{...r,analysis:{known:true,analyzed:50,complete:true}}})
-    expect(w.find('.agent-live-hint').text()).toBe('已读取 50 条，已分析 50 条，范围处理完成。')
+    expect(w.find('.agent-live-hint').text()).toBe('已读取 50 条，已提交分析 50 条，范围处理完成。')
     await w.setProps({run:{...r,status:'failed',error:'服务暂时不可用'}})
     expect(w.find('.agent-live-step').exists()).toBe(false)
     expect(w.find('.agent-error').isVisible()).toBe(true)
@@ -43,8 +139,7 @@ describe('Agent 执行对话流',()=>{
     ])
     expect(w.find('.agent-stream-status').text()).toBe('正在分段分析')
     await w.setProps({run:{...r,status:'completed',answer:'总结',timeline:timeline.map(x=>x.id==='s4'?{...x,status:'completed',finished_at:113}:x)}})
-    expect(w.find('.agent-process-body').isVisible()).toBe(false)
-    await w.find('.agent-process-toggle').trigger('click')
+    expect(w.find('.agent-process-body').isVisible()).toBe(true)
     expect(w.findAll('.agent-stage-row')).toHaveLength(4)
     expect(w.findAll('.agent-stage-row').at(-1).text()).toContain('已完成 · 4秒')
     w.unmount()
@@ -58,10 +153,11 @@ describe('Agent 执行对话流',()=>{
     expect(w.find('.agent-live-caption').text()).toBe('AI 助手')
     expect(w.find('.agent-live-step .fa-spin').exists()).toBe(true)
     expect(w.find('.agent-stream-status').text()).toBe('理解问题与读取范围')
-    expect(w.find('.agent-process-meta').text()).toContain('执行中 · 5秒')
+    expect(w.find('.agent-process-title').text()).toBe('执行中')
+    expect(w.find('.agent-process-meta').text()).toBe('0分5秒')
     expect(w.find('.agent-live-step time').text()).toBe('5秒')
     await w.setProps({now:109000})
-    expect(w.find('.agent-process-meta').text()).toContain('执行中 · 9秒')
+    expect(w.find('.agent-process-meta').text()).toBe('0分9秒')
     await w.find('.agent-process-toggle').trigger('click')
     expect(w.find('.agent-process-body').isVisible()).toBe(true)
     await w.find('.agent-process-toggle').trigger('click')
@@ -78,6 +174,7 @@ describe('Agent 执行对话流',()=>{
   })
   it('回答辅助操作共用工具栏，资料说明按需展开且不受过程折叠影响', async () => {
     const w = setup({run:{...base(),status:'completed',answer:'最终回答内容',coverage_warnings:['图片尚未读取','文件尚未解析']}})
+    await w.find('.agent-process-toggle').trigger('click')
     const actions = w.find('.agent-result-actions')
     expect(actions.find('[aria-label="复制回答"]').exists()).toBe(true)
     expect(actions.find('[aria-label="查看出处"]').text()).toBe('出处')
@@ -96,32 +193,35 @@ describe('Agent 执行对话流',()=>{
     expect(actions.find('.agent-copy-action').exists()).toBe(false)
     w.unmount()
   })
-  it('完成后默认只显示回答，展开可查看过程和用量，再次收起一起隐藏', async () => {
-    const w = setup({run:{...base(),status:'completed',elapsed_seconds:141,answer:'约饭定在周三',usage:{calls:6,input_tokens:100,output_tokens:20}}})
+  it('完成后默认展开过程，仍可手动收起过程和用量', async () => {
+    const w = setup({run:{...base(),timeline:base().timeline.filter(item=>item.kind!=='progress'),status:'completed',elapsed_seconds:141,answer:'约饭定在周三',usage:{calls:6,input_tokens:100,output_tokens:20}}})
     expect(w.find('.agent-process-toggle').text()).toContain('执行过程')
-    expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('false')
-    expect(w.find('.agent-process').isVisible()).toBe(false)
-    expect(w.find('.agent-run-metadata').element.style.display).toBe('none')
+    expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('true')
     expect(w.find('.agent-final-answer').isVisible()).toBe(true)
-    await w.find('.agent-process-toggle').trigger('click')
     expect(w.find('.agent-process').isVisible()).toBe(true)
     expect(w.find('.agent-run-metadata').element.style.display).not.toBe('none')
     const text = w.text()
-    expect(w.find('.agent-process-toggle').text()).toContain('已完成 · 2分21秒')
-    expect(text.indexOf('已完成 · 2分21秒')).toBeLessThan(text.indexOf('搜索报价'))
-    expect(text.indexOf('用量与读取范围')).toBeLessThan(text.indexOf('约饭定在周三'))
-    expect(w.find('.agent-run-metadata').element.open).toBe(false)
-    expect(w.find('.agent-run-metadata > summary').text()).toContain('6 次模型调用')
+    expect(w.find('.agent-process-title').text()).toBe('执行过程')
+    expect(w.find('.agent-process-meta').text()).toBe('2分21秒')
+    expect(w.find('.agent-process-toggle').text()).not.toMatch(/已完成|项操作|展开|收起/)
+    expect(text.indexOf('2分21秒')).toBeLessThan(text.indexOf('搜索报价'))
+    expect(text).not.toContain('用量与读取范围')
+    expect(w.find('.agent-run-metadata > summary').exists()).toBe(false)
+    expect(w.find('.agent-run-metadata').text()).toContain('6 次模型调用')
+    expect(w.find('.agent-run-details').isVisible()).toBe(false)
+    await w.find('[aria-controls="run-details-run1"]').trigger('click')
+    expect(w.find('.agent-usage').isVisible()).toBe(true)
     await w.find('.agent-process-toggle').trigger('click')
     expect(w.find('.agent-final-answer').isVisible()).toBe(true)
     expect(w.find('.agent-run-metadata').element.style.display).toBe('none')
     w.unmount()
   })
-  it('过程与回答有独立区域，阶段小结有标签，未完成回答不会标为最终回答', async () => {
+  it('过程与回答有独立区域，阶段回复直接呈现为段落，未完成回答不会标为最终回答', async () => {
     const w = setup({run:{...base(),answer:'正在整理的回答'}})
     const process = w.find('.agent-process-panel')
     expect(process.attributes('aria-label')).toBe('执行过程')
-    expect(process.find('.agent-progress-caption').text()).toBe('阶段小结')
+    expect(process.find('[aria-label="阶段性回复"]').text()).toContain('找到两次报价')
+    expect(process.find('.agent-progress-caption').exists()).toBe(false)
     expect(process.find('.agent-run-metadata').exists()).toBe(true)
     expect(process.find('.agent-final-answer').exists()).toBe(false)
     expect(w.find('.agent-answer-heading').text()).toBe('正在回答')
@@ -166,13 +266,17 @@ describe('Agent 执行对话流',()=>{
     expect(w.find('.agent-stream-status').text()).toContain('搜索聊天记录')
     w.unmount()
   })
-  it('按顺序显示工具和关键进展，完成后默认收起并可重新展开',async()=>{
+  it('按顺序显示工具和关键进展，完成后保留可见并支持一键收起',async()=>{
     const w=setup()
     expect(w.text().indexOf('搜索报价')).toBeLessThan(w.text().indexOf('找到两次报价'))
     expect(w.text().indexOf('找到两次报价')).toBeLessThan(w.text().indexOf('读取后续消息'))
     await w.setProps({run:{...base(),status:'completed',answer:'最终报价为100元',elapsed_seconds:5}})
-    expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('false')
+    expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('true')
+    expect(w.find('.agent-progress-note').isVisible()).toBe(true)
     expect(w.find('.agent-final-answer').text()).toContain('最终报价')
+    await w.find('.agent-process-toggle').trigger('click')
+    expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('false')
+    expect(w.find('.agent-final-answer').isVisible()).toBe(true)
     await w.find('.agent-process-toggle').trigger('click')
     expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('true')
     w.unmount()
@@ -220,7 +324,8 @@ describe('Agent 执行对话流',()=>{
     const w = setup({run:r})
     expect(w.findAll('.agent-tool')).toHaveLength(1)
     expect(w.find('.agent-tool > summary').text()).toContain('2 次')
-    expect(w.find('.agent-tool > summary').text()).toContain('失败')
+    expect(w.find('.agent-tool > summary').text()).toContain('部分完成')
+    expect(w.find('.agent-tool-detail').text()).toContain('失败')
     expect(w.find('.agent-tool > summary').text()).not.toContain('21')
     expect(w.findAll('.agent-tool-attempt')).toHaveLength(2)
     expect(w.find('.agent-tool-detail').text()).toContain('复用已读结果')
@@ -232,6 +337,35 @@ describe('Agent 执行对话流',()=>{
     expect(grouped).toHaveLength(5)
     w.unmount()
   })
+  it('整理记录保留实际压缩结果，恢复中的新尝试优先显示进行中', async () => {
+    const a={id:'compact-a',kind:'tool',action:'compact_context',text:'已整理阶段笔记',status:'completed',result:{saved:true,before:47872,after:24523,covered_fragments:120}}
+    const b={...a,id:'compact-b',text:'整理未完成，原文已保留',status:'failed',result:undefined}
+    const w=setup({run:{...base(),timeline:[a,b]}})
+    expect(w.find('.agent-tool > summary').text()).toContain('整理上下文')
+    expect(w.find('.agent-tool > summary').text()).toContain('部分完成')
+    expect(w.find('.agent-tool-detail').text()).toContain('47872 → 24523 预算单位 · 120 个原文片段')
+    expect(w.find('.agent-tool-detail').text()).not.toContain('0 条结果')
+    await w.setProps({run:{...base(),timeline:[a,b,{...b,id:'compact-c',status:'running'}]}})
+    expect(w.find('.agent-tool').classes()).toContain('is-running')
+    expect(w.find('.agent-tool > summary').text()).toContain('进行中')
+    expect(w.find('.agent-tool-detail').text()).toContain('失败')
+    w.unmount()
+  })
+  it('阶段性回复折叠状态在重新挂载后保留，事件重放不重复插入段落', async () => {
+    const viewState = reactive({})
+    let run = {...base(),status:'completed',answer:'最终回答'}
+    let w = setup({run,viewState})
+    expect(w.findAll('[aria-label="阶段性回复"]')).toHaveLength(1)
+    await w.find('.agent-process-toggle').trigger('click')
+    w.unmount()
+    run = mergeRunEvent(run, {run_id:run.id,timeline_item:run.timeline[1]})
+    w = setup({run,viewState})
+    expect(w.find('.agent-process').isVisible()).toBe(false)
+    await w.find('.agent-process-toggle').trigger('click')
+    expect(w.findAll('[aria-label="阶段性回复"]')).toHaveLength(1)
+    expect(w.find('.agent-progress-note').isVisible()).toBe(true)
+    w.unmount()
+  })
   it('重放与乱序更新按记录修订号去重',()=>{
     const current=[{id:'a',seq:1,revision:3,status:'completed'},{id:'b',seq:2,revision:1}]
     const merged=mergeTimeline(current,[{id:'c',seq:3,revision:1},{id:'a',seq:1,revision:2,status:'running'},{id:'b',seq:2,revision:2}])
@@ -239,11 +373,9 @@ describe('Agent 执行对话流',()=>{
     expect(merged[0].status).toBe('completed')
     expect(merged[1].revision).toBe(2)
   })
-  it('历史完成轮次默认收起，兼容旧步骤',async()=>{
+  it('历史完成轮次默认展开，兼容旧步骤',async()=>{
     const w=setup({run:{id:'old',status:'completed',activity:[{id:'a',text:'原来的读取步骤',status:'completed',started_at:100,finished_at:103}],answer:'历史回答'}})
-    expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('false')
-    expect(w.find('.agent-process').isVisible()).toBe(false)
-    await w.find('.agent-process-toggle').trigger('click')
+    expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('true')
     expect(w.find('.agent-process').isVisible()).toBe(true)
     expect(w.text()).toContain('原来的读取步骤')
     w.unmount()

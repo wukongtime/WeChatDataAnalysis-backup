@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from ..ai.providers import PRESETS, ProviderFailure, public_profile, validate_url
 from ..ai.schemas import Defaults, ModelListInput, ProviderInput, RuleInput, TaskInput
 from ..ai.service import get_ai_service
+from ..ai.model_selection import SelectedModel, selected_model
 from ..ai.diagnostics import event as diagnostic_event
 import logging
 from ..chat_helpers import _resolve_account_dir
@@ -53,9 +54,24 @@ def get_record(kind, id, account=None):
 @router.get("/settings")
 async def settings():
     service = get_ai_service()
-    await service.models.metadata.refresh()
+    service.models.metadata.refresh_in_background()
     return {"presets": PRESETS, "profiles": [public_profile(service.models.metadata.enrich(p)) for p in service.store.list("profile")],
-            "defaults": service.store.get("defaults", "global") or {"text": "", "vision": ""}}
+            "defaults": service.store.get("defaults", "global") or {"text": "", "vision": ""},
+            "selected_model": selected_model(service.store)}
+
+
+@router.put('/selected-model')
+def save_selected_model(body: SelectedModel):
+    service = get_ai_service()
+    with service.store.lock:
+        get_record('profile', body.profile_id)
+        try:
+            service.models.resolve_turn(body.profile_id, body.model_id, body.reasoning_effort, body.thinking_mode, body.thinking_budget)
+        except ProviderFailure as exc:
+            raise HTTPException(422, str(exc)) from None
+        choice = body.model_dump(exclude={key for key in ('thinking_mode', 'thinking_budget') if getattr(body, key) is None})
+        service.store.put('selected_model', choice, id='global')
+    return choice
 
 
 @router.get('/model-metadata')
@@ -63,6 +79,17 @@ async def model_metadata(provider: str, model: str, base_url: str = '', protocol
     catalog = get_ai_service().models.metadata
     await catalog.refresh()
     return {'metadata': catalog.automatic({'provider': provider, 'model': model, 'base_url': base_url, 'protocol': protocol})}
+
+
+@router.get('/profiles/{id}/model-capabilities')
+async def selected_model_capabilities(id: str, model_id: str = Query(min_length=1, max_length=200)):
+    service = get_ai_service()
+    profile = get_record('profile', id)
+    await service.models.metadata.refresh()
+    # 只获取已配置服务的能力，不调用聊天模型；换模型时不带原模型手动覆盖。
+    if model_id != profile['model']:
+        profile = {**profile, 'model': model_id, 'model_overrides': {}, 'context_window': None, 'vision': False}
+    return {'metadata': service.models.metadata.enrich(profile)['model_metadata']}
 
 
 def write_profile(body, id=None):
@@ -78,6 +105,9 @@ def write_profile(body, id=None):
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
     old = get_record("profile", id) if id else {}
+    if 'compaction_policy' not in body.model_fields_set and old.get('compaction_policy'):
+        # 旧设置界面保存模型时保留通过 API 配置的上下文策略。
+        profile['compaction_policy'] = old['compaction_policy']
     if profile["api_key"] is None:
         if old.get("api_key") and (profile["base_url"].rstrip("/") != old["base_url"].rstrip("/") or profile["protocol"] != old["protocol"]):
             raise HTTPException(422, "修改服务地址或协议后，请重新输入密钥再保存")
@@ -105,12 +135,16 @@ async def update_profile(id: str, body: ProviderInput):
 def delete_profile(id: str):
     service = get_ai_service()
     get_record("profile", id)
+    # 删除前完成旧默认迁移，确保删除后不会选中另一个服务。
+    selected_model(service.store)
     defaults = service.store.get("defaults", "global") or {}
     inherited = [key for key in ("text", "vision") if defaults.get(key) == id]
     for rule in service.store.list("rule"):
         if id in {rule["profile_id"], rule["vision_profile_id"]} or ("text" in inherited and not rule["profile_id"]) or ("vision" in inherited and rule["media"] and not rule["vision_profile_id"]):
             service.store.put("rule", rule | {"enabled": False, "error": "所引用的 AI 配置已删除，请重新选择"}, id=rule["id"])
     service.store.delete("profile", id)
+    # 再核对当前选择，避免删除期间的新选择被较早的快照覆盖。
+    selected_model(service.store)
     diagnostic_event('profile.deleted', profile_id=id, count=len(inherited))
     service.store.put("defaults", {key: "" if defaults.get(key) == id else defaults.get(key, "") for key in ("text", "vision")}, id="global")
     return {"status": "success"}

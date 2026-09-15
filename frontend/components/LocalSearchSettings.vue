@@ -2,7 +2,7 @@
   <section class="local-search-settings" aria-label="本地语义检索">
     <div :inert="dialog ? true : undefined">
       <header class="lss-heading">
-        <div><h4>记不清原话，也能找到聊天</h4><p>选好模型和聊天，整理一次，就能按意思搜索。无需配置 API 密钥。</p></div>
+        <div><h4>记不清原话，也能找到聊天</h4><p>{{ accountWide ? '启用本地模型后，后台逐步整理当前账号全部聊天；整理期间即可提问。无需配置 API 密钥。' : '选好模型和聊天，整理一次，就能按意思搜索。无需配置 API 密钥。' }}</p></div>
         <span class="lss-badge" :class="{ 'is-on': form.enabled }">{{ form.enabled ? '已开启' : '尚未开启' }}</span>
       </header>
 
@@ -12,17 +12,17 @@
           <div class="lss-status-title"><i class="fa-solid" :class="running ? 'fa-circle-notch fa-spin' : job.status==='done' ? (hasSearchData ? 'fa-circle-check' : 'fa-circle-info') : 'fa-circle-pause'" aria-hidden="true"></i><strong>{{ job.status==='done' ? completedTitle : stage(job) }}</strong></div>
           <span class="lss-note">用时 {{ elapsed(job) }}</span>
         </div>
-        <p class="lss-live-count">{{ job.status==='done' ? '本次检查' : '已读取' }} {{ job.read_count ?? job.processed ?? 0 }} 条消息 · 本次生成 {{ job.embedded_count ?? job.embedded ?? 0 }} 个片段 · {{ actualDevice }}</p>
+        <p class="lss-live-count">{{ job.status==='done' ? '本次检查' : '已读取' }} {{ job.read_count ?? job.processed ?? 0 }} 条消息 · {{ running ? '本次生成' : '本次已保存' }} {{ running ? (job.embedded_count ?? job.embedded ?? 0) : (job.embedded ?? 0) }} 个片段 · {{ actualDevice }}</p>
         <p v-if="indexStats" class="lss-index-total">当前索引：{{ indexStats.messages }} 条消息 · {{ indexStats.chunks }} 个片段</p>
         <p v-if="job.mode" class="lss-note">{{ indexMode(job.mode) }}</p>
         <p v-if="job.unchanged" class="lss-note">已复用 {{ job.unchanged }} 条未变化消息，无需重复生成片段。</p>
         <p v-if="job.status==='done' && !job.embedded && hasSearchData" class="lss-note">内容没有变化，已复用现有搜索数据，无需重复生成片段。</p>
-        <p v-if="running || job.status==='paused' || job.status==='error'" class="lss-note">已保存 {{ job.processed || 0 }} 条消息的进度<template v-if="running"> · {{ job.chat_index || 0 }} / {{ job.config?.usernames?.length || form.usernames.length }} 个聊天已完成</template></p>
+        <p v-if="running || job.status==='paused' || job.status==='error'" class="lss-note">已保存 {{ job.processed || 0 }} 条消息的进度<template v-if="running"> · {{ job.chat_index || 0 }} / {{ job.segments?.length || job.config?.usernames?.length || form.usernames.length }} 个{{ job.segments ? '会话时间段' : '聊天' }}已完成</template></p>
         <p v-if="running && job.read_batch_size_effective" class="lss-note">当前每批最多 {{ job.read_batch_size_effective }} 条 · 根据可用内存调整</p>
         <p v-if="running" class="lss-note">可以离开这个页面，整理会在后台继续。</p>
         <p v-else-if="job.status==='done' && hasSearchData" class="lss-note">在聊天搜索中切换到「智能搜索」，或直接向 AI 助手提问。</p>
         <p v-else-if="job.status==='done' && indexStats && !hasSearchData" class="lss-note">请调整聊天或时间范围；只有图片等尚未提取文字的内容无法生成搜索片段。</p>
-        <p v-if="job.warning" class="lss-note">{{ job.warning }}</p><p v-if="job.error" class="lss-error">{{ job.error }}</p>
+        <p v-if="job.warning" class="lss-note">{{ job.warning }}</p><p v-if="job.error" :class="job.status==='paused' ? 'lss-note' : 'lss-error'">{{ job.error }}</p>
         <div class="lss-actions" v-if="running"><button type="button" :disabled="busy" @click="act(()=>request('/index/pause',{method:'POST'},true))">暂停整理</button></div>
       </div>
 
@@ -37,7 +37,7 @@
             <button v-else-if="['running','queued'].includes(displayModel.job?.status)" type="button" :disabled="busy" @click="act(()=>request(`/models/${displayModel.id}/pause`,{method:'POST'}))">暂停下载</button>
             <button v-else type="button" :disabled="busy" @click="act(()=>request(`/models/${displayModel.id}/download`,{method:'POST'}))">{{ displayModel.job ? '继续下载' : '下载模型' }}</button>
           </div>
-          <p v-if="modelChanged" class="lss-note">更换模型后，所选聊天和时间范围内的全部内容都需要重新生成向量。新索引完成前仍可使用原有索引。</p>
+          <p v-if="modelChanged" class="lss-note">更换模型后，{{ accountWide ? '全部聊天历史' : '所选聊天和时间范围内的全部内容' }}都需要重新生成向量。新索引完成前仍可使用原有索引。</p>
           <div v-if="displayModel?.job && !displayModel.downloaded" class="lss-download-state">
             <progress v-if="displayModel.job.status!=='error'" :value="displayModel.job.total ? displayModel.job.bytes : undefined" :max="displayModel.job.total || undefined" aria-label="模型下载进度" />
             <p class="lss-note">{{ stage(displayModel.job) }} · {{ bytes(displayModel.job.bytes) }}<template v-if="displayModel.job.total"> / {{ bytes(displayModel.job.total) }}</template><template v-if="displayModel.job.speed"> · {{ bytes(displayModel.job.speed) }}/s</template><template v-if="displayModel.job.stage==='retry_wait'"> · {{ Math.max(0,Math.ceil(displayModel.job.next_retry-now)) }} 秒后重试</template></p>
@@ -45,7 +45,12 @@
           </div>
         </section>
 
-        <section class="lss-step" aria-labelledby="lss-scope-title">
+        <section v-if="accountWide" class="lss-step" aria-labelledby="lss-global-title">
+          <div class="lss-step-heading"><span class="lss-step-number">2</span><div><h5 id="lss-global-title">当前账号全部群聊和私聊</h5><p>先整理近期，再补齐更早历史；新增消息持续更新。提问中的人物、群聊和时间条件只筛选本次查询。</p></div></div>
+          <p>基础搜索始终可用，已保存的语义索引立即参与查询。暂停或重启会保留进度，聊天原始数据保持只读。</p>
+          <p class="lss-note" role="status">{{ globalCoverage }}</p>
+        </section>
+        <section v-else class="lss-step" aria-labelledby="lss-scope-title">
           <div class="lss-step-heading"><span class="lss-step-number" :class="{ complete: form.usernames.length }"><i v-if="form.usernames.length" class="fa-solid fa-check" aria-hidden="true"></i><template v-else>2</template></span><div><h5 id="lss-scope-title">选择要搜索的聊天</h5><p>只整理选中的聊天，不会自动扩大范围。</p></div></div>
           <div class="lss-scope-row"><div class="lss-grow"><strong>{{ form.usernames.length ? '已选择 '+form.usernames.length+' 个聊天' : '还没有选择聊天' }}</strong><p>{{ selectedChatNames || '选择你经常需要查找的好友或群聊' }}</p></div><button type="button" :disabled="!account || busy || running" @click="openScope">{{ form.usernames.length ? '调整聊天' : '选择聊天' }}</button></div>
           <div class="lss-time-row"><span>聊天时间</span><UiSelect v-model="period" label="聊天时间" :disabled="running || busy" :options="periods" @change="changePeriod" /><span class="lss-note">时间范围越大，首次整理越久</span></div>
@@ -53,7 +58,7 @@
         </section>
 
         <footer class="lss-start">
-          <div><strong>{{ running ? '正在整理所选聊天' : canResume ? '上次整理尚未完成' : modelChanged ? '新模型需要从头整理' : form.enabled && state.config?.active ? '按当前设置更新聊天' : '准备好后，一次开启' }}</strong><p id="lss-start-hint">{{ blockingReason || (running ? '整理会在后台继续，可以随时暂停。' : canResume ? '继续会保留已完成的进度；从头整理会重新处理所选范围的全部内容。' : modelChanged ? '保存当前选择，用新模型重新生成全部向量，完成后切换索引。' : state.config?.active ? '默认增量更新；从头整理会重新生成所选范围的全部向量。' : '点击后保存选择并开始整理，无需另开功能开关。') }}</p></div>
+          <div><strong>{{ running ? (accountWide ? '正在整理全部聊天' : '正在整理所选聊天') : canResume ? '上次整理尚未完成' : modelChanged ? '新模型需要从头整理' : form.enabled && state.config?.active ? '按当前设置更新聊天' : '准备好后，一次开启' }}</strong><p id="lss-start-hint">{{ blockingReason || (accountWide ? '保存模型并开始整理全部历史；前台提问优先使用计算资源。' : running ? '整理会在后台继续，可以随时暂停。' : canResume ? '继续会保留已完成的进度；从头整理会重新处理所选范围的全部内容。' : modelChanged ? '保存当前选择，用新模型重新生成全部向量，完成后切换索引。' : state.config?.active ? '默认增量更新；从头整理会重新生成所选范围的全部向量。' : '点击后保存选择并开始整理，无需另开功能开关。') }}</p></div>
           <div class="lss-start-actions">
             <button type="button" class="lss-primary" aria-describedby="lss-start-hint" :disabled="busy || !!blockingReason || running" @click="primaryAction"><i class="fa-solid" :class="busy || running ? 'fa-circle-notch fa-spin' : 'fa-play'" aria-hidden="true"></i>{{ busy ? '正在提交…' : running ? '正在整理' : canResume ? '继续整理' : modelChanged ? '使用新模型从头整理' : form.enabled ? '保存并开始整理' : '开启并开始整理' }}</button>
             <button v-if="(job || state.config?.active) && (!modelChanged || canResume || running)" type="button" :disabled="busy || !!blockingReason || running" aria-describedby="lss-start-hint" @click="rebuildIndex">从头整理</button>
@@ -89,7 +94,8 @@
 
 
           <div class="lss-row lss-maintenance"><div><h5>每批读取消息数</h5><p>自动按本机可用内存调整。手动选择较大批量时，内存不足也会减小；读取数量持续更新。</p></div><UiSelect :model-value="String(form.read_batch_size)" @update:model-value="form.read_batch_size=Number($event)" label="每批读取消息数" :disabled="!account || busy || running" :options="readBatchOptions" /></div>
-          <div class="lss-row lss-maintenance"><div><h5>自动整理新消息</h5><p>每分钟检查所选聊天的新内容。</p></div><label class="lss-check"><input v-model="form.auto_update" type="checkbox" :disabled="!account || busy || running" />自动更新</label></div>
+          <div v-if="!accountWide" class="lss-row lss-maintenance"><div><h5>自动整理新消息</h5><p>每分钟检查所选聊天的新内容。</p></div><label class="lss-check"><input v-model="form.auto_update" type="checkbox" :disabled="!account || busy || running" />自动更新</label></div>
+          <p v-else class="lss-note">已启用时自动检查全部聊天的新消息和新增会话；暂停后保留已完成部分。</p>
           <div class="lss-actions"><button type="button" :disabled="busy || !account || running" @click="save">保存高级设置</button></div>
           <div class="lss-row lss-maintenance"><div><h5>功能与数据管理</h5><p>{{ account ? '当前账号：'+account : '请先选择账号' }} · 本地索引 {{ bytes(state.index_bytes) }}</p><p v-if="state.config?.active" class="lss-note">最近更新 {{ date(state.config.active.updated) }}</p></div><div class="lss-actions"><button v-if="form.enabled" type="button" :disabled="busy" @click="disableSearch">关闭本地检索</button><button type="button" :disabled="busy || !account || running" @click="clearIndex">清理索引</button></div></div>
           <p class="lss-note">关闭功能会保留模型和索引；清理索引不会删除聊天记录。未解析的图片和扫描件不在本地搜索范围内。</p>
@@ -151,6 +157,7 @@ import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } 
 import { storeToRefs } from 'pinia'
 import { useChatAccountsStore } from '~/stores/chatAccounts'
 import UiSelect from './UiSelect.vue'
+const props=defineProps({accountWide:{type:Boolean,default:false}})
 const { selectedAccount: account }=storeToRefs(useChatAccountsStore())
 const api=useAiApi(), route=useRoute()
 const state=ref({}), form=reactive({enabled:false,model:null,usernames:[],days:90,start:null,end:null,device:'auto',device_id:0,auto_update:true,read_batch_size:0})
@@ -165,7 +172,14 @@ const readBatchOptions=[{value:'0',label:'自动 · 推荐'},{value:'100',label:
 const job=computed(()=>state.value.jobs?.[0])
 const indexStats=computed(()=>state.value.index_stats ?? job.value?.index_stats)
 const hasSearchData=computed(()=>Number(indexStats.value?.chunks)>0)
-const completedTitle=computed(()=>!indexStats.value ? '本次检查完成' : !hasSearchData.value ? '所选范围内暂无可搜索内容' : !job.value?.embedded ? '搜索数据已是最新' : '聊天已准备好，可以智能搜索了')
+const completedTitle=computed(()=>props.accountWide ? '本轮整理已完成' : !indexStats.value ? '本次检查完成' : !hasSearchData.value ? '所选范围内暂无可搜索内容' : !job.value?.embedded ? '搜索数据已是最新' : '聊天已准备好，可以智能搜索了')
+const globalCoverage=computed(()=>{
+  const active=state.value.config?.active
+  if(!active)return '尚未建立语义索引，当前使用基础搜索。'
+  const ranges=Object.values(active.coverage || {}), complete=ranges.filter(r=>r.complete).length
+  if(!ranges.length)return '覆盖范围未知：旧索引未记录会话时间段；继续整理后更新覆盖状态。'
+  return `${active.partial ? '部分覆盖' : '本轮覆盖已保存'} · ${new Set(ranges.map(r=>r.username)).size} 个聊天 · ${complete} 个时间段已读完。新增或尚未读取的记录继续使用基础搜索。`
+})
 const modelActive=id=>['queued','running'].includes(state.value.models?.find(m=>m.id===id)?.job?.status)
 const importActive=computed(()=>importId.value==='gpu' ? gpuActive.value : modelActive(importId.value))
 const gpuOperation=ref('')
@@ -206,9 +220,9 @@ const running=computed(()=>['running','queued'].includes(job.value?.status))
 const selectedChatNames=computed(()=>form.usernames.map(id=>chats.value.find(c=>c.username===id)?.name).filter(Boolean).slice(0,3).join('、')+(form.usernames.length>3?' 等':''))
 const dialogTitle=computed(()=>({models:'选择检索模型',scope:'选择聊天',import:'离线导入'}[dialog.value] || ''))
 const invalidDates=computed(()=>period.value==='custom' && (!startDate.value || !endDate.value || startDate.value>endDate.value))
-const blockingReason=computed(()=>!account.value ? '请先在聊天页面选择账号。' : !modelReady.value ? '请先下载并使用一个检索模型。' : !form.usernames.length ? '请选择至少一个聊天。' : invalidDates.value ? '请选择有效的开始和结束日期。' : '')
+const blockingReason=computed(()=>!account.value ? '请先在聊天页面选择账号。' : !modelReady.value ? '请先下载并使用一个检索模型。' : !props.accountWide && !form.usernames.length ? '请选择至少一个聊天。' : !props.accountWide && invalidDates.value ? '请选择有效的开始和结束日期。' : '')
 const hasChanges=computed(()=>Object.keys(defaults).some(key=>JSON.stringify(form[key])!==JSON.stringify(state.value.config?.[key] ?? defaults[key])) || (period.value==='custom' && (startDate.value!==localDate(state.value.config?.start) || endDate.value!==localDate(state.value.config?.end))))
-const canResume=computed(()=>form.enabled && ['paused','error'].includes(job.value?.status) && !hasChanges.value && job.value.config?.revision===state.value.config?.revision)
+const canResume=computed(()=>form.enabled && (!props.accountWide || state.value.config?.agent_global) && ['paused','error'].includes(job.value?.status) && !hasChanges.value && job.value.config?.revision===state.value.config?.revision)
 const modelChanged=computed(()=>!!state.value.config?.active && !!form.model && form.model!==state.value.config.active.model)
 const indexMode=mode=>({incremental:'增量整理：读取新增消息与最近十分钟的补写；新增聊天或扩展历史会补齐对应范围。',reconcile:'正在进行每日历史校对，检查补写或修改的消息；未变化内容复用已有索引。',enrichment:'已有转写或附件文字发生变化，正在核对所选范围；未变化内容复用已有索引。',rebuild:'正在重新建立索引，原索引保留至完成。',initial:'首次整理当前模型和范围，进度会自动保存。',manual_check:'正在核对所选范围，未变化内容复用已有索引。'}[mode] || '')
 const localDate=value=>value ? new Date(value*1000).toLocaleDateString('en-CA') : ''
@@ -242,9 +256,23 @@ async function act(fn,message=''){
   finally{busy.value=false}
 }
 function changePeriod(){form.days=period.value==='custom'?0:Number(period.value);form.start=null;form.end=null}
-async function persist(){if(period.value==='custom'){form.start=startDate.value?Math.floor(new Date(`${startDate.value}T00:00:00`).getTime()/1000):null;form.end=endDate.value?Math.floor(new Date(`${endDate.value}T23:59:59`).getTime()/1000):null}return request('/settings',{method:'PUT',body:{...form}},true)}
+async function persist(){
+  if(props.accountWide){
+    const current=account.value
+    const result=await request('/settings',{method:'PUT',body:{...form,agent_global:true,usernames:[],days:0,start:0,end:null,auto_update:true}},true)
+    // 服务端解析全账号目录；同步已保存配置，暂停后才可直接沿用断点。
+    if(current===account.value){for(const key of Object.keys(defaults))if(key in result)form[key]=result[key];period.value='0';startDate.value='';endDate.value=''}
+    return result
+  }
+  if(period.value==='custom'){form.start=startDate.value?Math.floor(new Date(`${startDate.value}T00:00:00`).getTime()/1000):null;form.end=endDate.value?Math.floor(new Date(`${endDate.value}T23:59:59`).getTime()/1000):null}
+  return request('/settings',{method:'PUT',body:{...form}},true)
+}
 // 高级设置只保存设备、批量和更新偏好，不顺带提交尚未确认的模型与聊天草稿。
-function savedValues(){return Object.fromEntries(Object.keys(defaults).map(key=>[key,state.value.config?.[key] ?? defaults[key]]))}
+function savedValues(){
+  const saved=Object.fromEntries(Object.keys(defaults).map(key=>[key,state.value.config?.[key] ?? defaults[key]]))
+  // 全账号目录由服务端解析，保存高级设置或关闭功能时也不回传整份目录。
+  return state.value.config?.agent_global ? {...saved,agent_global:true,usernames:[]} : saved
+}
 const save=()=>act(async()=>{
   const prior=savedValues(), current=account.value
   try{await request('/settings',{method:'PUT',body:{...prior,device:form.device,device_id:form.device_id,auto_update:form.auto_update,read_batch_size:form.read_batch_size}},true)}
@@ -268,7 +296,7 @@ const disableSearch=()=>act(async()=>{
   await request('/settings',{method:'PUT',body:{...savedValues(),enabled:false}},true)
   if(current===account.value)form.enabled=false
 },'已关闭本地检索，模型和搜索数据已保留')
-const rebuildIndex=()=>{if(window.confirm(`使用当前选择的模型，从头整理 ${form.usernames.length} 个聊天及所选时间范围？全部向量会重新生成，已有索引保留至完成。`))return startIndex(true)}
+const rebuildIndex=()=>{if(window.confirm(`使用当前选择的模型，从头整理${props.accountWide ? '当前账号全部聊天历史' : ` ${form.usernames.length} 个聊天及所选时间范围`}？全部向量会重新生成，已有索引保留至完成。`))return startIndex(true)}
 function closeDialog(){if(busy.value)return;dialog.value='';dialogError.value=''}
 async function selectModel(m){
   // 选择只修改草稿，主按钮统一保存，避免选模型时取消已有后台任务。

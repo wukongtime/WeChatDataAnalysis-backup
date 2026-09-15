@@ -52,7 +52,20 @@ def seed(output: Path):
             sessions.execute('INSERT INTO SessionTable VALUES(?,0,?,"",1,0,?,?,0)', (username, texts[-1], now-index, now-index))
     (root / 'account.json').write_text(json.dumps({'username': account, 'nick': 'AI 桌面验收', 'avatar_url': ''}, ensure_ascii=False), encoding='utf8')
     (root / '_source.json').write_text(json.dumps({'import_mode': 'manual_import', 'account': account, 'nickname': 'AI 桌面验收'}), encoding='utf8')
+    seed_moments(root, now)
     print(json.dumps({'account': account, 'conversations': len(conversations), 'path': str(root)}))
+
+
+def seed_moments(root: Path, now: int):
+    # 单独样例表，方便回归朋友圈布局；绝不连接或覆盖已有账号的 sns.db。
+    target = root / 'sns.db'
+    if target.exists(): raise ValueError('朋友圈验收样例已存在')
+    with sqlite3.connect(target) as db:
+        db.execute('CREATE TABLE SnsTimeLine(tid INTEGER, user_name TEXT, content TEXT)')
+        xml = (f'<TimelineObject><id>42</id><username>acceptance_friend</username><createTime>{now}</createTime>'
+               '<contentDesc>本地验收示例：今天已完成排期确认，接下来核对交付内容。</contentDesc>'
+               '<ContentObject><contentStyle>1</contentStyle></ContentObject></TimelineObject>')
+        db.execute('INSERT INTO SnsTimeLine VALUES(42,?,?)', ('acceptance_friend', xml))
 
 
 if __name__ == '__main__':

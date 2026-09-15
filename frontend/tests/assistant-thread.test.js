@@ -4,12 +4,25 @@ import { renderToString } from 'vue/server-renderer'
 import { describe, expect, it } from 'vitest'
 import AssistantThread from '../components/chat/AssistantThread.vue'
 
-// 使用官方 Vue primitives 和真实 external-store 运行时，覆盖挂载与增量更新。
+// 使用官方 Vue Conversation 和真实滚动容器，覆盖挂载与增量更新。
 const settle = async () => { for (let i=0;i<4;i++) { await flushPromises(); await nextTick() } }
-describe('assistant-ui 对话适配器', () => {
+describe('AI Elements Vue 对话适配器', () => {
+  it('交付真实滚动节点，恢复阅读位置作用于 Conversation 管理的同一容器', async () => {
+    const wrapper = mount(AssistantThread, { props: { messages: [] } })
+    await settle()
+    const viewport = wrapper.emitted('ready')[0][0]
+    expect(viewport).toBe(wrapper.find('.agent-conversation').element)
+    expect(viewport.style.overflow).toBe('auto')
+    expect(viewport.parentElement.style.overflow).not.toBe('auto')
+    viewport.scrollTop = 72
+    await wrapper.setProps({ messages: [{ id: 'next', role: 'assistant', text: '增量内容' }] })
+    expect(wrapper.find('.agent-conversation').element).toBe(viewport)
+    expect(viewport.scrollTop).toBe(72)
+    wrapper.unmount()
+  })
   it('服务端只渲染容器，客户端才创建运行时和消息', async () => {
     const html = await renderToString(createSSRApp(AssistantThread, { messages: [{ id: 'server', role: 'user', text: '仅客户端显示' }] }))
-    expect(html).toContain('data-chat-library="assistant-ui-vue"')
+    expect(html).toContain('data-chat-library="ai-elements-vue"')
     expect(html).not.toContain('agent-conversation')
     expect(html).not.toContain('仅客户端显示')
   })

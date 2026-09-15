@@ -80,6 +80,7 @@ from ..chat_helpers import (
 from ..media_helpers import _resolve_account_db_storage_dir, _try_find_decrypted_resource
 from ..app_paths import get_output_dir
 from ..chat_realtime_reader import (
+    fetch_daily_counts_via_exec as _shared_fetch_realtime_daily_counts_via_exec,
     fetch_anchor_via_exec as _shared_fetch_realtime_anchor_via_exec,
     fetch_context_via_exec as _shared_fetch_realtime_context_via_exec,
     fetch_rows_via_cursor as _shared_fetch_realtime_rows_via_cursor,
@@ -6021,82 +6022,74 @@ def get_chat_message_daily_counts(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid year or month.")
 
-    account_dir = _resolve_account_dir(account)
-    source_requested = _normalize_chat_source(source)
-    source_norm, rt_conn, rt_error = _connect_realtime_for_chat_source(
-        account_dir=account_dir,
-        source_requested=source_requested,
-    )
-
-    if source_norm == "realtime":
-        rows, scan_limited, scanned = _fetch_realtime_message_rows(
-            rt_conn=rt_conn,
-            username=username,
-            max_scan=200000,
-            stop_before_ts=int(start_ts),
+    _, log_perf = create_perf_trace(logger, "chat.daily_counts", account=account, year=y, month=m)
+    metrics: dict[str, Any] = {"stage": "connect", "lockWaitMs": 0.0, "discoveryMs": 0.0, "aggregateMs": 0.0}
+    log_perf("request:start")
+    try:
+        account_dir = _resolve_account_dir(account)
+        source_requested = _normalize_chat_source(source)
+        source_norm, rt_conn, rt_error = _connect_realtime_for_chat_source(
+            account_dir=account_dir,
+            source_requested=source_requested,
         )
+        log_perf("source:resolved", source=source_norm)
         counts: dict[str, int] = {}
-        for row in rows:
-            try:
-                create_time = int(row.get("create_time") or 0)
-            except Exception:
-                create_time = 0
-            if create_time < int(start_ts) or create_time >= int(end_ts):
-                continue
-            day = datetime.fromtimestamp(create_time).strftime("%Y-%m-%d")
-            counts[day] = int(counts.get(day, 0)) + 1
-
-        total = int(sum(int(v) for v in counts.values())) if counts else 0
-        max_count = int(max(counts.values())) if counts else 0
-        return {
-            "status": "success",
-            "account": account_dir.name,
-            "username": username,
-            "source": "realtime",
-            "year": int(y),
-            "month": int(m),
-            "counts": counts,
-            "total": total,
-            "max": max_count,
-            "scanLimited": bool(scan_limited),
-            "scannedMessages": int(scanned),
-        }
-
-    db_paths = _iter_message_db_paths(account_dir)
-
-    counts: dict[str, int] = {}
-
-    for db_path in db_paths:
-        conn = sqlite3.connect(str(db_path))
-        try:
-            try:
-                table_name = _resolve_msg_table_name(conn, username)
-                if not table_name:
-                    continue
-                quoted_table = _quote_ident(table_name)
-                rows = conn.execute(
-                    "SELECT strftime('%Y-%m-%d', CAST(create_time AS INTEGER), 'unixepoch', 'localtime') AS day, "
-                    "COUNT(*) AS c "
-                    f"FROM {quoted_table} "
-                    "WHERE CAST(create_time AS INTEGER) >= ? AND CAST(create_time AS INTEGER) < ? "
-                    "GROUP BY day",
-                    (int(start_ts), int(end_ts)),
-                ).fetchall()
-                for day, c in rows:
-                    k = str(day or "").strip()
-                    if not k:
-                        continue
+        if source_norm == "realtime":
+            counts = _shared_fetch_realtime_daily_counts_via_exec(
+                rt_conn=rt_conn, username=username,
+                db_storage_dir=_resolve_account_db_storage_dir(account_dir),
+                exec_query=_wcdb_exec_query, start_time=start_ts, end_time=end_ts,
+                timings=metrics,
+            )
+        else:
+            metrics["stage"] = "discovery"
+            discovery_started = time.perf_counter()
+            db_paths = _iter_message_db_paths(account_dir)
+            metrics["discoveryMs"] += (time.perf_counter() - discovery_started) * 1000
+            metrics["candidateDatabases"] = len(db_paths)
+            for db_path in db_paths:
+                metrics["stage"] = "discovery"
+                discovery_started = time.perf_counter()
+                # 只读打开，分库丢失时不能创建空库并返回错误的零计数。
+                conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+                try:
                     try:
-                        vv = int(c or 0)
-                    except Exception:
-                        vv = 0
-                    if vv <= 0:
-                        continue
-                    counts[k] = int(counts.get(k, 0)) + vv
-            except Exception:
-                continue
-        finally:
-            conn.close()
+                        table_name = _resolve_msg_table_name(conn, username)
+                        if not table_name:
+                            continue
+                        quoted_table = _quote_ident(table_name)
+                        columns = conn.execute(f"PRAGMA table_info({quoted_table})").fetchall()
+                        time_type = next((str(col[2]).upper() for col in columns if str(col[1]).lower() == "create_time"), "")
+                        time_expr = "create_time" if "INT" in time_type else "CAST(create_time AS INTEGER)"
+                    finally:
+                        metrics["discoveryMs"] += (time.perf_counter() - discovery_started) * 1000
+                    metrics["stage"] = "aggregate"
+                    aggregate_started = time.perf_counter()
+                    try:
+                        rows = conn.execute(
+                            f"SELECT strftime('%Y-%m-%d', {time_expr}, 'unixepoch', 'localtime') AS day, "
+                            f"COUNT(*) AS c FROM {quoted_table} "
+                            f"WHERE {time_expr} >= ? AND {time_expr} < ? GROUP BY day",
+                            (int(start_ts), int(end_ts)),
+                        ).fetchall()
+                        metrics["returnedRows"] = metrics.get("returnedRows", 0) + len(rows)
+                        for day, count in rows:
+                            if not day or int(count) <= 0:
+                                raise ValueError("Invalid daily count")
+                            counts[str(day)] = counts.get(str(day), 0) + int(count)
+                    finally:
+                        metrics["aggregateMs"] += (time.perf_counter() - aggregate_started) * 1000
+                finally:
+                    conn.close()
+        metrics["stage"] = "complete"
+        log_perf("response:ready", **metrics, source=source_norm, activeDays=len(counts))
+    except HTTPException:
+        log_perf("request:failed", **metrics)
+        raise
+    except Exception as exc:
+        # 不记录原生异常文本，避免底层查询内容进入日历日志。
+        log_perf("request:failed", **metrics, errorType=type(exc).__name__)
+        raise HTTPException(status_code=503, detail="无法完整加载日历，请稍后重试") from exc
 
     total = int(sum(int(v) for v in counts.values())) if counts else 0
     max_count = int(max(counts.values())) if counts else 0
@@ -6106,6 +6099,7 @@ def get_chat_message_daily_counts(
         "account": account_dir.name,
         "username": username,
         "source": source_norm,
+        **({"scanLimited": False, "scannedMessages": 0} if source_norm == "realtime" else {}),
         **_chat_source_fallback_meta(
             account_dir=account_dir,
             requested_source=source_requested,

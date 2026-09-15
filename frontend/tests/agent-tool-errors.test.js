@@ -1,0 +1,121 @@
+import { mount } from '@vue/test-utils'
+import { expect, it } from 'vitest'
+import AgentToolCall from '../components/chat/AgentToolCall.vue'
+
+const failed = { id: 'failed', action: 'search_messages', text: '搜索聊天记录', status: 'failed',
+  result: { error: '本轮尚未选择查询范围，请先调用 select_chat_scope', error_code: 'scope_required' } }
+
+it('执行失败展示具体原因，不冒充成功的零结果检索', () => {
+  const view = mount(AgentToolCall, { props: { items: [{ ...failed, result: { ...failed.result, note: failed.result.error } }], now: 0 } })
+  expect(view.text()).toContain(failed.result.error)
+  expect(view.text().split(failed.result.error)).toHaveLength(2)
+  expect(view.text()).not.toContain('0 条结果')
+  expect(view.find('.agent-retrieval-label').exists()).toBe(false)
+})
+
+it('成功零结果保留结果数量和实际检索方式', () => {
+  const view = mount(AgentToolCall, { props: { items: [{ ...failed, status: 'completed',
+    result: { returned: 0, retrieval_mode: 'hybrid' } }], now: 0 } })
+  expect(view.text()).toContain('0 条结果')
+  expect(view.text()).toContain('关键词＋语义')
+  expect(view.find('.agent-tool-error').exists()).toBe(false)
+})
+
+it('重试成功仍保留首次错误和部分完成状态', () => {
+  const view = mount(AgentToolCall, { props: { items: [failed, { ...failed, id: 'retry', status: 'completed',
+    result: { returned: 2, retrieval_mode: 'keyword' } }], now: 0 } })
+  expect(view.text()).toContain('部分完成')
+  expect(view.text()).toContain(failed.result.error)
+  expect(view.text()).toContain('2 条结果')
+  expect(view.text()).not.toContain('0 条结果')
+})
+
+const saveAttempt = (id, status, fields = {}) => ({
+  id, action: 'commit_findings', text: '保存分析发现', status, input_version: 1,
+  scope_handle: 'scope-a', page_id: 'page-a', started_at: 1, finished_at: 2,
+  result: status === 'completed' ? { saved: true, findings: 2 } : { error: '第 1 项来源不属于本页' },
+  ...fields,
+})
+const renderSaves = items => mount(AgentToolCall, { props: { items, now: 2000 } })
+
+it('同页重试成功显示已保存，详情保留失败原因和成功数量', () => {
+  const items = [saveAttempt('first', 'failed'), saveAttempt('retry', 'completed')]
+  const view = renderSaves(items)
+  expect(view.classes()).toContain('is-completed')
+  expect(view.find('.agent-tool > summary').text()).toContain('已保存 · 重试 1 次')
+  expect(view.text()).not.toContain('部分完成')
+  expect(view.find('.agent-tool-error').text()).toBe('第 1 项来源不属于本页')
+  expect(view.text()).toContain('后续已重试并保存成功')
+  expect(view.text()).toContain('已保存 2 条发现')
+  expect(view.findAll('.agent-tool-attempt-row').map(row => row.text())).toEqual([
+    '首次保存失败', '第 2 次保存已保存 2 条发现 · 1秒',
+  ])
+  expect(view.find('.agent-tool-attempt-row').attributes('title')).toBe('展开本次保存详情')
+  expect(items[0].status).toBe('failed')
+})
+
+it.each([
+  ['不同页', { page_id: 'page-b' }],
+  ['不同范围', { scope_handle: 'scope-b' }],
+  ['不同输入版本', { input_version: 2 }],
+  ['页面未知', { page_id: undefined }],
+  ['范围未知', { scope_handle: undefined }],
+  ['版本未知', { input_version: undefined }],
+  ['无需提交', { result: { saved: false, requires_commit: false } }],
+  ['没有保存确认', { result: {} }],
+])('%s的成功调用不能掩盖保存失败', (_, fields) => {
+  const view = renderSaves([saveAttempt('first', 'failed'), saveAttempt('retry', 'completed', fields)])
+  expect(view.classes()).toContain('is-failed')
+  expect(view.find('.agent-tool > summary').text()).toContain('部分完成')
+  expect(view.text()).not.toContain('后续已重试并保存成功')
+})
+
+it('旧记录缺少页面标识时不猜测恢复结果', () => {
+  const view = renderSaves([saveAttempt('first', 'failed', { page_id: undefined }), saveAttempt('retry', 'completed')])
+  expect(view.find('.agent-tool > summary').text()).toContain('部分完成')
+})
+
+it('多次失败后同页成功按实际失败次数显示重试', () => {
+  const view = renderSaves([saveAttempt('first', 'failed'), saveAttempt('second', 'failed'), saveAttempt('third', 'completed')])
+  expect(view.find('.agent-tool > summary').text()).toContain('已保存 · 重试 2 次')
+})
+
+it('多次重试仍失败保持失败状态', () => {
+  const view = renderSaves([saveAttempt('first', 'failed'), saveAttempt('second', 'failed')])
+  expect(view.classes()).toContain('is-failed')
+  expect(view.find('.agent-tool-outcome').text()).toBe('失败')
+  expect(view.text()).not.toContain('已保存')
+})
+
+it('重试进行中显示进行中，成功事件到达后更新为已保存', async () => {
+  const first = saveAttempt('first', 'failed')
+  const view = renderSaves([first, saveAttempt('retry', 'running', { finished_at: undefined, result: {} })])
+  expect(view.classes()).toContain('is-running')
+  expect(view.find('.agent-tool-outcome').text()).toBe('进行中')
+  await view.setProps({ items: [first, saveAttempt('retry', 'completed')] })
+  expect(view.classes()).toContain('is-completed')
+  expect(view.find('.agent-tool > summary').text()).toContain('已保存 · 重试 1 次')
+})
+
+it('同页恢复不能掩盖另一页的失败', () => {
+  const view = renderSaves([saveAttempt('first', 'failed'), saveAttempt('retry', 'completed'),
+    saveAttempt('other', 'failed', { page_id: 'page-b' })])
+  expect(view.find('.agent-tool > summary').text()).toContain('部分完成')
+})
+
+it('先前成功不能掩盖后来的同页失败', () => {
+  const view = renderSaves([saveAttempt('first', 'completed'), saveAttempt('retry', 'failed')])
+  expect(view.find('.agent-tool > summary').text()).toContain('部分完成')
+})
+
+it('空发现提交也明确显示保存成功', () => {
+  const view = renderSaves([saveAttempt('first', 'completed', { result: { saved: true, findings: 0 } })])
+  expect(view.find('.agent-tool > summary').text()).toContain('已保存 0 条发现')
+  expect(view.find('header').text()).toContain('保存分析发现')
+})
+
+it('重复提交不重复累计发现数量', () => {
+  const view = renderSaves([saveAttempt('first', 'completed'), saveAttempt('retry', 'completed', { result: { saved: true, reused: true } })])
+  expect(view.find('.agent-tool > summary').text()).toContain('已保存')
+  expect(view.find('.agent-tool > summary').text()).not.toContain('4 条')
+})

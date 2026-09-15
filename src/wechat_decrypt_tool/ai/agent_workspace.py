@@ -32,21 +32,61 @@ class Workspace:
         with self.store.connection() as db:
             db.execute('INSERT OR IGNORE INTO agent_material SELECT ?,source,username,time,anchor,body FROM agent_material WHERE run_id=?', (new_id, old_id))
 
-    def restrict(self, run_id, scope, interval):
+    def restrict(self, run_id, scope, interval, *, exclusive=False, sender=None):
         placeholders = ','.join('?' for _ in scope)
         with self.store.connection() as db:
-            db.execute(f'DELETE FROM agent_material WHERE run_id=? AND (username NOT IN ({placeholders}) OR time<? OR time>?)',
+            end_operator = '>=' if exclusive else '>'
+            db.execute(f'DELETE FROM agent_material WHERE run_id=? AND (username NOT IN ({placeholders}) OR time<? OR time{end_operator}?)',
                 [run_id, *scope, interval.get('start', 0), interval.get('end', 2**63-1)])
+            if sender:
+                db.execute("DELETE FROM agent_material WHERE run_id=? AND coalesce(nullif(json_extract(body,'$.sender_id'),''), json_extract(body,'$.media.senderUsername'),json_extract(body,'$.sender'),'')<>?", (run_id, sender))
 
     def put(self, run_id, version, id, kind, body):
+        self.put_pieces(run_id, version, [(id, kind, body)])
+
+    def put_pieces(self, run_id, version, pieces):
+        """相关结果与游标在同一事务提交，失败时不能只留下已推进的进度。"""
         with self.store.connection() as db:
-            db.execute('INSERT OR REPLACE INTO agent_piece VALUES(?,?,?,?,?)',
-                (run_id, version, id, kind, json.dumps(body, ensure_ascii=False)))
+            record = db.execute("SELECT body FROM records WHERE kind='agent_run' AND id=?", (run_id,)).fetchone()
+            if record:
+                current = json.loads(record[0])
+                if current.get('engine_version') == 3 and current.get('version') != version:
+                    from .agent_service import Revised
+                    raise Revised()
+            db.executemany('INSERT OR REPLACE INTO agent_piece VALUES(?,?,?,?,?)',
+                [(run_id, version, id, kind, json.dumps(body, ensure_ascii=False))
+                 for id, kind, body in pieces])
 
     def get(self, run_id, version, id):
         with self.store.connection() as db:
             row = db.execute('SELECT body FROM agent_piece WHERE run_id=? AND version=? AND id=?', (run_id,version,id)).fetchone()
         return json.loads(row[0]) if row else None
+
+    @staticmethod
+    def saved_note_coverage(db, run_id, version):
+        """只统计已提交笔记连续覆盖整条原文的来源；重叠片段去重，有缺口时不算完成。"""
+        rows = db.execute('''
+            WITH refs AS (
+                SELECT json_extract(c.value,'$.source') source,
+                       json_extract(c.value,'$.start') lo, json_extract(c.value,'$.end') hi
+                FROM agent_piece p, json_each(p.body,'$.covered') c
+                WHERE p.run_id=? AND p.version=? AND p.kind='stage_note'
+            ), ordered AS (
+                SELECT source,lo,hi,
+                       max(hi) OVER (PARTITION BY source ORDER BY lo,hi
+                                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) previous_end
+                FROM refs WHERE lo>=0 AND hi>=lo
+            ), whole AS (
+                SELECT source,max(hi) covered_end FROM ordered GROUP BY source
+                HAVING min(lo)=0 AND sum(CASE WHEN lo>coalesce(previous_end,0) THEN 1 ELSE 0 END)=0
+            )
+            SELECT m.username,count(*) FROM whole w JOIN agent_material m ON m.source=w.source
+            WHERE m.run_id=? AND w.covered_end>=length(coalesce(json_extract(m.body,'$.text'),''))
+            GROUP BY m.username
+        ''', (run_id, version, run_id)).fetchall()
+        count = db.execute("SELECT count(*) FROM agent_piece WHERE run_id=? AND version=? AND kind='stage_note'",
+                           (run_id, version)).fetchone()[0]
+        return dict(rows), count
 
     def page(self, run_id, version, kind, offset=0, limit=20, query=''):
         with self.store.connection() as db:
@@ -61,15 +101,56 @@ class Workspace:
                 'offset': offset, 'has_more': offset+len(rows)<total}
 
     def statistics(self, run_id, offset=0, limit=20):
+        record = self.store.get('agent_run', run_id) or {}
+        zone = f"{int(record['timezone_offset']):+d} seconds" if 'timezone_offset' in record else 'localtime'
+        where, args = 'run_id=?', [run_id]
+        if record.get('engine_version') == 3 and record.get('statistics_scope'):
+            scope = self.get(run_id, record['version'], 'scope:' + record['statistics_scope'])
+            if not scope:
+                raise ValueError('统计范围已失效')
+            where += ' AND username IN (' + ','.join('?' for _ in scope['conversations']) + ') AND time>=? AND time<?'
+            args.extend([*scope['conversations'], scope['start'], scope['end']])
+            if scope.get('sender'):
+                where += " AND coalesce(nullif(json_extract(body,'$.sender_id'),''), json_extract(body,'$.sender'))=?"
+                args.append(scope['sender'])
         with self.store.connection() as db:
-            total = db.execute('SELECT count(*) FROM agent_material WHERE run_id=?', (run_id,)).fetchone()[0]
+            total = db.execute('SELECT count(*) FROM agent_material WHERE ' + where, args).fetchone()[0]
             # 分组也分页，避免大量发言人再次撑满请求。
-            rows = db.execute("SELECT date(time,'unixepoch','localtime') day, username, json_extract(body,'$.sender_id') sender_id, json_extract(body,'$.sender') sender, count(*) count FROM agent_material WHERE run_id=? GROUP BY day,username,sender_id,sender ORDER BY day,username,sender_id,sender LIMIT ? OFFSET ?", (run_id,limit+1,offset)).fetchall()
-            days = db.execute("SELECT date(time,'unixepoch','localtime') day,count(*) count FROM agent_material WHERE run_id=? GROUP BY day ORDER BY day LIMIT ? OFFSET ?",(run_id,limit+1,offset)).fetchall()
-            senders = db.execute("SELECT coalesce(nullif(json_extract(body,'$.sender_id'),''),username||':'||coalesce(json_extract(body,'$.sender'),'unknown')) sender_id,max(json_extract(body,'$.sender')) sender,count(*) count FROM agent_material WHERE run_id=? GROUP BY sender_id ORDER BY count DESC,sender_id LIMIT ? OFFSET ?",(run_id,limit+1,offset)).fetchall()
+            rows = db.execute("SELECT date(time,'unixepoch',?) day, username, json_extract(body,'$.sender_id') sender_id, json_extract(body,'$.sender') sender, count(*) count FROM agent_material WHERE " + where + " GROUP BY day,username,sender_id,sender ORDER BY day,username,sender_id,sender LIMIT ? OFFSET ?", [zone,*args,limit+1,offset]).fetchall()
+            days = db.execute("SELECT date(time,'unixepoch',?) day,count(*) count FROM agent_material WHERE " + where + " GROUP BY day ORDER BY day LIMIT ? OFFSET ?",[zone,*args,limit+1,offset]).fetchall()
+            senders = db.execute("SELECT coalesce(nullif(json_extract(body,'$.sender_id'),''),username||':'||coalesce(json_extract(body,'$.sender'),'unknown')) sender_id,max(json_extract(body,'$.sender')) sender,count(*) count FROM agent_material WHERE " + where + " GROUP BY sender_id ORDER BY count DESC,sender_id LIMIT ? OFFSET ?",[*args,limit+1,offset]).fetchall()
         return {'total_messages': total, 'items': [dict(r) for r in rows[:limit]], 'has_more': len(rows)>limit, 'offset':offset,
             'daily_totals':[dict(r) for r in days[:limit]],'daily_has_more':len(days)>limit,
             'sender_ranking':[dict(r) for r in senders[:limit]],'sender_has_more':len(senders)>limit}
+
+    def statistics_sources(self, run_id, sender_ids, limit=12):
+        """只从本任务已计数的消息选出处示例，不加载正文或混入其他运行。"""
+        people = list(dict.fromkeys(value for value in sender_ids if value))[:max(0, limit)]
+        if not people:
+            return []
+        placeholders = ','.join('?' for _ in people)
+        with self.store.connection() as db:
+            # 每位发送者取时间、来源顺序最早的一条；同秒消息和恢复后顺序一致。
+            rows = db.execute(f"""
+                WITH material AS (
+                    SELECT source, time, body,
+                        coalesce(nullif(json_extract(body,'$.sender_id'),''),
+                            username||':'||coalesce(json_extract(body,'$.sender'),'unknown')) sender_key
+                    FROM agent_material WHERE run_id=?
+                ), ranked AS (
+                    SELECT source, body, sender_key,
+                        row_number() OVER (PARTITION BY sender_key ORDER BY time,source) sequence
+                    FROM material WHERE sender_key IN ({placeholders})
+                )
+                SELECT source,body,sender_key FROM ranked WHERE sequence=1 ORDER BY sender_key
+                """, [run_id, *people]).fetchall()
+        result = []
+        for row in rows:
+            original = json.loads(row['body'])
+            item = {key: original.get(key) for key in ('username', 'time', 'sender', 'name')}
+            item.update(source=row['source'], sender_id=row['sender_key'])
+            result.append(item)
+        return result
 
 
 class Evidence(MutableMapping):
@@ -81,6 +162,20 @@ class Evidence(MutableMapping):
             row = db.execute('SELECT body FROM agent_material WHERE run_id=? AND source=?', (self.run_id,key)).fetchone()
         if not row: raise KeyError(key)
         return json.loads(row[0])
+
+    def get_many(self, keys):
+        """一次读取活跃来源，避免每次预算测量为每条消息单独打开数据库。"""
+        keys = list(dict.fromkeys(keys))
+        values = {}
+        if not keys:
+            return values
+        with self.workspace.store.connection() as db:
+            for start in range(0, len(keys), 500):
+                batch = keys[start:start + 500]
+                rows = db.execute('SELECT source,body FROM agent_material WHERE run_id=? AND source IN ('
+                                  + ','.join('?' for _ in batch) + ')', [self.run_id, *batch])
+                values.update((key, json.loads(body)) for key, body in rows)
+        return values
 
     def __setitem__(self, key, value):
         with self.workspace.store.connection() as db:
@@ -100,10 +195,11 @@ class Evidence(MutableMapping):
             value.update(source=key, match_methods=sorted(set(old.get('match_methods',[])+value.get('match_methods',[]))))
         db.execute('INSERT OR REPLACE INTO agent_material VALUES(?,?,?,?,?,?)',
             (self.run_id,key,value['username'],value.get('time',0),value.get('anchor',key),json.dumps(value,ensure_ascii=False)))
+        return key
 
     def put_many(self,values):
         with self.workspace.store.connection() as db:
-            for value in values:self._set(db,value['source'],value)
+            return {value['source']: self._set(db,value['source'],value) for value in values}
 
     def __delitem__(self, key):
         with self.workspace.store.connection() as db:

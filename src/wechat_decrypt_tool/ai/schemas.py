@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 from pydantic import BaseModel, Field, model_validator
+from .compaction_policy import CompactionPolicy
 
 
 class ModelOverrides(BaseModel):
@@ -11,6 +12,7 @@ class ModelOverrides(BaseModel):
     tool_call: bool | None = None
     structured_output: bool | None = None
     reasoning: bool | None = None
+    reasoning_efforts: list[str] | None = Field(None, max_length=20)
     temperature: bool | None = None
     attachment: bool | None = None
 
@@ -18,7 +20,7 @@ class ModelOverrides(BaseModel):
 class ProviderInput(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     provider: Literal[
-        "deepseek", "claude", "kimi", "openai", "gemini", "qwen", "zhipu",
+        "deepseek", "xiaomi", "claude", "kimi", "openai", "gemini", "qwen", "zhipu",
         "doubao", "siliconflow", "openrouter", "groq", "ollama", "lmstudio", "custom",
     ] = "deepseek"
     protocol: Literal["openai", "anthropic"] = "openai"
@@ -28,6 +30,7 @@ class ProviderInput(BaseModel):
     vision: bool = False
     context_window: int | None = Field(default=None, ge=4096, le=10000000)
     model_overrides: ModelOverrides = Field(default_factory=ModelOverrides)
+    compaction_policy: CompactionPolicy = Field(default_factory=CompactionPolicy)
 
 
 class Defaults(BaseModel):

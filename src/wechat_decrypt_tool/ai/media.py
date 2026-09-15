@@ -9,6 +9,8 @@ import io
 import json
 import time
 import zipfile
+import re
+from xml.etree import ElementTree
 from pathlib import Path
 
 from PIL import Image
@@ -24,7 +26,7 @@ def image_url(data):
     return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode()
 
 
-def iter_document(data: bytes, suffix: str):
+def iter_document(data: bytes, suffix: str, *, include_images=True):
     """返回带位置的片段；不运行宏，不提取压缩包中的任意文件到磁盘。"""
     stream = io.BytesIO(data)
     if suffix in {".txt", ".md", ".csv"}:
@@ -47,6 +49,9 @@ def iter_document(data: bytes, suffix: str):
                 yield {"label": f"第 {i + 1} 页", "text": text}
                 # 无文字页面交给视觉模型；有文字页面的图片也参与理解。
                 if not text.strip():
+                    if not include_images:
+                        yield {"label": f"第 {i + 1} 页扫描图", "skipped_image": True}
+                        continue
                     document = document or pdfium.PdfDocument(data)
                     pdf_page = document[i]
                     bitmap = pdf_page.render(scale=1.5)
@@ -58,6 +63,10 @@ def iter_document(data: bytes, suffix: str):
                         bitmap.close()
                         pdf_page.close()
                 else:
+                    if not include_images:
+                        for name in page.images.keys():
+                            yield {"label": f"第 {i + 1} 页图片 {name}", "skipped_image": True}
+                        continue
                     for n, img in enumerate(page.images):
                         yield {"label": f"第 {i + 1} 页图片 {n + 1}", "image": image_url(img.data)}
         finally:
@@ -69,6 +78,29 @@ def iter_document(data: bytes, suffix: str):
     with zipfile.ZipFile(stream) as archive:
         if sum(x.file_size for x in archive.infolist()) > 512 * 1024 * 1024:
             raise ValueError("附件解压后超过 512 MB，请拆分文件")
+        # Office 对象库会预加载图片部件；纯文字模式直接读取 XML，避免解压图片数据。
+        if not include_images and suffix in {'.docx', '.pptx'}:
+            names = archive.namelist()
+            if suffix == '.docx':
+                ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+                root = ElementTree.fromstring(archive.read('word/document.xml'))
+                body = root.find('w:body', ns)
+                for i, block in enumerate(body if body is not None else []):
+                    if block.tag.endswith('}tbl'):
+                        rows = [' | '.join(''.join(cell.itertext()) for cell in row.findall('w:tc', ns)) for row in block.findall('w:tr', ns)]
+                        yield {'label': f'表格 {i + 1}', 'text': '\n'.join(rows)}
+                    else:
+                        yield {'label': f'段落 {i + 1}', 'text': ''.join(node.text or '' for node in block.findall('.//w:t', ns))}
+            else:
+                ns = {'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'}
+                slides = sorted((name for name in names if re.fullmatch(r'ppt/slides/slide\d+\.xml', name)), key=lambda name: int(re.search(r'slide(\d+)\.xml', name)[1]))
+                for i, name in enumerate(slides):
+                    root = ElementTree.fromstring(archive.read(name))
+                    yield {'label': f'幻灯片 {i + 1}', 'text': '\n'.join(''.join(t.text or '' for t in p.findall('.//a:t', ns)) for p in root.findall('.//a:p', ns))}
+            for name in names:
+                if '/media/' in name:
+                    yield {'label': f'嵌入媒体 {Path(name).name}', 'skipped_image': True}
+            return
     stream.seek(0)
     if suffix == ".docx":
         from docx import Document
@@ -95,13 +127,15 @@ def iter_document(data: bytes, suffix: str):
                     yield {"label": f"幻灯片 {i + 1}", "text": shape.text}
                 if shape.has_table:
                     yield {"label": f"幻灯片 {i + 1} 表格", "text": "\n".join(" | ".join(c.text for c in r.cells) for r in shape.table.rows)}
-                if hasattr(shape, "image"):
-                    yield {"label": f"幻灯片 {i + 1} 图片", "image": image_url(shape.image.blob)}
+                if shape.shape_type == 13:
+                    yield ({"label": f"幻灯片 {i + 1} 图片", "image": image_url(shape.image.blob)} if include_images
+                           else {"label": f"幻灯片 {i + 1} 图片", "skipped_image": True})
     if suffix != ".pptx":
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             for name in archive.namelist():
                 if "/media/" in name and Path(name).suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
-                    yield {"label": f"嵌入图片 {Path(name).name}", "image": image_url(archive.read(name))}
+                    yield ({"label": f"嵌入图片 {Path(name).name}", "image": image_url(archive.read(name))} if include_images
+                           else {"label": f"嵌入图片 {Path(name).name}", "skipped_image": True})
     return
 
 
@@ -144,10 +178,18 @@ class MediaService:
         result = dict(message)
         if not options.get("media", True):
             return result | {"coverage": "未启用媒体分析"}
+        skip_images = bool(options.get('skip_unsupported_images') and not vision_profile.get('vision'))
+        skipped_notice = '当前模型不支持图片，已跳过图片内容'
+        if skip_images and message['kind'] == 'image':
+            return result | {'coverage': skipped_notice}
         try:
             data, suffix = await asyncio.to_thread(resolve_media, account, message, options.get("max_attachment_mb", 20))
             diagnostic_event('media.located', suffix=suffix, bytes=len(data))
-            signature = {"version": 1, "profile": vision_profile.get("id"), "revision": vision_profile.get("revision"), "suffix": suffix}
+            signature = {"version": 2, "profile": vision_profile.get("id"), "model": vision_profile.get('model'),
+                         "revision": vision_profile.get("revision"), "suffix": suffix, 'skip_images': skip_images}
+            question = str(options.get('question') or '').strip()
+            if question:
+                signature['question'] = question
             key = hashlib.sha256(account.encode() + data + json.dumps(signature, sort_keys=True).encode()).hexdigest()
             cached = self.store.get("media_cache", key)
             if cached:
@@ -155,10 +197,11 @@ class MediaService:
                 if unit_callback:
                     for n in range(cached.get('units', 1)):
                         unit_callback(f'缓存图片 {n + 1}', cached=True)
-                return result | {"text": result["text"] + "\n" + cached["text"], "coverage": "已分析（缓存）"}
-            parts = iter([{ "label": "图片", "image": image_url(data)}]) if suffix == ".image" else iter_document(data, suffix)
+                return result | {"text": result["text"] + "\n" + cached["text"], "coverage": cached.get('coverage', '已分析') + '（缓存）'}
+            parts = iter([{ "label": "图片", "image": image_url(data)}]) if suffix == ".image" else iter_document(data, suffix, include_images=not skip_images)
             text, index, units = [], -1, 0
             local_text = []
+            skipped, has_text = False, False
             while True:
                 checkpoint()
                 unit_started = time.monotonic()
@@ -170,6 +213,9 @@ class MediaService:
                 index += 1
                 checkpoint()
                 label = part["label"]
+                if part.get('skipped_image'):
+                    skipped = True
+                    continue
                 if "image" in part:
                     if not vision_profile.get("vision"):
                         raise ValueError("该附件包含图片，请配置视觉模型后重试")
@@ -182,10 +228,14 @@ class MediaService:
                         diagnostic_event('media.page.cache', index=index, cached=True)
                         description = partial["text"]
                     else:
-                        description = await self.models.invoke(vision_profile, f"描述这份聊天资料中的{label}，完整提取可辨认文字、表格和关键信息。不能辨认的内容请说明。", images=[part["image"]], account=account)
+                        prompt = f"描述这份聊天资料中的{label}，完整提取可辨认文字、表格和关键信息。不能辨认的内容请说明。"
+                        if question:
+                            prompt += '\n重点核查本次问题：' + question
+                        description = await self.models.invoke(vision_profile, prompt, images=[part["image"]], account=account)
                         self.store.put("media_cache", {"text": description}, id=partial_key, account=account)
                     text.append(f"[{label}] {description}")
                 else:
+                    has_text = has_text or bool(part.get('text', '').strip())
                     text.append(f"[{label}] {part.get('text', '')}")
                     local_text.append(text[-1])
                     # 仅记录本地提取文字，独立于视觉模型输出，供离线检索复用。
@@ -194,9 +244,10 @@ class MediaService:
                         'anchor': message['anchor'], 'file_hash': hashlib.sha256(data).hexdigest(), 'version': 1}, id=local_id, account=account)
                 diagnostic_event('media.page.finished', index=index, duration_ms=(time.monotonic()-unit_started)*1000)
             combined = "\n".join(text)
-            self.store.put("media_cache", {"text": combined, "units": units}, id=key, account=account)
-            return result | {"text": result["text"] + "\n" + combined, "coverage": "已分析"}
-        except (ValueError, OSError, zipfile.BadZipFile) as exc:
+            coverage = ('已分析附件文字；' + skipped_notice) if skipped and has_text else (skipped_notice if skipped else '已分析')
+            self.store.put("media_cache", {"text": combined, "units": units, 'coverage': coverage}, id=key, account=account)
+            return result | {"text": result["text"] + "\n" + combined, "coverage": coverage}
+        except (ValueError, OSError, zipfile.BadZipFile, ElementTree.ParseError, KeyError) as exc:
             diagnostic_event('media.failed', level=logging.WARNING, error=exc, reason_code=media_failure_reason(exc))
             return result | {"coverage": str(exc), "text": result["text"] + "\n[附件未分析]"}
 

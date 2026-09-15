@@ -1,12 +1,16 @@
 <template>
   <div class="preview-toolbar"><strong>AI 助手 · 交互预览</strong><button @click="height = height === 800 ? 560 : 800">{{ height }}px 高度</button><button @click="dark = !dark; applyTheme()">{{ dark ? '浅色' : '深色' }}</button><button @click="reset">恢复示例</button><button @click="streamDemo">流式演示</button><button @click="stepsDemo">分段步骤示例</button><button @click="finishDemo">完成示例</button><span>本页使用示例数据，不调用模型</span></div>
   <main class="preview-stage" :style="{ height: height + 'px', maxHeight: 'calc(100dvh - 112px)' }"><div class="preview-chat"><h2>南京出行</h2><p>在右侧查看 AI 助手，点击引用核对原文。</p><p v-if="located" role="status">已定位：{{ located.text }}</p></div><ChatAgentPanel :key="seed" account="preview" :contact="contact" :contacts="contacts" :prepare-source="prepare" :locate-source="locate" @close="closed = true" v-if="!closed" /><button v-else @click="closed = false">打开 AI 助手</button></main>
-  <p class="preview-note">交互：模型选择、读取范围、跟随 / 固定、历史、工具、输入框、引用、展开 / 收起。示例对话仅用于验证布局。</p>
+  <p class="preview-note">交互：模型选择、全账号查询、历史、工具、输入框、引用、展开 / 收起。示例对话仅用于验证布局。</p>
 </template>
 <script setup>
 import { ref, onUnmounted } from 'vue'
 import ChatAgentPanel from '../../components/chat/ChatAgentPanel.vue'
 const designPreview = new URLSearchParams(location.search).has('design')
+const referencePreview = new URLSearchParams(location.search).has('references')
+const budgetPreview = new URLSearchParams(location.search).has('budget')
+// 圆环浮层参考图的数值，独立于原有预算预览场景。
+const ringPreview = new URLSearchParams(location.search).get('budget') === 'reference'
 const height = ref(designPreview ? 800 : 560), dark = ref(false), seed = ref(0), closed = ref(false), located = ref(null)
 const contact = { username:'sample', name:'文海健9.8' }, contacts=[contact,{username:'travel',name:'南京出行讨论群'}]
 const source = {source:'aaaaaaaaaaaaaaaaaaaaaaaa',username:'sample',anchor:'msg2',name:'文海健9.8',sender:'文海健',time:1788849120,text:'费用先记到 AA 表里，晚点再一起核对。'}
@@ -36,6 +40,15 @@ const baseRun=()=>({id:'run1',status:'completed',elapsed_seconds:18,answer,citat
 ]})
 const makeRun = () => {
   const result = baseRun()
+  if (referencePreview) Object.assign(result, {
+    answer: `甲提到 [[person:${'e'.repeat(24)}]] 更新了排期。[[${source.source}]]\n\n本回答引用两张图片：[[image:${'f'.repeat(24)}]] 和 [[image:${'1'.repeat(24)}]]。`,
+    references: [
+      {kind:'person',id:'e'.repeat(24),username:'subject-b',name:'乙',sources:[source.source]},
+      {kind:'image',id:'f'.repeat(24),source:source.source,label:'排期示意图',path:'/chat/media/image?account=preview&acceptance=diagram'},
+      {kind:'image',id:'1'.repeat(24),source:source.source,label:'缺失图片示例',path:'/chat/media/image?account=preview&acceptance=missing'},
+      {kind:'image',id:'2'.repeat(24),source:source.source,label:'未引用图片',path:'/chat/media/image?account=preview&acceptance=unused'},
+    ],
+  })
   if (designPreview) Object.assign(result, { elapsed_seconds:141, coverage_warnings:['部分图片未读取，回答仅依据已读取的聊天记录。'], timeline:[
     {id:'t1',kind:'tool',seq:1,status:'completed',text:'搜索了聊天记录',action:'search_messages',query:'约饭',username:'sample',started_at:1,finished_at:3,result:{returned:21,retrieval_mode:'hybrid'}},
     {id:'t2',kind:'tool',seq:2,status:'completed',text:'读取了上下文',action:'read_context',username:'sample',started_at:3,finished_at:5,result:{returned:21}},
@@ -46,7 +59,9 @@ const makeRun = () => {
   return result
 }
 const thread={id:'thread1',username:'sample',title:'南京出行梳理',scope:['sample'],latest_run:'run1',messages:[{id:'q1',role:'user',run_id:'run1',text:designPreview ? '我们之前在哪一天约的饭来着？' : '帮我梳理最近的南京出行安排，还有哪些事没定？'}]}
-const withContext = () => ({ ...makeRun(), account:'preview', version:1, read_count:242, source_count:242, time_range:{start:1788624000,end:1788912000}, intent:{mode:'overview'}, analysis:{known:true,complete:true,analyzed:242,segments:12,findings:24,coverage:[{username:'sample',read:121,analyzed:121,complete:true},{username:'travel',read:121,analyzed:121,complete:true}]},answer_context:{status:'completed',sources:[{source:source.source,text_chars:source.text.length,truncated:false}],summary_sources:citations.map(x=>x.source),summary_segments:12,omitted:241} })
+const withContext = () => ({ ...makeRun(), account:'preview', version:1,
+  ...(budgetPreview ? {context_budget:{used:30000,input_capacity:60928,model_window:65536,percent:49,output_reserve:4096,safety_reserve:512,description:'使用保守估算；累计模型消耗在用量审计中单独记录。',...(ringPreview ? {used:5400,input_capacity:916992,model_window:1048576,percent:0.6,output_reserve:131072} : {})}} : {}),
+  read_count:242, source_count:242, time_range:{start:1788624000,end:1788912000}, intent:{mode:'overview'}, analysis:{known:true,complete:true,analyzed:242,segments:12,findings:24,coverage:[{username:'sample',read:121,analyzed:121,complete:true},{username:'travel',read:121,analyzed:121,complete:true}]},answer_context:{status:'completed',sources:[{source:source.source,text_chars:source.text.length,truncated:false}],summary_sources:citations.map(x=>x.source),summary_segments:12,omitted:241} })
 let run=withContext()
 const historySample={id:'thread2',username:'travel',title:'上周还有哪些待办？',scope:['travel'],latest_run:'past1',messages:[{id:'q2',role:'user',run_id:'past1',text:'上周还有哪些待办？'}]}
 let previewThreads=[structuredClone(thread),structuredClone(historySample)], previewRuns={run1:run,past1:{...withContext(),id:'past1',answer:'上周还有两件事需要核对：出发时间、交通方式。',timeline:[]}}
@@ -55,10 +70,13 @@ const state = ref({selected:{},drafts:{},pinned:{}})
 window.useState=()=>state
 window.useSettingsDialog=()=>({openDialog:()=>{window.alert('这里会打开现有 AI 服务设置。')}})
 let onAgentEvent, demoTimer
+// 验收页独立保存虚构模型选择，不连接真实服务或账号。
+let selectedModel = JSON.parse(localStorage.getItem('qa-agent-selected-model') || 'null') || {profile_id:'local',model_id:ringPreview ? 'mimo-v2.5' : 'text-model',reasoning_effort:null}
 window.useAiApi=()=>({agentEvents:(_account,callback)=>{onAgentEvent=callback;return()=>{if(onAgentEvent===callback)onAgentEvent=null}},events:()=>()=>{},request:async(path,options={})=>{
   // ?cold=1 用于浏览器验证首次无缓存、模型配置延迟返回的场景。
   if(path==='/settings' && new URLSearchParams(location.search).has('cold')) await new Promise(resolve=>setTimeout(resolve,6000))
-  if(path==='/settings')return {profiles:[{id:'local',name:'我的文本模型',model:'text-model'},{id:'vision',name:'视觉模型',vision:true,model:'vision-model'}]}
+  if(path==='/settings')return {selected_model:selectedModel,defaults:{text:'local'},profiles:[{id:'local',name:'我的文本模型',model:ringPreview ? 'mimo-v2.5' : 'text-model',...(budgetPreview && !ringPreview ? {model_metadata:{reasoning_efforts:['low','medium','high']}} : {})},{id:'vision',name:'视觉模型',vision:true,model:'vision-model'}]}
+  if(path==='/selected-model'){selectedModel=clone(options.body);localStorage.setItem('qa-agent-selected-model',JSON.stringify(selectedModel));return selectedModel}
   if(path==='/agent/threads') {
     if(options.method==='POST'){const created={id:crypto.randomUUID(),username:options.body.username,title:'新的对话',scope:[options.body.username],messages:[],latest_run:''};previewThreads.unshift(created);return clone(created)}
     return clone(previewThreads.filter(item=>!options.query?.username||item.username===options.query.username).map(item=>({...item,latest_run_status:previewRuns[item.latest_run]?.status || ''})))
@@ -139,7 +157,9 @@ const startStream=(id,resume=false)=>{
       if(ticks===10) run={...run,stage:'搜索相关聊天记录',stage_started_at:Date.now()/1000,timeline:[{...completedTimeline[0],status:'running',started_at:Date.now()/1000,finished_at:null}]}
       previewRuns[id]=run;onAgentEvent?.({run_id:id,status:run.status});return
     }
-    if(!resume && ticks===20) run={...run,timeline:completedTimeline,stage:'整理已找到的记录，生成回答',stage_started_at:Date.now()/1000,read_count:29}
+    if(!resume && ticks===20) run={...run,timeline:completedTimeline.map(item=>({...item,revision:2,
+      ...(item.started_at == null ? {} : {started_at:started+item.started_at}),
+      ...(item.finished_at == null ? {} : {finished_at:started+item.finished_at})})),stage:'整理已找到的记录，生成回答',stage_started_at:Date.now()/1000,read_count:29}
 
     count+=24
     const done=count>=answer.length

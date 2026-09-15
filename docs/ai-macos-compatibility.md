@@ -2,6 +2,8 @@
 
 更新时间：2026-09-08。此文档区分组件验收与完整桌面验收，不以模拟测试代替真实聊天流程。
 
+**2026-09-10：下列 Mac 记录属于旧版本，仅作参考。本轮全账号助手尚未在 Mac 实机验收；最新状态与执行方法见 [本轮验收记录](ai-assistant-implementation-2026-09-10.md)。**
+
 ## 运行策略与修复
 
 - AI 服务、总结、Agent、关注提醒和用量审计使用共享 Python / Vue 实现。模型接口仍读取用户配置，不写死模型名称。
@@ -63,10 +65,12 @@ Windows 对应后端 132 项、Vue 168 项、桌面 8 项回归通过，公共�
 
 ## 复验入口与证据
 
+CI 与源码复验均显式使用 uv 托管的 CPython 3.11。仅运行 `uv sync` 或指定 `--python 3.11` 仍可能复用已有解释器；部分 macOS Python 构建缺少 SQLite 扩展加载能力，导致 sqlite-vec 初始化失败。
+
 ```sh
 export UV_MANAGED_PYTHON=true
 uv python install 3.11
-uv sync --locked --python 3.11 --extra build
+uv sync --locked --python 3.11 --managed-python --extra build
 uv run python tools/verify_ai_runtime.py
 uv run pytest -q tests/test_ai*.py tests/test_local_search*.py
 cd frontend

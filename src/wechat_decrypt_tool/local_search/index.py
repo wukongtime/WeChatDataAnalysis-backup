@@ -105,22 +105,76 @@ class SemanticIndex:
         return sorted(values.values(),key=lambda m:(m['username'],m['time'],m['source']))
 
     @observed('index.search')
+    def keyword(self, generation, query, usernames, start=0, end=2**53, sender=None, kinds=None, limit=200):
+        """从已提交原文召回关键词，不受向量候选截断影响，也不等待全账号完成。"""
+        from ..chat_helpers import _make_search_tokens, _match_tokens
+        tokens = _make_search_tokens(query)
+        if not usernames or not tokens:
+            return []
+        clauses = ['generation=?', 'username IN (' + ','.join('?' for _ in usernames) + ')',
+                   'created>=?', 'created<=?', "message_matches(json_extract(body,'$.text'))"]
+        params = [generation, *usernames, start if start is not None else 0, end if end is not None else 2**53]
+        if sender:
+            clauses.append('sender=?'); params.append(sender)
+        if kinds:
+            clauses.append('kind IN (' + ','.join('?' for _ in kinds) + ')'); params.extend(kinds)
+        with self.connection() as db:
+            # 与基础搜索共用 Unicode 大小写和多词匹配语义，查询文本从不拼入 SQL。
+            db.create_function('message_matches', 1, lambda text: _match_tokens(text, tokens), deterministic=True)
+            rows = db.execute('SELECT body FROM messages WHERE ' + ' AND '.join(clauses)
+                              + ' ORDER BY created DESC,source LIMIT ?', [*params, limit]).fetchall()
+        return [json.loads(row['body']) for row in rows]
+
+    @observed('index.search')
     def search(self, generation, vector, usernames, start=0, end=2**53, sender=None, kinds=None, limit=200):
         import sqlite_vec
-        if not usernames: return []
+        if not usernames or limit <= 0: return []
         clauses = ['m.generation=?', 'm.username IN (' + ','.join('?' for _ in usernames) + ')', 'm.created>=?', 'm.created<=?']
         params = [generation, *usernames, start or 0, end or 2**53]
         if sender:
             clauses.append('m.sender=?'); params.append(sender)
         if kinds:
             clauses.append('m.kind IN (' + ','.join('?' for _ in kinds) + ')'); params.extend(kinds)
-        # 先限制候选原消息；不把命中片段中不满足条件的相邻原文交给调用方。
+        # 每个片段只计算一次距离。按距离逐批展开成员，再加载最终正文，
+        # 避免对百万条原消息重复计算共享向量并把全部正文写入排序临时表。
         with self.connection() as db:
-            rows = db.execute('''SELECT m.source,m.body,MIN(vec_distance_cosine(c.vector,?)) AS distance
-                FROM messages m JOIN members x ON x.source=m.source
-                JOIN chunks c ON c.id=x.chunk AND c.generation=m.generation
-                WHERE ''' + ' AND '.join(clauses) + ' GROUP BY m.source ORDER BY distance,m.created DESC,m.source LIMIT ?',
-                [sqlite_vec.serialize_float32(vector), *params, limit]).fetchall()
+            db.execute('BEGIN')
+            # 全历史检索不用对每个片段再查询一次时间条件；覆盖索引即可核对边界。
+            bounds = db.execute('SELECT MIN(created),MAX(created) FROM messages WHERE generation=? AND username IN ('
+                                + ','.join('?' for _ in usernames) + ')', [generation, *usernames]).fetchone()
+            unrestricted = (not sender and not kinds and bounds[0] is not None
+                            and (start or 0) <= bounds[0] and (end or 2**53) >= bounds[1])
+            chunk_where = 'c.generation=? AND c.username IN (' + ','.join('?' for _ in usernames) + ')'
+            chunk_params = [generation, *usernames]
+            if not unrestricted:
+                # 显式筛选先决定哪些片段具有有效原消息，不能让范围外片段挤掉候选。
+                chunk_where += (' AND EXISTS (SELECT 1 FROM members x CROSS JOIN messages m'
+                                ' ON m.source=x.source WHERE x.chunk=c.id AND ' + ' AND '.join(clauses) + ')')
+                chunk_params.extend(params)
+            candidates = db.execute('SELECT c.id,vec_distance_cosine(c.vector,?) AS distance FROM chunks c WHERE '
+                                    + chunk_where + ' ORDER BY distance,c.id',
+                                    [sqlite_vec.serialize_float32(vector), *chunk_params])
+            db.execute('CREATE TEMP TABLE search_page(id TEXT PRIMARY KEY,distance REAL)')
+            best = {}
+            while batch := candidates.fetchmany(max(64, limit)):
+                db.execute('DELETE FROM search_page')
+                db.executemany('INSERT INTO search_page VALUES(?,?)', [(r['id'], r['distance']) for r in batch])
+                # CROSS JOIN 固定从少量候选开始；否则 SQLite 会重新扫描整代原消息。
+                hits = db.execute('SELECT m.source,m.created,c.distance FROM search_page c'
+                                  ' CROSS JOIN members x ON x.chunk=c.id'
+                                  ' CROSS JOIN messages m ON m.source=x.source WHERE ' + ' AND '.join(clauses), params)
+                for hit in hits:
+                    value = (hit['distance'], -hit['created'], hit['source'])
+                    if hit['source'] not in best or value < best[hit['source']]:
+                        best[hit['source']] = value
+                ranked = sorted(best.values())[:limit]
+                best = {row[2]: row for row in ranked}
+                # 等距离片段继续读取，保证时间与来源的稳定次序，也处理重叠片段。
+                if len(ranked) == limit and batch[-1]['distance'] > ranked[-1][0]:
+                    break
+            rows = [{'body': db.execute('SELECT body FROM messages WHERE generation=? AND source=?',
+                                       (generation, source)).fetchone()[0], 'distance': distance}
+                    for distance, _, source in sorted(best.values())]
         return [{'message': json.loads(row['body']), 'distance': row['distance']} for row in rows]
 
     @observed('index.clear')
