@@ -43,6 +43,25 @@ const mountPanel = () => mount(ChatAgentPanel, {attachTo:document.body,props:{ac
 const send = async (wrapper,text) => { await wrapper.find('textarea').setValue(text); await wrapper.find('textarea').trigger('keydown',{key:'Enter'}); await flushPromises() }
 
 describe('聊天 Agent', () => {
+  it.each(['friend', 'group@chatroom'])('顶部和左侧显示对应会话头像，支持单聊和群聊：%s', async username => {
+    const w = mountPanel(); await flushPromises()
+    await w.setProps({contact:{username,name:'测试会话'}}); await flushPromises()
+    expect(w.find('.agent-header > button[aria-label="AI 对话历史"] .fa-table-columns').exists()).toBe(true)
+    expect(w.find('.agent-header > button[aria-label="旧版全局历史"]').exists()).toBe(false)
+    const expected = `/api/chat/avatar?${new URLSearchParams({account:'acc',username})}`
+    expect(w.find('.agent-owner-avatar img').attributes('src')).toBe(expected)
+    await send(w, '总结一下')
+    await w.find('[aria-label="展开大视图"]').trigger('click'); await flushPromises()
+    expect(w.find('.agent-thread-avatar img').attributes('src')).toBe(expected)
+    expect(w.find('.agent-thread-avatar').attributes('aria-label')).toBe('测试会话的头像')
+    await w.find('.agent-owner-avatar img').trigger('error')
+    expect(w.find('.agent-owner-avatar img').exists()).toBe(false)
+    expect(w.find('.agent-owner-avatar').text()).toBe('测')
+    await w.setProps({account:'another & account'}); await flushPromises()
+    expect(w.find('.agent-owner-avatar img').attributes('src')).toBe(`/api/chat/avatar?${new URLSearchParams({account:'another & account',username})}`)
+    w.unmount()
+  })
+
   it('点击推荐问题直接发送，提交期间重复点击不会重复请求', async () => {
     const original = request.getMockImplementation()
     let release
@@ -352,7 +371,7 @@ describe('聊天 Agent', () => {
       await vi.advanceTimersByTimeAsync(6000);await flushPromises()
       expect(w.find('.agent-thread-running').exists()).toBe(false)
       expect(w.find('.agent-thread-title').text()).toBe('浏览其他会话')
-      expect(w.findAll('.agent-thread-select').map(item=>item.text())).toEqual(['后台任务会话一','浏览其他会话会话一'])
+      expect(w.findAll('.agent-thread-select').map(item=>item.find('span').text())).toEqual(['后台任务','浏览其他会话'])
     } finally { w?.unmount();vi.useRealTimers() }
   })
   it('展开即展示会话列表，可搜索、切换当前联系人的 AI 对话，并保留各自草稿', async () => {
@@ -517,7 +536,7 @@ describe('聊天 Agent', () => {
     const wrapper = mountPanel(); await flushPromises()
     await wrapper.find('textarea').setValue('保留这份草稿')
     await wrapper.find('[aria-label="更多 AI 功能"]').trigger('click')
-    await wrapper.findAll('.agent-menu button')[1].trigger('click')
+    await wrapper.findAll('.agent-menu button').find(button => button.text() === '工具与任务').trigger('click')
     expect(wrapper.find('textarea').exists()).toBe(false)
     await wrapper.find('.agent-tools-heading button').trigger('click')
     expect(wrapper.find('textarea').element.value).toBe('保留这份草稿')

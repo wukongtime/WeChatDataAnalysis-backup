@@ -1,12 +1,68 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { createSSRApp, h, nextTick } from 'vue'
 import { renderToString } from 'vue/server-renderer'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import AssistantThread from '../components/chat/AssistantThread.vue'
 
 // 使用官方 Vue Conversation 和真实滚动容器，覆盖挂载与增量更新。
 const settle = async () => { for (let i=0;i<4;i++) { await flushPromises(); await nextTick() } }
+afterEach(() => vi.useRealTimers())
 describe('AI Elements Vue 对话适配器', () => {
+  it('全屏滚动条仅在用户向下滚动时显示，停止、向上滚动和退出全屏均隐藏', async () => {
+    const wrapper = mount(AssistantThread, { props: { messages: [], expanded: true } })
+    await settle()
+    vi.useFakeTimers({toFake:['setTimeout','clearTimeout','Date']})
+    const viewport = wrapper.find('.agent-conversation')
+    const scroll = async top => { viewport.element.scrollTop = top; await viewport.trigger('scroll') }
+    expect(viewport.classes()).not.toContain('is-scrolling-down')
+    await scroll(50) // 恢复位置和自动跟随不会主动显示。
+    expect(viewport.classes()).not.toContain('is-scrolling-down')
+    await viewport.trigger('wheel', {deltaY:100})
+    await scroll(100)
+    expect(viewport.classes()).toContain('is-scrolling-down')
+    vi.advanceTimersByTime(800)
+    expect(viewport.classes()).not.toContain('is-scrolling-down')
+    await viewport.trigger('wheel', {deltaY:100})
+    await scroll(150)
+    expect(viewport.classes()).toContain('is-scrolling-down')
+    await viewport.trigger('wheel', {deltaY:-100})
+    await scroll(100)
+    expect(viewport.classes()).not.toContain('is-scrolling-down')
+    await viewport.trigger('wheel', {deltaY:100})
+    await scroll(200)
+    await wrapper.setProps({expanded:false})
+    expect(viewport.classes()).not.toContain('is-scrolling-down')
+    await viewport.trigger('wheel', {deltaY:100})
+    await scroll(250)
+    expect(viewport.classes()).not.toContain('is-scrolling-down')
+    wrapper.unmount()
+  })
+
+  it('支持键盘和触摸向下滚动，内层详情滚动不触发主滚动条', async () => {
+    const wrapper = mount(AssistantThread, { props: { messages: [], expanded: true }, slots: {welcome:()=>h('div',{class:'nested-scroll'},'详情')} })
+    await settle()
+    const viewport = wrapper.find('.agent-conversation')
+    const scroll = async top => { viewport.element.scrollTop = top; await viewport.trigger('scroll') }
+    await viewport.trigger('keydown', {key:'PageDown'})
+    await scroll(100)
+    expect(viewport.classes()).toContain('is-scrolling-down')
+    await viewport.trigger('keydown', {key:'PageUp'})
+    await scroll(50)
+    expect(viewport.classes()).not.toContain('is-scrolling-down')
+    await viewport.trigger('touchstart', {touches:[{clientY:200}]})
+    await viewport.trigger('touchmove', {touches:[{clientY:100}]})
+    await scroll(150)
+    expect(viewport.classes()).toContain('is-scrolling-down')
+    await viewport.trigger('touchmove', {touches:[{clientY:200}]})
+    expect(viewport.classes()).not.toContain('is-scrolling-down')
+    const scrollEvents = wrapper.emitted('scroll').length
+    await wrapper.find('.nested-scroll').trigger('wheel', {deltaY:100})
+    await wrapper.find('.nested-scroll').trigger('scroll')
+    expect(viewport.classes()).not.toContain('is-scrolling-down')
+    expect(wrapper.emitted('scroll')).toHaveLength(scrollEvents)
+    wrapper.unmount()
+  })
+
   it('交付真实滚动节点，恢复阅读位置作用于 Conversation 管理的同一容器', async () => {
     const wrapper = mount(AssistantThread, { props: { messages: [] } })
     await settle()
