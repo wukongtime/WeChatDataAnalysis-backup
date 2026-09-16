@@ -1,22 +1,21 @@
 <template>
-  <details class="agent-tool" :class="[`is-${status}`, { 'is-grouped': grouped }]" :open="expanded" @toggle="expanded = $event.target.open">
-    <summary>
+  <component :is="expandable ? 'details' : 'div'" class="agent-tool" :class="[`is-${status}`, { 'is-grouped': grouped }]" :open="expandable ? expanded : undefined" @toggle="expanded = $event.target.open">
+    <component :is="expandable ? 'summary' : 'div'" class="agent-tool-heading">
       <i v-if="status !== 'running'" :class="icon" aria-hidden="true" />
       <span class="agent-tool-title"><span class="agent-tool-label" :class="{ 'agent-shimmer': status === 'running' }">{{ label }}</span><small v-if="first.query" class="agent-tool-query" :title="first.query">{{ first.query }}</small><small v-if="grouped" class="agent-tool-count">{{ items.length }} 次</small></span>
       <span v-if="status !== 'completed'" class="agent-tool-outcome">{{ groupOutcome }}</span>
       <span v-else class="agent-tool-summary">{{ summary }}</span>
-      <i class="fa-solid fa-chevron-right agent-tool-chevron" aria-hidden="true" />
-    </summary>
-    <div class="agent-tool-detail" :class="{ 'agent-tool-timeline': grouped }">
+      <i v-if="expandable" class="fa-solid fa-chevron-right agent-tool-chevron" aria-hidden="true" />
+    </component>
+    <div v-if="expandable" class="agent-tool-detail" :class="{ 'agent-tool-timeline': grouped }">
       <section v-for="(item, index) in items" :key="item.id" class="agent-tool-attempt">
-        <component :is="grouped ? 'details' : 'div'" class="agent-tool-inspection" :open="grouped && inspectionOpen(item.id)" @toggle.stop="setInspectionOpen(item.id, $event.target.open)">
-        <summary v-if="grouped" class="agent-tool-attempt-row" :title="item.action === 'commit_findings' ? '展开本次保存详情' : '展开本次读取详情'" :aria-controls="`tool-inspection-${item.id}`">
-          <i class="fa-solid fa-circle agent-tool-node" aria-hidden="true" />
+        <component :is="grouped && hasInspectionDetails(item) ? 'details' : 'div'" class="agent-tool-inspection" :open="grouped && hasInspectionDetails(item) ? inspectionOpen(item.id) : undefined" @toggle.stop="setInspectionOpen(item.id, $event.target.open)">
+        <component v-if="grouped" :is="hasInspectionDetails(item) ? 'summary' : 'div'" class="agent-tool-attempt-row" :title="hasInspectionDetails(item) ? (item.action === 'commit_findings' ? '展开本次保存详情' : '展开本次操作详情') : undefined" :aria-controls="hasInspectionDetails(item) ? `tool-inspection-${item.id}` : undefined">
           <strong>{{ item.action === 'commit_findings' ? (index === 0 ? '首次保存' : `第 ${index + 1} 次保存`) : item.action === 'compact_context' ? `第 ${index + 1} 次整理` : item.cached ? '复用已读结果' : index === 0 ? '首次读取' : `第 ${index + 1} 次读取` }}</strong>
           <span>{{ item.status !== 'completed' ? outcome(item.status) : item.cached ? '无需重复读取' : callSummary(item) }}</span>
-          <i class="fa-solid fa-chevron-right agent-attempt-chevron" aria-hidden="true" />
-        </summary>
-        <div :id="`tool-inspection-${item.id}`" class="agent-tool-inspection-panel" :class="`is-${item.status}`">
+          <i v-if="hasInspectionDetails(item)" class="fa-solid fa-chevron-right agent-attempt-chevron" aria-hidden="true" />
+        </component>
+        <div v-if="hasInspectionDetails(item)" :id="`tool-inspection-${item.id}`" class="agent-tool-inspection-panel" :class="`is-${item.status}`">
           <header><strong>{{ toolLabel(item.action) }}</strong></header>
         <div class="agent-tool-request">
         <p v-if="item.username">会话：{{ nameFor(item.username) || item.username }}</p>
@@ -33,7 +32,6 @@
         <p v-if="item.action === 'search_messages' && (item.status !== 'failed' || item.result?.retrieval_mode || item.result?.data_source)" class="agent-retrieval-label">{{ retrievalLabel(item) }}</p>
         <p v-if="item.result?.match_counts">本页关键词命中 {{ item.result.match_counts.keyword }} 条 · 语义命中 {{ item.result.match_counts.semantic }} 条（同一消息可同时命中）</p>
         <p v-if="item.result?.realtime_coverage">实时回查：本机已检查 {{ item.result.realtime_coverage.scanned }} 条，匹配 {{ item.result.realtime_coverage.matched }} 条；已查 {{ item.result.realtime_coverage.conversations_completed }} / {{ item.result.realtime_coverage.conversations }} 个会话。{{ item.result.realtime_coverage.recent_gap_complete ? '本次实时缺口已查完，不代表全部历史完整覆盖。' : '仍有实时消息待查。' }}</p>
-        <p v-if="item.result?.source_ids?.length">来源明细可在“查看出处”中核对原消息。</p>
         <p v-if="item.result?.warning" class="agent-coverage">{{ item.result.warning }}</p>
         <p v-if="item.result?.note && item.result.note !== item.result.error">{{ item.result.note }}</p>
         <p v-if="['failed','paused','superseded'].includes(item.status)">{{ recovered.has(item.id) ? '本次保存失败，后续已重试并保存成功。' : item.status === 'failed' ? '这一步未完成，已读取资料会保留。' : item.status === 'superseded' ? '已根据补充要求调整。' : '这一步已暂停。' }}</p>
@@ -46,7 +44,7 @@
         </component>
       </section>
     </div>
-  </details>
+  </component>
 </template>
 
 <script setup>
@@ -87,6 +85,18 @@ const groupOutcome = computed(() => status.value !== 'running' && grouped.value 
 const duration = value => { const n = Math.max(0, Math.floor(value || 0)); return n >= 60 ? `${Math.floor(n / 60)}分${n % 60}秒` : `${n}秒` }
 const elapsed = item => item.started_at == null ? 0 : Math.max(0, (item.finished_at ?? props.now / 1000) - item.started_at)
 const returned = item => Number.isFinite(item.result?.returned) ? item.result.returned : null
+// 条数、耗时、状态和“还有更多”已属于摘要，不单独构成可展开的详情。
+const hasInspectionDetails = item => Boolean(
+  item.username || (grouped.value && item.query) || item.start != null || item.end != null || item.offset != null
+  || (item.status === 'running' && item.detail)
+  || (item.action === 'compact_context' && item.result?.saved)
+  || item.result?.error || item.result?.warning || item.result?.note
+  || item.result?.match_counts || item.result?.realtime_coverage
+  || (item.action === 'search_messages' && (item.result?.retrieval_mode || item.result?.data_source))
+  || (!grouped.value && item.action?.includes('search') && returned(item) !== null)
+  || ['failed', 'paused', 'superseded'].includes(item.status)
+)
+const expandable = computed(() => grouped.value || hasInspectionDetails(first.value))
 const saveSummary = item => saved(item)
   ? (Number.isFinite(item.result.findings) ? `已保存 ${item.result.findings} 条发现` : '已保存')
   : item.result?.requires_commit === false ? '无需保存' : '未确认保存'

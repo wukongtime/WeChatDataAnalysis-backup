@@ -74,38 +74,56 @@ it('旧任务只提供新引擎重新运行入口', async () => {
 })
 
 describe('Agent 执行对话流',()=>{
-  it('运行中的模型调用次数使用 SSE 增量，不把尚未汇总的用量显示为零', async () => {
-    const w = setup({run:{...base(),used:{models:5},usage:{calls:0,input_tokens:0,output_tokens:0}}})
-    expect(w.find('.agent-usage').text()).not.toContain('输入 0')
-    expect(w.find('.agent-usage').text()).toBe('输入 待汇总 · 输出 待汇总 Token')
-    await w.setProps({run:{...base(),status:'completed',used:{models:5},usage:{calls:5,input_tokens:1200,output_tokens:300}}})
-    expect(w.find('.agent-usage').text()).toContain('输入 1200 · 输出 300 Token')
+  it('最终统计仅在回答末尾复制右侧显示，折叠过程不影响统计', async () => {
+    const run = {...base(),answer:'回答内容',read_count:354,analysis:{known:true,tracked:false},used:{models:5},usage:{calls:0,input_tokens:0,output_tokens:0}}
+    const w = setup({run})
+    expect(w.find('.agent-final-summary').exists()).toBe(false)
+    await w.setProps({run:{...run,status:'completed',usage:{calls:5,input_tokens:112694,output_tokens:1197}}})
+    const footer = w.find('.agent-answer-footer')
+    expect(footer.find('[aria-label="复制回答"]').element.nextElementSibling).toBe(footer.find('.agent-final-summary').element)
+    expect(footer.text()).toBe('已读取 354 条 · 按需检索 · 输入 11.3w · 输出 1.2k Token')
+    expect(footer.find('.agent-final-summary').attributes('title')).toBe('已读取 354 条 · 按需检索 · 输入 112694 · 输出 1197 Token')
+    expect(w.find('.agent-process-panel .agent-final-summary').exists()).toBe(false)
+    await w.find('.agent-process-toggle').trigger('click')
+    expect(footer.isVisible()).toBe(true)
+    await w.setProps({run:{...run,status:'completed',coverage_state:'not_applicable',usage:{input_tokens:0,unknown:1}}})
+    expect(footer.text()).toBe('输入 0 · 输出 未知 Token')
+    expect(footer.find('.agent-final-summary').attributes('title')).toContain('显示已知部分')
+    await w.setProps({run:{...run,status:'completed',answer:''}})
+    expect(w.find('.agent-answer-footer').exists()).toBe(false)
     w.unmount()
   })
-  it('用量直接显示，旧详情展开状态不会恢复已移除的统计和入口', () => {
+  it.each([
+    [0, '0'], [350, '350'], [999, '999'], [1000, '1k'], [1250, '1.3k'],
+    [9999, '1w'], [10000, '1w'], [112694, '11.3w'], [999999, '1m'],
+    [1000000, '1m'], [1250000, '1.3m'], [undefined, '未知'], [null, '未知'],
+  ])('文末 Token 数量 %s 自动显示为 %s', (value, expected) => {
+    const w = setup({run:{...base(),status:'completed',answer:'回答',coverage_state:'not_applicable',usage:{input_tokens:value,output_tokens:value}}})
+    expect(w.find('.agent-final-summary').text()).toBe(`输入 ${expected} · 输出 ${expected} Token`)
+    w.unmount()
+  })
+  it('旧详情展开状态不会恢复已移除的统计和入口', () => {
     const w = setup({run:{...base(),status:'completed',usage:{calls:6,input_tokens:100,output_tokens:20,unknown:1},
       query_filters:{conversations:['friend']},time_range:{start:100,end:200},
       analysis:{known:true,coverage:[{username:'friend',read:50}],segments:2},
-      index_status:{enabled:true,message:'语义索引已暂停'}},viewState:reactive({'run1:details':true,'run1:readingCoverage':true})})
-    expect(w.find('.agent-usage').isVisible()).toBe(true)
-    expect(w.find('.agent-usage').text()).toBe('输入 100 · 输出 20 Token')
-    expect(w.find('.agent-usage').attributes('title')).toContain('已知部分')
+      index_status:{enabled:true,message:'语义索引已暂停'}},viewState:reactive({'run1:details':true,'run1:readingCoverage':true,'run1:materials':true})})
+    expect(w.find('.agent-usage').exists()).toBe(false)
     expect(w.find('.agent-run-details').exists()).toBe(false)
     for (const label of ['运行详情','执行统计','聊天范围','查询时间','逐聊天覆盖','语义索引已暂停','查看用量审计']) expect(w.text()).not.toContain(label)
-    expect(w.find('.agent-materials-link').exists()).toBe(true)
+    expect(w.find('.agent-materials-link').exists()).toBe(false)
     w.unmount()
   })
-  it('Agent 小提示使用实际分析进度，长时间等待说明也留在过程区域', async () => {
+  it('运行中保留阶段与计时，不显示读取统计或等待说明', async () => {
     const r={...base(),stage:'正在分段分析',analysis:{known:true,analyzed:20,complete:false}}
     const w=setup({run:r,now:132000})
-    expect(w.find('.agent-live-hint').text()).toBe('已读取 50 条，已提交分析 20 条。')
-    expect(w.find('.agent-live-step .agent-wait-note').exists()).toBe(true)
+    expect(w.find('.agent-live-hint').exists()).toBe(false)
+    expect(w.find('.agent-live-step .agent-wait-note').exists()).toBe(false)
     await w.find('.agent-process-toggle').trigger('click')
     expect(w.find('.agent-process').isVisible()).toBe(false)
     expect(w.find('.agent-live-step').isVisible()).toBe(true)
-    expect(w.find('.agent-run-metadata').isVisible()).toBe(false)
+    expect(w.find('.agent-run-metadata').exists()).toBe(false)
     await w.setProps({run:{...r,analysis:{known:true,analyzed:50,complete:true}}})
-    expect(w.find('.agent-live-hint').text()).toBe('已读取 50 条，已提交分析 50 条，范围处理完成。')
+    expect(w.find('.agent-live-hint').exists()).toBe(false)
     await w.setProps({run:{...r,status:'failed',error:'服务暂时不可用'}})
     expect(w.find('.agent-live-step').exists()).toBe(false)
     expect(w.find('.agent-error').isVisible()).toBe(true)
@@ -152,7 +170,7 @@ describe('Agent 执行对话流',()=>{
     await w.setProps({run:{...r,stage:'搜索聊天记录',stage_started_at:108,timeline:base().timeline,read_count:8}})
     expect(w.find('.agent-stream-status').text()).toBe('搜索聊天记录')
     expect(w.find('.agent-live-step time').text()).toBe('1秒')
-    expect(w.find('.agent-live-hint').text()).toBe('已读取 8 条消息。')
+    expect(w.find('.agent-live-hint').exists()).toBe(false)
     expect(w.find('.agent-process').isVisible()).toBe(false)
     await w.setProps({run:{...r,status:'completed',answer:'结果'}})
     expect(w.find('.agent-stream-status').exists()).toBe(false)
@@ -160,34 +178,30 @@ describe('Agent 执行对话流',()=>{
     expect(w.find('.agent-final-answer').isVisible()).toBe(true)
     w.unmount()
   })
-  it('回答辅助操作共用工具栏，资料说明按需展开且不受过程折叠影响', async () => {
-    const w = setup({run:{...base(),status:'completed',answer:'最终回答内容',coverage_warnings:['图片尚未读取','文件尚未解析']}})
+  it('回答保留复制操作，旧展开状态不会恢复出处或资料说明', async () => {
+    const w = setup({run:{...base(),status:'completed',answer:'最终回答内容',coverage_warnings:['图片尚未读取','文件尚未解析']},
+      viewState:reactive({'run1:evidence':true,'run1:coverage':true})})
     await w.find('.agent-process-toggle').trigger('click')
     const actions = w.find('.agent-result-actions')
     expect(actions.find('[aria-label="复制回答"]').exists()).toBe(true)
-    expect(actions.find('[aria-label="查看出处"]').text()).toBe('出处')
-    expect(actions.find('.agent-coverage-action').text()).toBe('部分资料未读')
+    expect(actions.find('[aria-label="查看出处"]').exists()).toBe(false)
+    expect(actions.find('.agent-coverage-action').exists()).toBe(false)
     expect(w.find('.agent-coverage-explanation').exists()).toBe(false)
-    await actions.find('.agent-coverage-action').trigger('click')
-    expect(w.find('.agent-coverage-explanation').text()).toContain('图片尚未读取')
-    expect(w.find('.agent-coverage-explanation').text()).toContain('文件尚未解析')
+    expect(w.find('.agent-evidence-panel').exists()).toBe(false)
     expect(w.find('.agent-process').isVisible()).toBe(false)
-    await actions.find('[aria-label="查看出处"]').trigger('click')
-    expect(w.find('.agent-evidence-panel').exists()).toBe(true)
-    await actions.find('.agent-coverage-action').trigger('click')
-    expect(w.find('.agent-coverage-explanation').exists()).toBe(false)
     await w.setProps({run:{...base(),status:'running',answer:'正在生成',coverage_warnings:['图片尚未读取']}})
-    expect(actions.find('.agent-coverage-action').exists()).toBe(true)
-    expect(actions.find('.agent-copy-action').exists()).toBe(false)
+    expect(w.find('.agent-result-actions').exists()).toBe(false)
+    expect(w.find('.agent-coverage-explanation').exists()).toBe(false)
     w.unmount()
   })
-  it('完成后默认展开过程，仍可手动收起过程和用量', async () => {
+  it('完成后默认展开过程，仍可手动收起', async () => {
     const w = setup({run:{...base(),timeline:base().timeline.filter(item=>item.kind!=='progress'),status:'completed',elapsed_seconds:141,answer:'约饭定在周三',usage:{calls:6,input_tokens:100,output_tokens:20}}})
     expect(w.find('.agent-process-toggle').text()).toContain('执行过程')
     expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('true')
     expect(w.find('.agent-final-answer').isVisible()).toBe(true)
+    expect(w.find('.agent-answer-heading').exists()).toBe(false)
     expect(w.find('.agent-process').isVisible()).toBe(true)
-    expect(w.find('.agent-run-metadata').element.style.display).not.toBe('none')
+    expect(w.find('.agent-run-metadata').exists()).toBe(false)
     const text = w.text()
     expect(w.find('.agent-process-title').text()).toBe('执行过程')
     expect(w.find('.agent-process-meta').text()).toBe('2分21秒')
@@ -196,11 +210,10 @@ describe('Agent 执行对话流',()=>{
     expect(text).not.toContain('用量与读取范围')
     expect(w.find('.agent-run-metadata > summary').exists()).toBe(false)
     expect(w.find('.agent-run-details').exists()).toBe(false)
-    expect(w.find('.agent-usage').text()).toBe('输入 100 · 输出 20 Token')
-    expect(w.find('.agent-usage').isVisible()).toBe(true)
+    expect(w.find('.agent-usage').exists()).toBe(false)
     await w.find('.agent-process-toggle').trigger('click')
     expect(w.find('.agent-final-answer').isVisible()).toBe(true)
-    expect(w.find('.agent-run-metadata').element.style.display).toBe('none')
+    expect(w.find('.agent-run-metadata').exists()).toBe(false)
     w.unmount()
   })
   it('过程与回答有独立区域，阶段回复直接呈现为段落，未完成回答不会标为最终回答', async () => {
@@ -209,7 +222,7 @@ describe('Agent 执行对话流',()=>{
     expect(process.attributes('aria-label')).toBe('执行过程')
     expect(process.find('[aria-label="阶段性回复"]').text()).toContain('找到两次报价')
     expect(process.find('.agent-progress-caption').exists()).toBe(false)
-    expect(process.find('.agent-run-metadata').exists()).toBe(true)
+    expect(process.find('.agent-run-metadata').exists()).toBe(false)
     expect(process.find('.agent-final-answer').exists()).toBe(false)
     expect(w.find('.agent-answer-heading').text()).toBe('正在回答')
     await w.setProps({run:{...base(),answer:'尚未完成',status:'failed',error:'请求失败'}})
@@ -229,13 +242,13 @@ describe('Agent 执行对话流',()=>{
     group.element.open = true
     await group.trigger('toggle')
     expect(group.element.open).toBe(true)
-    expect(w.find('.agent-tool > summary').text()).toContain('21 条消息 · 含 1 次复用')
+    expect(w.find('.agent-tool > .agent-tool-heading').text()).toContain('21 条消息 · 含 1 次复用')
     expect(w.findAll('.agent-tool-attempt-row').map(x=>x.text())).toEqual(['首次读取21 条 · 2秒','复用已读结果无需重复读取'])
     group.element.open = false
     await group.trigger('toggle')
     await w.setProps({run:{...r,timeline:[a,b,{...b,id:'c'}]}})
     expect(group.element.open).toBe(false)
-    expect(w.find('.agent-tool > summary').text()).toContain('21 条消息 · 含 2 次复用')
+    expect(w.find('.agent-tool > .agent-tool-heading').text()).toContain('21 条消息 · 含 2 次复用')
     w.unmount()
   })
   it('过程进展共用 Markdown 引用渲染，折叠历史仍显示实时状态', async () => {
@@ -310,10 +323,10 @@ describe('Agent 执行对话流',()=>{
     const r = {...base(),timeline:[a,b]}
     const w = setup({run:r})
     expect(w.findAll('.agent-tool')).toHaveLength(1)
-    expect(w.find('.agent-tool > summary').text()).toContain('2 次')
-    expect(w.find('.agent-tool > summary').text()).toContain('部分完成')
+    expect(w.find('.agent-tool > .agent-tool-heading').text()).toContain('2 次')
+    expect(w.find('.agent-tool > .agent-tool-heading').text()).toContain('部分完成')
     expect(w.find('.agent-tool-detail').text()).toContain('失败')
-    expect(w.find('.agent-tool > summary').text()).not.toContain('21')
+    expect(w.find('.agent-tool > .agent-tool-heading').text()).not.toContain('21')
     expect(w.findAll('.agent-tool-attempt')).toHaveLength(2)
     expect(w.find('.agent-tool-detail').text()).toContain('复用已读结果')
     const detail=w.find('.agent-tool').element;detail.open=true
@@ -328,13 +341,13 @@ describe('Agent 执行对话流',()=>{
     const a={id:'compact-a',kind:'tool',action:'compact_context',text:'已整理阶段笔记',status:'completed',result:{saved:true,before:47872,after:24523,covered_fragments:120}}
     const b={...a,id:'compact-b',text:'整理未完成，原文已保留',status:'failed',result:undefined}
     const w=setup({run:{...base(),timeline:[a,b]}})
-    expect(w.find('.agent-tool > summary').text()).toContain('整理上下文')
-    expect(w.find('.agent-tool > summary').text()).toContain('部分完成')
+    expect(w.find('.agent-tool > .agent-tool-heading').text()).toContain('整理上下文')
+    expect(w.find('.agent-tool > .agent-tool-heading').text()).toContain('部分完成')
     expect(w.find('.agent-tool-detail').text()).toContain('47872 → 24523 预算单位 · 120 个原文片段')
     expect(w.find('.agent-tool-detail').text()).not.toContain('0 条结果')
     await w.setProps({run:{...base(),timeline:[a,b,{...b,id:'compact-c',status:'running'}]}})
     expect(w.find('.agent-tool').classes()).toContain('is-running')
-    expect(w.find('.agent-tool > summary').text()).toContain('进行中')
+    expect(w.find('.agent-tool > .agent-tool-heading').text()).toContain('进行中')
     expect(w.find('.agent-tool-detail').text()).toContain('失败')
     w.unmount()
   })

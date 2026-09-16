@@ -61,19 +61,19 @@ onUnmounted(() => { revision++ })
 
 <style scoped>
 .agent-compaction { margin:24px 0; min-width:0; color:var(--app-text-secondary,#737373); font-size:14px; line-height:1.7; }
-/* 分隔提示跨出步骤缩进，遮住阅读轴；历史顺序和其他步骤布局保持原位。 */
-.agent-process .agent-compaction { position:relative; margin:0 0 0 -18px; width:calc(100% + 18px); padding:24px 0; background:var(--ag-bg,#fff); }
+/* 压缩状态和详情与其他步骤保持左对齐。 */
+.agent-process .agent-compaction { position:relative; margin:0; width:100%; padding:24px 0; background:var(--ag-bg,#fff); }
 .compaction-divider { display:flex; width:100%; align-items:center; gap:14px; padding:6px 0; border:0; background:transparent; color:inherit; font:inherit; }
-.compaction-divider::before,.compaction-divider::after { content:''; flex:1; min-width:12px; border-top:1px solid var(--app-border,#e7e9ed); }
+.compaction-divider::after { content:''; flex:1; min-width:12px; border-top:1px solid var(--app-border,#e7e9ed); }
 .compaction-divider span { display:inline-flex; align-items:center; gap:8px; white-space:nowrap; }
 button.compaction-divider { cursor:pointer; min-height:36px; }
 button.compaction-divider:hover { color:var(--app-text-primary,#333); }
 button:focus-visible { outline:2px solid var(--app-text-secondary,#737373); outline-offset:3px; border-radius:3px; }
-.compaction-progress { text-align:center; }
+.compaction-progress { text-align:left; }
 .compaction-progress p { margin:3px 0 0; font-size:12px; }
 .compaction-divider i { font-size:15px; }
 .compaction-pulse { margin-top:9px; font-size:14px; animation:compaction-breathe 1.6s ease-in-out infinite; }
-.compaction-details { padding:12px 14px; margin-top:6px; border:1px solid var(--app-border,#e7e9ed); border-radius:8px; overflow-wrap:anywhere; font-size:12px; }
+.compaction-details { padding:12px 0; margin-top:6px; border:0; border-top:1px solid var(--app-border,#e7e9ed); border-radius:0; overflow-wrap:anywhere; font-size:12px; }
 .compaction-details p { margin:0 0 8px; }
 .compaction-details p:last-child { margin-bottom:0; }
 .compaction-usage { font-variant-numeric:tabular-nums; }
@@ -82,5 +82,4 @@ button:focus-visible { outline:2px solid var(--app-text-secondary,#737373); outl
 .compaction-details button { color:inherit; text-decoration:underline; cursor:pointer; }
 @keyframes compaction-breathe { 0%,100% { opacity:.35; } 50% { opacity:1; } }
 @media(prefers-reduced-motion:reduce) { .compaction-pulse { animation:none; } }
-@container(max-width:480px) { .agent-process .agent-compaction { margin-left:-14px; width:calc(100% + 14px); } }
 </style>

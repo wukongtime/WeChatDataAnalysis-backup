@@ -37,19 +37,19 @@ it('切换任务后丢弃旧资料响应', async () => {
   wrapper.unmount()
 })
 
-it('过程区区分已读与已分析，不虚构百分比', () => {
+it('过程区不展示已读与已分析统计', () => {
   const wrapper = mount(AgentRun, { props: { run, now: Date.now(), nearBottom: true, latest: true, viewState: {} } })
-  expect(wrapper.text()).toContain('已读取 120 条 · 已提交分析 100 条')
-  expect(wrapper.text()).toContain('范围尚未处理完成')
+  expect(wrapper.text()).not.toContain('已读取 120 条')
+  expect(wrapper.text()).not.toContain('范围尚未处理完成')
   expect(wrapper.text()).not.toContain('%')
   wrapper.unmount()
 })
 
-it('普通问答显示按需检索，不把未提交分析误报为处理失败', async () => {
+it('普通问答在运行中和完成后均隐藏读取提示', async () => {
   const wrapper = mount(AgentRun, { props: { run: { ...run, analysis: { ...run.analysis, tracked: false, analyzed: 0 } }, now: Date.now(), viewState: {} } })
-  expect(wrapper.find('.agent-coverage-summary').text()).toBe('已读取 120 条 · 按需检索')
+  expect(wrapper.find('.agent-coverage-summary').exists()).toBe(false)
   await wrapper.setProps({ run: { ...run, status: 'running', analysis: { ...run.analysis, tracked: false, analyzed: 0 } } })
-  expect(wrapper.text()).toContain('已读取 120 条，按需检索。')
+  expect(wrapper.text()).not.toContain('已读取 120 条，按需检索。')
   expect(wrapper.text()).not.toContain('已分析 0 条')
   wrapper.unmount()
 })

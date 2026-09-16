@@ -156,7 +156,7 @@ details[open] > summary > .disclosure-chevron { transform: rotate(90deg); }
 .subtask-range, .subtask-goal { margin-top: 8px; }
 .subtask-goal { line-height: 1.7; }
 .subtasks-list { list-style: none; padding: 0; margin: 6px 0 0; display: grid; gap: 10px; }
-.subtask-item { min-width: 0; padding: 14px 16px 0; border: 1px solid var(--app-border, #e7e7e7); border-radius: 12px; overflow: hidden; }
+.subtask-item { min-width: 0; padding: 14px 0 0; border: 0; border-top: 1px solid var(--app-border, #e7e7e7); border-radius: 0; overflow: hidden; }
 .subtask-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .subtask-heading strong { flex: 1 1 100%; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .subtask-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--app-text-secondary, #666); }
@@ -185,7 +185,7 @@ h4 { margin: 0 0 8px; font-size: 12px; font-weight: 600; }
 .subtask-findings p + p { margin-top: 12px; }
 .subtask-objective { margin-top: 12px; }
 .subtask-objective > summary { min-height: 32px; color: var(--app-text-secondary, #666); font-size: 12px; }
-.subtask-objective p { max-height: 200px; overflow-y: auto; margin-top: 8px; padding: 12px; background: var(--app-surface-soft, #f7f7f7); border-radius: 6px; white-space: pre-wrap; font-size: 12px; }
+.subtask-objective p { max-height: 200px; overflow-y: auto; margin-top: 8px; padding: 12px 0; background: var(--app-surface-soft, #f7f7f7); border-radius: 6px; white-space: pre-wrap; font-size: 12px; }
 .subtask-usage { margin-top: 12px; color: var(--app-text-secondary, #666); font-size: 11px; }
 .subtasks-empty { padding-block: 12px; color: var(--app-text-secondary, #666); }
 .subtask-error { margin-block: 10px; color: var(--subtask-danger); }

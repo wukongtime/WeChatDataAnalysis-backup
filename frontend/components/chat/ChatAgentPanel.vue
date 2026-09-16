@@ -2,17 +2,18 @@
   <aside ref="panelView" class="agent-panel" :class="{ 'is-expanded': expanded, 'is-resizing': resizing }" :style="{ '--agent-panel-width': `${panelWidth}px` }" :role="expanded ? 'dialog' : undefined" :aria-modal="expanded ? true : undefined" aria-label="AI 助手" @keydown.esc="onEscape" @keydown.tab="expanded && trapFocus($event, panelView)">
     <div v-if="!expanded" class="agent-resizer" role="separator" tabindex="0" aria-label="调整 AI 助手宽度" aria-orientation="vertical" :aria-valuemin="minWidth" :aria-valuemax="maxWidth" :aria-valuenow="panelWidth" :aria-valuetext="`${panelWidth} 像素`" title="拖动调整宽度，双击恢复默认；方向键微调" @pointerdown="startResize" @lostpointercapture="finishResize" @keydown="resizeKeyboard" @dblclick="resetWidth" />
     <div class="agent-shell" :class="{ 'has-navigation': navigationOpen }">
-    <AgentThreadList v-if="navigationOpen" :key="selectionKey" :items="history" :current="thread?.id" :running-ids="runningThreadIds" :loading="historyLoading" :busy="historyBusy" :error="historyError" :name-for="nameFor" @close="navigationOpen = false" @new="newThread" @select="selectHistory" @refresh="loadHistory" @rename="renameHistory" @delete="deleteHistory" @settings="settings.openDialog('ai')" />
+    <AgentThreadList v-if="navigationOpen" :key="selectionKey" :items="history" :current="thread?.id" :running-ids="runningThreadIds" :loading="historyLoading" :busy="historyBusy" :error="historyError" :name-for="nameFor" :avatar-for="avatarFor" @new="newThread" @select="selectHistory" @refresh="loadHistory" @rename="renameHistory" @delete="deleteHistory" @settings="settings.openDialog('ai')" />
     <div class="agent-main">
     <header class="agent-header">
-      <button type="button" aria-label="AI 对话历史" title="会话列表" :aria-expanded="navigationOpen" @click="openHistory"><i class="fa-solid fa-columns" aria-hidden="true" /></button>
-      <button type="button" aria-label="旧版全局历史" title="旧版全局历史" @click="legacyHistory = !legacyHistory; navigationOpen = true; loadHistory()"><i class="fa-solid fa-clock-rotate-left" aria-hidden="true" /></button>
+      <button type="button" aria-label="AI 对话历史" :title="navigationOpen ? '收起侧边栏' : '展开侧边栏'" :aria-expanded="navigationOpen" @click="openHistory"><i class="fa-solid fa-table-columns" aria-hidden="true" /></button>
+      <AgentAvatar v-if="contactUsername" class="agent-owner-avatar" :path="avatarFor(contactUsername)" :name="contactName" />
       <span class="agent-owner" :title="contactName">{{ contactName }}</span><strong class="agent-thread-title" :title="thread?.title || '新对话'">{{ thread?.title || '新对话' }}</strong>
       <button type="button" aria-label="新建 AI 对话" title="新建对话" @click="mode = 'agent'; newThread()"><i class="fa-regular fa-pen-to-square" aria-hidden="true"></i></button>
       <button type="button" :aria-label="expanded ? '收起大视图' : '展开大视图'" :title="expanded ? '收起大视图' : '展开大视图'" @click="expanded = !expanded"><i :class="expanded ? 'fa-solid fa-compress' : 'fa-solid fa-expand'" aria-hidden="true"></i></button>
       <div class="agent-menu-anchor" ref="menuAnchor">
         <button ref="menuTrigger" type="button" aria-label="更多 AI 功能" :aria-expanded="menuOpen" aria-controls="agent-more-menu" @click="menuOpen = !menuOpen"><i class="fa-solid fa-ellipsis" aria-hidden="true"></i></button>
         <div v-if="menuOpen" id="agent-more-menu" class="agent-menu">
+          <button type="button" aria-label="旧版全局历史" @click="menuOpen = false; legacyHistory = !legacyHistory; navigationOpen = true; loadHistory()"><i class="fa-solid fa-clock-rotate-left" aria-hidden="true" />旧版全局历史</button>
           <button type="button" @click="mode = 'agent'; menuOpen = false"><i class="fa-regular fa-comment-dots" aria-hidden="true"></i>对话<i v-if="mode === 'agent'" class="fa-solid fa-check" aria-hidden="true"></i></button>
           <button type="button" @click="mode = 'tools'; menuOpen = false"><i class="fa-solid fa-toolbox" aria-hidden="true"></i>工具与任务<i v-if="mode === 'tools'" class="fa-solid fa-check" aria-hidden="true"></i></button>
           <button type="button" @click="menuOpen = false; settings.openDialog('ai')"><i class="fa-solid fa-sliders" aria-hidden="true"></i>AI 服务设置</button>
@@ -28,7 +29,7 @@
       <p v-if="connectionNotice" class="agent-error" role="status">{{ connectionNotice }}</p>
       <p v-if="error" class="agent-error" role="alert">{{ error }}</p>
       <p v-if="threadLoading" class="agent-loading" role="status">正在打开对话…</p>
-      <AssistantThread :key="thread?.id || selectionKey" :messages="assistantMessages" :running="running" @scroll="onScroll" @ready="onThreadReady">
+      <AssistantThread :key="thread?.id || selectionKey" :messages="assistantMessages" :running="running" :expanded="expanded" @scroll="onScroll" @ready="onThreadReady">
         <template #welcome>
         <div v-if="!thread?.messages?.length && !threadLoading" class="agent-welcome"><span class="agent-welcome-symbol"><i class="fa-regular fa-comment-dots" aria-hidden="true" /></span><h3>想从聊天里了解什么？</h3><p>查找消息、梳理进展，或继续追问。<br>从当前聊天开始，可按需查找其他聊天，回答附上原文出处。</p><button v-for="q in suggestions" :key="q" type="button" :disabled="sending || running || !account || (!contact?.username && !legacyView)" @click="sendSuggestion(q)">{{ q }}<i class="fa-solid fa-arrow-up" aria-hidden="true"></i></button></div>
         </template>
@@ -50,7 +51,7 @@
           <div class="agent-input-actions">
             <AgentContextRing :budget="run?.context_budget" />
             <AgentModelPicker v-model="modelChoice" :profiles="profiles" :profiles-loading="profilesLoading" :profiles-error="profilesError" @refresh="loadProfiles" />
-            <button type="button" class="agent-send" :disabled="running ? stopping : (threadLoading || sending || !draft.trim() || !account || (!contact?.username && !legacyView))" :aria-label="running ? '停止处理' : '发送问题'" @click="primaryAction"><i :class="running ? 'fa-solid fa-stop' : 'fa-solid fa-arrow-up'" aria-hidden="true" /></button>
+            <button type="button" class="agent-send" :disabled="running ? stopping : (threadLoading || sending || !draft.trim() || !account || (!contact?.username && !legacyView))" :aria-label="running ? '停止处理' : '发送问题'" @click="primaryAction"><span v-if="running" class="agent-stop-icon" aria-hidden="true" /><i v-else class="fa-solid fa-arrow-up" aria-hidden="true" /></button>
           </div>
         </div>
         <small v-if="modelSelection.state.notice" class="agent-error" role="status">{{ modelSelection.state.notice }} <button v-if="modelSelection.state.dirty" type="button" @click="modelSelection.choose(modelChoice)">重试保存</button></small>
@@ -76,6 +77,7 @@ import AssistantThread from './AssistantThread.vue'
 import AgentContextRing from './AgentContextRing.vue'
 import AgentModelPicker from './AgentModelPicker.vue'
 import AgentThreadList from './AgentThreadList.vue'
+import AgentAvatar from './AgentAvatar.vue'
 import { useAgentPanelResize } from '~/composables/useAgentPanelResize'
 import { mergeTimeline, mergeReferenceData, mergeRunEvent } from '~/utils/agentTimeline'
 import { agentModelSelection } from '~/lib/agent-model-selection'
@@ -146,7 +148,9 @@ const selectionKey = computed(() => `${props.account}:${legacyView.value ? 'lega
 const draftKey = computed(() => `${selectionKey.value}:${thread.value?.id || 'new'}`)
 const draft = computed({ get: () => saved.value.drafts[draftKey.value] || '', set: value => { saved.value.drafts[draftKey.value] = value } })
 const nameFor = id => [props.contact, ...(props.contacts || []), ...directory.value].find(c => c?.username === id)?.name || id
-const contactName = computed(() => legacyView.value ? '旧版全局历史' : (nameFor(props.contact?.username) || '当前聊天'))
+const avatarFor = username => username && props.account ? `/chat/avatar?${new URLSearchParams({account:props.account,username})}` : ''
+const contactUsername = computed(() => legacyView.value ? '' : (thread.value?.username || props.contact?.username || ''))
+const contactName = computed(() => legacyView.value ? '旧版全局历史' : (nameFor(contactUsername.value) || '当前聊天'))
 const scopeLabel = computed(() => !thread.value ? contactName.value : thread.value.scope.length === 1 ? nameFor(thread.value.scope[0]) : `${thread.value.scope.length} 个会话`)
 const scopeContacts = computed(() => directory.value.filter(c => `${c.name} ${c.username}`.toLowerCase().includes(scopeQuery.value.toLowerCase())))
 const running = computed(() => ['queued', 'running'].includes(run.value?.status))
