@@ -81,18 +81,6 @@
       <button
         type="button"
         class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
-        title="问题反馈"
-        aria-label="问题反馈"
-        @click="openBugReportDialog"
-      >
-        <span class="sidebar-rail-plate w-[var(--sidebar-rail-btn)] h-[var(--sidebar-rail-btn)] rounded-md flex items-center justify-center transition-colors bg-transparent">
-          <i class="fa-solid fa-bug sidebar-rail-icon text-[17px]" aria-hidden="true"></i>
-        </span>
-      </button>
-
-      <button
-        type="button"
-        class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
         title="高级功能演示"
         aria-label="高级功能演示"
         @click="openAdvancedFeaturesDialog"
@@ -505,7 +493,6 @@
   </div>
 
   <GlobalExportDialog v-if="showGlobalExportEntry" :open="exportDialogOpen" @close="closeExportDialog" />
-  <BugReportDialog :open="bugReportDialogOpen" @close="closeBugReportDialog" />
 
   <AdvancedFeaturesDialog :open="advancedFeaturesDialogOpen" @close="closeAdvancedFeaturesDialog" />
 </template>
@@ -559,12 +546,9 @@ const deleteAccountApiUnsupported = ref(false)
 const brokenAvatarUrls = ref({})
 const isMacosDesktop = ref(false)
 const advancedFeaturesDialogOpen = ref(false)
-const bugReportDialogOpen = ref(false)
 
 const openAdvancedFeaturesDialog = () => { advancedFeaturesDialogOpen.value = true }
 const closeAdvancedFeaturesDialog = () => { advancedFeaturesDialogOpen.value = false }
-const openBugReportDialog = () => { bugReportDialogOpen.value = true }
-const closeBugReportDialog = () => { bugReportDialogOpen.value = false }
 
 const normalizeAccountName = (value) => String(value || '').trim()
 
