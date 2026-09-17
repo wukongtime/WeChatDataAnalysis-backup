@@ -14,7 +14,7 @@
           @keydown.esc.prevent="close"
         >
           <div class="pw-grain" aria-hidden="true" />
-          <p class="pw-intro">WxCDN 媒体下载服务 · 支持图片 / 视频 / 文件 / 语音 · 兑换码联系 QQ 3434549571</p>
+          <p class="pw-intro">WxCDN 媒体下载服务 · 支持图片 / 视频 / 文件 / 语音<br>兑换码请{{ DEVELOPER_CONTACT_HINT }}</p>
           <nav class="pw-index" aria-label="版本">
             <button
               v-for="t in ORDER"
@@ -73,6 +73,7 @@ import { sweepGlimm } from '~/lib/wxcdn-card/glimm.js'
 import { buildAccountAvatarUrl } from '~/lib/account-avatar'
 import { useChatAccountsStore } from '~/stores/chatAccounts'
 import { useCdnPlanStore } from '~/stores/cdnPlan'
+import { DEVELOPER_CONTACT_HINT } from '~/lib/developer-support'
 
 const { open, reason, closePlanWindow } = usePlanWindow()
 const store = useCdnPlanStore()

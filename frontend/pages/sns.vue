@@ -1123,9 +1123,9 @@
     <GuideDialog
       :open="publishUnavailableDialogOpen"
       eyebrow="功能暂未开放"
-      title="请添加 QQ 联系开发者"
+      :title="DEVELOPER_CONTACT_TITLE"
       :description="FEATURE_UNAVAILABLE_MESSAGE"
-      primary-label="添加 QQ 3434549571"
+      :primary-label="DEVELOPER_CONTACT_LABEL"
       secondary-label="关闭"
       tone="warning"
       @primary="contactDeveloper"
@@ -1137,7 +1137,7 @@
 
 <script setup>
 import { storeToRefs } from 'pinia'
-import { FEATURE_UNAVAILABLE_MESSAGE, openDeveloperContact } from '~/lib/developer-support'
+import { DEVELOPER_CONTACT_LABEL, DEVELOPER_CONTACT_TITLE, FEATURE_UNAVAILABLE_MESSAGE, openDeveloperContact } from '~/lib/developer-support'
 import { useChatAccountsStore } from '~/stores/chatAccounts'
 import { usePrivacyStore } from '~/stores/privacy'
 import { parseTextWithEmoji } from '~/lib/wechat-emojis'

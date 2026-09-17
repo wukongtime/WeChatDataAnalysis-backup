@@ -3,7 +3,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-UNAVAILABLE_MESSAGE = "当前版本仅展示该功能入口，暂时无法执行。请添加 QQ 3434549571（备注「高级版」）联系开发者获取支持。"
+QQ_GROUP_NUMBER = "1109365501"
+QQ_GROUP_JOIN_URL = "https://qm.qq.com/q/2IB0gvYpYA"
+LEGACY_DEVELOPER_QQ = "3434549571"
 
 
 class TestChatEditSurfaceFrontend(unittest.TestCase):
@@ -49,11 +51,24 @@ class TestChatEditSurfaceFrontend(unittest.TestCase):
         self.assertLess(handler.index("closeContextMenu()"), handler.index("openFeatureUnavailableDialog()"))
         self.assertIn("modifyTextUnavailableDialogOpen.value = false", close_handler)
         support = (ROOT / "frontend" / "lib" / "developer-support.js").read_text(encoding="utf-8")
-        self.assertIn(f"export const FEATURE_UNAVAILABLE_MESSAGE = '{UNAVAILABLE_MESSAGE}'", support)
+        self.assertIn(f"export const QQ_GROUP_NUMBER = '{QQ_GROUP_NUMBER}'", support)
+        self.assertIn(f"export const QQ_GROUP_JOIN_URL = '{QQ_GROUP_JOIN_URL}'", support)
+        self.assertIn("export const DEVELOPER_CONTACT_LABEL = `进 3 群 ${QQ_GROUP_NUMBER}`", support)
+        self.assertIn("export const DEVELOPER_CONTACT_HINT = `进 QQ 3 群 ${QQ_GROUP_NUMBER} 私聊咨询群主获取`", support)
+        self.assertIn(
+            "export const FEATURE_UNAVAILABLE_MESSAGE = `当前版本仅展示该功能入口，暂时无法执行。"
+            "如需使用高级版，请${DEVELOPER_CONTACT_HINT}。`",
+            support,
+        )
+        self.assertIn("openMessageExternalUrl(QQ_GROUP_JOIN_URL)", support)
+        self.assertNotIn(LEGACY_DEVELOPER_QQ, support)
         self.assertIn("<GuideDialog", overlays)
         self.assertIn(':open="modifyTextUnavailableDialogOpen"', overlays)
         self.assertIn(':description="modifyTextUnavailableMessage"', overlays)
-        self.assertIn('primary-label="添加 QQ 3434549571"', overlays)
+        self.assertIn(':title="developerContactTitle"', overlays)
+        self.assertIn(':primary-label="developerContactLabel"', overlays)
+        self.assertIn("developerContactLabel: DEVELOPER_CONTACT_LABEL", overlays)
+        self.assertNotIn(LEGACY_DEVELOPER_QQ, overlays)
         self.assertIn('@primary="contactDeveloper"', overlays)
         self.assertIn('@secondary="closeModifyTextUnavailableDialog"', overlays)
         self.assertIn('@close="closeModifyTextUnavailableDialog"', overlays)

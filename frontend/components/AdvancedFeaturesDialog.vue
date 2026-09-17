@@ -44,7 +44,7 @@
           <footer class="afd-foot">
             <p class="afd-foot__meta afd-mono">{{ PRO_TOTAL }} 项 · 写入 / 动作 / 自动化</p>
             <button type="button" class="afd-get afd-mono" @click="openDeveloperContact">
-              获取 — QQ {{ DEVELOPER_QQ }} · 备注「高级版」 <i aria-hidden="true">↗</i>
+              获取 — {{ DEVELOPER_CONTACT_LABEL }} · 私聊群主 <i aria-hidden="true">↗</i>
             </button>
           </footer>
         </section>
@@ -57,7 +57,7 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { gsap } from 'gsap'
 import { PRO_TOTAL } from '@website/js/pro-demos/catalog.js'
-import { DEVELOPER_QQ, FEATURE_UNAVAILABLE_MESSAGE, openDeveloperContact } from '~/lib/developer-support'
+import { DEVELOPER_CONTACT_LABEL, FEATURE_UNAVAILABLE_MESSAGE, openDeveloperContact } from '~/lib/developer-support'
 
 const props = defineProps({
   open: { type: Boolean, default: false }

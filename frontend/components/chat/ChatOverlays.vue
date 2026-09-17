@@ -1014,10 +1014,10 @@
       :open="modifyTextUnavailableDialogOpen"
       export-style
       eyebrow="功能暂未开放"
-      title="请添加 QQ 联系开发者"
+      :title="developerContactTitle"
       badge="暂时不可用"
       :description="modifyTextUnavailableMessage"
-      primary-label="添加 QQ 3434549571"
+      :primary-label="developerContactLabel"
       secondary-label="关闭"
       tone="warning"
       @primary="contactDeveloper"
@@ -1034,6 +1034,7 @@ import { computed, defineComponent, ref, watch } from 'vue'
 import ChatExportDialog from '~/components/chat/ChatExportDialog.vue'
 import ChatHistoryFloatingWindows from '~/components/chat/ChatHistoryFloatingWindows.vue'
 import GuideDialog from '~/components/GuideDialog.vue'
+import { DEVELOPER_CONTACT_LABEL, DEVELOPER_CONTACT_TITLE } from '~/lib/developer-support'
 
 const PREVIEW_IMAGE_MIN_SCALE = 0.2
 const PREVIEW_IMAGE_MAX_SCALE = 8
@@ -1150,6 +1151,8 @@ export default defineComponent({
 
     return {
       ...props.state,
+      developerContactTitle: DEVELOPER_CONTACT_TITLE,
+      developerContactLabel: DEVELOPER_CONTACT_LABEL,
       previewImageScale,
       previewImageRotation,
       previewImageTransformStyle,
