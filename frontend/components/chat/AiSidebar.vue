@@ -1,13 +1,13 @@
 <template>
   <aside class="ai-sidebar ai-ui" aria-label="聊天 AI 助手">
-    <header class="ai-sidebar-header"><span class="ai-assistant-icon"><i class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></i></span><strong class="ai-title">AI 助手</strong><button type="button" class="ai-icon-button" title="AI 服务设置" aria-label="AI 服务设置" @click="settings.openDialog('ai')"><i class="fa-solid fa-sliders" aria-hidden="true"></i></button><button type="button" class="ai-icon-button" aria-label="关闭 AI 面板" @click="$emit('close')"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button></header>
+    <header class="ai-sidebar-header"><span class="ai-assistant-icon"><WandSparkles :size="16" :stroke-width="1.8" aria-hidden="true" /></span><strong class="ai-title">AI 助手</strong><button type="button" class="ai-icon-button" title="AI 服务设置" aria-label="AI 服务设置" @click="settings.openDialog('ai')"><SlidersHorizontal :size="16" :stroke-width="1.8" aria-hidden="true" /></button><button type="button" class="ai-icon-button" aria-label="关闭 AI 面板" @click="$emit('close')"><X :size="16" :stroke-width="1.8" aria-hidden="true" /></button></header>
     <nav class="ai-sidebar-tabs" aria-label="AI 功能"><button v-for="item in tabs" :key="item.key" type="button" :aria-current="tab === item.key ? 'page' : undefined" @click="tab = item.key; editId = ''">{{ item.label }}</button></nav>
     <div class="ai-sidebar-body">
     <p v-if="error" class="ai-error" role="alert">{{ error }}</p>
     <p v-if="notice" class="ai-success" role="status">{{ notice }}</p>
     <div v-if="tab !== 'history'" ref="composerView" v-show="tab !== 'summary' || !activeTask || composerExpanded">
       <div class="ai-context-card">
-        <span class="ai-context-icon"><i :class="scope === 'current' ? 'fa-regular fa-comment-dots' : 'fa-solid fa-layer-group'" aria-hidden="true"></i></span>
+        <span class="ai-context-icon"><MessageCircleMore v-if="scope === 'current'" :size="16" :stroke-width="1.8" aria-hidden="true" /><Layers v-else :size="16" :stroke-width="1.8" aria-hidden="true" /></span>
         <div><span>{{ scope === 'current' ? '当前会话' : '批量处理' }}</span><strong :title="targetTitle">{{ targetTitle }}</strong></div>
         <button v-if="scope === 'current'" type="button" class="ai-text-button" @click="beginBatch">{{ tab === 'summary' ? '批量总结' : '多个会话' }}</button>
         <button v-else type="button" class="ai-text-button" @click="useCurrent">返回当前</button>
@@ -46,7 +46,7 @@
       <div class="ai-row ai-wrap"><label class="ai-check"><input v-model="notify" type="checkbox" />桌面通知</label><label v-if="notify" class="ai-check"><input v-model="hideContent" type="checkbox" />隐藏通知内容</label></div>
       </div></details>
       <template v-if="tab !== 'summary'"><label class="ai-check"><input v-model="rule.enabled" type="checkbox" />启用此规则</label><p class="ai-muted">仅应用运行期间执行，最小化到托盘后仍有效。无新增消息不调用模型。</p></template>
-      <div class="ai-submit-area"><p v-if="tab === 'summary'" class="ai-muted">{{ scope === 'current' ? '仅处理当前会话' : `处理已选 ${targets.length} 个会话` }} · {{ profileId ? '使用指定模型' : '使用全局默认模型' }}</p><button class="ai-primary ai-submit" type="button" :disabled="busy || !account || !targets.length || (tab === 'summary' && taskRunning)" @click="submit"><i class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></i>{{ busy ? '处理中…' : tab === 'summary' ? taskRunning ? '总结进行中…' : '开始总结' : editId ? '保存规则修改' : '创建规则' }}</button></div>
+      <div class="ai-submit-area"><p v-if="tab === 'summary'" class="ai-muted">{{ scope === 'current' ? '仅处理当前会话' : `处理已选 ${targets.length} 个会话` }} · {{ profileId ? '使用指定模型' : '使用全局默认模型' }}</p><button class="ai-primary ai-submit" type="button" :disabled="busy || !account || !targets.length || (tab === 'summary' && taskRunning)" @click="submit"><WandSparkles :size="16" :stroke-width="1.8" aria-hidden="true" />{{ busy ? '处理中…' : tab === 'summary' ? taskRunning ? '总结进行中…' : '开始总结' : editId ? '保存规则修改' : '创建规则' }}</button></div>
       <div v-if="tab !== 'summary'">
         <article v-for="r in rules.filter(r => r.kind === (tab === 'alert' ? 'alert' : 'summary'))" :key="r.id" class="ai-card">
           <strong>{{ r.name }}</strong><p class="ai-muted">{{ r.enabled ? '已启用' : '已暂停' }} · {{ r.conversations.length }} 个会话</p><p v-if="r.error" class="ai-error">{{ r.error }}</p>
@@ -64,9 +64,9 @@
     </div>
     <article v-if="activeTask" ref="taskView" class="ai-task-thread" aria-label="AI 处理记录">
       <div class="ai-request-bubble"><span>{{ activeTask.kind === 'alert' ? '关注检测请求' : '消息总结请求' }}</span><p>{{ taskRequest }}</p><small>截止 {{ date(activeTask.range.end) }}{{ activeTask.media ? ' · 包含图片与附件' : '' }}</small></div>
-      <div class="ai-response-heading"><span class="ai-assistant-icon"><i class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></i></span><strong>AI 助手</strong><span v-if="taskRunning || activeTask.finished_at" class="ai-task-duration">{{ taskRunning ? '已用时' : '用时' }} {{ duration(elapsed) }}</span></div>
+      <div class="ai-response-heading"><span class="ai-assistant-icon"><WandSparkles :size="16" :stroke-width="1.8" aria-hidden="true" /></span><strong>AI 助手</strong><span v-if="taskRunning || activeTask.finished_at" class="ai-task-duration">{{ taskRunning ? '已用时' : '用时' }} {{ duration(elapsed) }}</span></div>
       <div class="ai-task-status" :class="{ 'is-running': taskRunning }" role="status">
-        <i :class="taskRunning ? 'fa-solid fa-spinner fa-spin' : activeTask.status === 'completed' ? 'fa-solid fa-circle-check' : 'fa-solid fa-circle-info'" aria-hidden="true"></i><strong>{{ taskStatus }}</strong>
+        <LoaderCircle v-if="taskRunning" class="agent-icon-spin" :size="16" :stroke-width="1.8" aria-hidden="true" /><CircleCheck v-else-if="activeTask.status === 'completed'" :size="16" :stroke-width="1.8" aria-hidden="true" /><Info v-else :size="16" :stroke-width="1.8" aria-hidden="true" /><strong>{{ taskStatus }}</strong>
       </div>
       <div v-if="taskRunning" class="ai-task-progress"><div><span>{{ activeTask.stage || '等待执行' }}</span><span>{{ activeTask.progress || 0 }}%</span></div><progress aria-label="处理阶段进度" max="100" :value="activeTask.progress || 0" /><p>{{ waitingHint }}</p></div>
       <details v-if="taskActivity.length" class="ai-task-activity" :open="taskRunning">
@@ -75,11 +75,11 @@
       </details>
       <p v-if="pollError" class="ai-error" role="alert">{{ pollError }}</p>
       <p v-if="activeTask.error" class="ai-error">{{ activeTask.error }}</p>
-      <div v-if="taskRunning" class="ai-task-controls"><button type="button" :disabled="busy" @click="taskAction('cancel')"><i class="fa-regular fa-circle-stop" aria-hidden="true"></i>停止处理</button><span>可切换聊天，任务会继续</span></div>
+      <div v-if="taskRunning" class="ai-task-controls"><button type="button" :disabled="busy" @click="taskAction('cancel')"><CircleStop :size="16" :stroke-width="1.8" aria-hidden="true" />停止处理</button><span>可切换聊天，任务会继续</span></div>
       <template v-if="activeTask.conversations.length > 1 && hasOverview"><h4 class="ai-section-title">跨会话总览</h4><AiSummaryResult :summary="activeTask.overview" @locate="locate" /></template>
       <section v-for="result in activeTask.results" :key="result.username" class="ai-task-result"><h4 class="ai-title">{{ result.name }}</h4><p class="ai-muted">已分析 {{ result.count }} 条消息</p><p v-if="result.warning">{{ result.warning }}</p><p v-if="result.error" class="ai-error">{{ result.error }}</p><template v-if="activeTask.kind === 'alert' && result.summary && !result.error"><div v-for="(match, index) in result.summary.matches || []" :key="index" class="ai-alert-match"><p>{{ match.reason }}</p><button v-for="(source, sourceIndex) in match.sources" :key="source" type="button" class="ai-source" @click="locate(source)">查看原消息{{ match.sources.length > 1 ? ` ${sourceIndex + 1}` : '' }}</button></div><p v-if="!result.summary.matches?.length" class="ai-muted">本次未发现符合关注条件的新消息。</p></template><AiSummaryResult v-else-if="result.summary && activeTask.kind !== 'alert'" :summary="result.summary" @locate="locate" /><details v-if="result.coverage?.length"><summary>媒体处理情况</summary><p v-for="c in result.coverage" :key="c.source">{{ c.status }} <button type="button" class="ai-source" @click="locate(c.source)">原消息</button></p></details></section>
-      <div v-if="!taskRunning" class="ai-task-actions"><button v-if="hasResult" type="button" @click="copyResult"><i class="fa-regular fa-copy" aria-hidden="true"></i>复制结果</button><button v-if="['failed', 'partial', 'cancelled'].includes(activeTask.status)" type="button" :disabled="busy" @click="taskAction('retry')">重试</button><button type="button" :disabled="busy" @click="deleteTask">删除记录</button></div>
-      <button v-if="tab === 'summary' && !taskRunning && !composerExpanded" class="ai-new-summary" type="button" @click="expandComposer"><i class="fa-solid fa-plus" aria-hidden="true"></i>调整范围，再次总结</button>
+      <div v-if="!taskRunning" class="ai-task-actions"><button v-if="hasResult" type="button" @click="copyResult"><Copy :size="16" :stroke-width="1.8" aria-hidden="true" />复制结果</button><button v-if="['failed', 'partial', 'cancelled'].includes(activeTask.status)" type="button" :disabled="busy" @click="taskAction('retry')">重试</button><button type="button" :disabled="busy" @click="deleteTask">删除记录</button></div>
+      <button v-if="tab === 'summary' && !taskRunning && !composerExpanded" class="ai-new-summary" type="button" @click="expandComposer"><Plus :size="16" :stroke-width="1.8" aria-hidden="true" />调整范围，再次总结</button>
     </article>
     </div>
   </aside>
@@ -87,6 +87,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { CircleCheck, CircleStop, Copy, Info, Layers, LoaderCircle, MessageCircleMore, Plus, SlidersHorizontal, WandSparkles, X } from '@lucide/vue'
 import AiSummaryResult from './AiSummaryResult.vue'
 import UiSelect from '../UiSelect.vue'
 import '~/assets/css/ai.css'
@@ -240,6 +241,7 @@ onUnmounted(() => { disposed = true; generation++; closeEvents?.(); clearTimeout
 </script>
 
 <style scoped>
+.ai-ui svg.lucide { display:block; flex:none; }
 .ai-sidebar { --side-bg: var(--app-surface-bg, #fff); --side-soft: var(--app-surface-soft, #f7f8fa); --side-border: var(--app-border, #e7e9ed); width: 380px; max-width: calc(100vw - 70px); min-height: 0; flex-shrink: 0; display: flex; flex-direction: column; overflow: hidden; padding: 0; border-left: 1px solid var(--side-border); background: var(--side-bg); color: var(--app-text-primary, #25352d); z-index: 30; font-size: 12px; line-height: 1.5; }
 .ai-sidebar-header { display: flex; align-items: center; gap: 10px; padding: 17px 16px 13px; flex-shrink: 0; }
 .ai-sidebar-header .ai-title { margin: 0; flex: 1; font-size: 15px; }
@@ -310,8 +312,8 @@ onUnmounted(() => { disposed = true; generation++; closeEvents?.(); clearTimeout
 .ai-task-result .ai-title { font-size: 12px; }
 .ai-task-result > .ai-muted { font-size: 10px; margin: 4px 0 12px; }
 .ai-ui .ai-new-summary { width: 100%; margin-top: 10px; padding: 10px; color: #079b57; font-size: 11px; background: var(--side-soft); }
-.ai-new-summary i { margin-right: 6px; }
-@media (prefers-reduced-motion: reduce) { .ai-task-progress progress::-webkit-progress-value { transition: none; } .ai-task-status .fa-spin { animation: none; } }
+.ai-new-summary :is(i, svg) { margin-right: 6px; }
+@media (prefers-reduced-motion: reduce) { .ai-task-progress progress::-webkit-progress-value { transition: none; } .ai-task-status .agent-icon-spin { animation: none; } }
 :global(html[data-theme=dark]) .ai-sidebar { --side-bg: #222629; --side-soft: #292e31; --side-border: #383e42; }
 :global(html[data-theme=dark]) .ai-assistant-icon { color: #65d29d; background: #173a2b; }
 @media (max-width: 1000px) { .ai-sidebar { position: absolute; top: 0; bottom: 0; right: 0; box-shadow: -8px 0 30px #0002; } }

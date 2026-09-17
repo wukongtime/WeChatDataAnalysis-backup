@@ -1,10 +1,11 @@
 <template>
-  <button type="button" class="agent-copy-action" :aria-label="label" :title="label" @click="copy"><i :class="copied ? 'fa-solid fa-check' : 'fa-regular fa-copy'" aria-hidden="true" /></button>
+  <button type="button" class="agent-copy-action" :aria-label="label" :title="label" @click="copy"><component :is="copied ? Check : Copy" :size="16" :stroke-width="1.8" aria-hidden="true" /></button>
   <span v-if="failed" class="agent-error" role="status">复制失败，请重试</span>
 </template>
 
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { Check, Copy } from '@lucide/vue'
 import { copyAgentText } from '~/utils/agentMarkdown'
 const props = defineProps({ text: String, citations: Array, references: Array })
 const copied = ref(false), failed = ref(false)

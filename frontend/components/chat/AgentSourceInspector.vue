@@ -1,6 +1,6 @@
 <template>
   <aside id="agent-source-inspector" class="agent-source-inspector" aria-label="原文出处" @keydown.esc.stop.prevent="$emit('close')">
-    <header><h3>原文出处</h3><button type="button" aria-label="关闭原文出处" @click="$emit('close')"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button></header>
+    <header><h3>原文出处</h3><button type="button" aria-label="关闭原文出处" @click="$emit('close')"><X :size="16" :stroke-width="1.8" aria-hidden="true" /></button></header>
     <p class="agent-source-heading"><template v-if="number">引用 <strong>{{ number }}</strong></template><template v-else>相关原文</template><span> / {{ source.name || source.username }}</span></p>
     <article class="agent-source-message is-selected"><div class="agent-source-sender"><AgentAvatar :path="source.sender_avatar_path" :name="source.sender" /><small>{{ source.sender || '未知发送者' }}<time>{{ date(source.time) }}</time></small></div><p>{{ source.text }}</p></article>
     <p v-if="source.excerpt" class="agent-source-hint">此处为原文节选，可定位查看完整消息。</p>
@@ -14,13 +14,14 @@
       <p v-else class="agent-source-hint">定位到聊天，查看这条消息前后的完整记录。</p>
     </section>
     <p v-if="locateError" class="agent-citation-error" role="alert">{{ locateError }}</p>
-    <button type="button" class="agent-source-locate" :disabled="locating" :aria-busy="locating" @click="locateMessage"><i :class="locating ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-arrow-up-right-from-square'" aria-hidden="true"></i>{{ locating ? '正在定位…' : locateError ? '重试定位' : '定位到聊天' }}</button>
+    <button type="button" class="agent-source-locate" :disabled="locating" :aria-busy="locating" @click="locateMessage"><LoaderCircle v-if="locating" class="agent-icon-spin" :size="16" :stroke-width="1.8" aria-hidden="true" /><ExternalLink v-else :size="16" :stroke-width="1.8" aria-hidden="true" />{{ locating ? '正在定位…' : locateError ? '重试定位' : '定位到聊天' }}</button>
     <p class="agent-source-hint">引用内容来自已读取的聊天记录。</p>
   </aside>
 </template>
 
 <script setup>
 import { onBeforeUnmount, ref, watch } from 'vue'
+import { ExternalLink, LoaderCircle, X } from '@lucide/vue'
 import AgentAvatar from './AgentAvatar.vue'
 const props = defineProps({ source: { type: Object, required: true }, number: Number, prepare: Function, locate: Function })
 defineEmits(['close'])

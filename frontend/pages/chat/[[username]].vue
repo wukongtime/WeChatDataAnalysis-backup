@@ -18,7 +18,7 @@
       :privacy-mode="privacyMode"
       :state="chatState"
     />
-    <ChatAgentPanel v-if="aiSidebarOpen" :account="selectedAccount" :contact="selectedContact" :contacts="contacts" :focus-task-id="aiFocusTaskId" :locate-source="locateAiSource" :prepare-source="prepareAiSource" @close="aiSidebarOpen = false" />
+    <ChatAgentPanel v-if="aiSidebarOpen" :account="selectedAccount" :contact="selectedContact" :contacts="contacts" :focus-task-id="aiFocusTaskId" :locate-source="locateAiSource" :prepare-source="prepareAiSource" :profile-state="chatState" @close="aiSidebarOpen = false" />
     <ChatOverlays :state="chatState" />
   </div>
 </template>

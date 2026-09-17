@@ -22,10 +22,71 @@ function afterRepeatedPersonName(content, offset, reference) {
   // 不裁掉较长姓名、编号或词的一部分，例如 3300、乙方。
   return !content[end] || !/[\p{L}\p{N}_]/u.test(content[end]) ? end : offset
 }
+
+const personButton = (reference, id, apiBase) => {
+  const avatar = referenceUrl(reference.avatar_path, apiBase)
+  return `<button type="button" class="agent-person" data-person="${id}" aria-haspopup="dialog" aria-label="查看人物 ${md.utils.escapeHtml(reference.name)}">${avatar ? `<img src="${md.utils.escapeHtml(avatar)}" alt="" loading="lazy" />` : ''}<span>${md.utils.escapeHtml(reference.name)}</span></button>`
+}
+
+const personNames = references => {
+  const matches = new Map()
+  for (const reference of references) {
+    if (reference?.kind !== 'person' || !reference.id || !reference.name) continue
+    for (const raw of [reference.name, ...(reference.aliases || [])]) {
+      const name = String(raw || '').trim()
+      if (name.length < 2) continue
+      const people = matches.get(name) || new Map()
+      people.set(reference.username || reference.id, reference)
+      matches.set(name, people)
+    }
+  }
+  return [...matches.entries()]
+    .filter(([, people]) => people.size === 1)
+    .map(([name, people]) => ({ name, reference: people.values().next().value }))
+    .sort((a, b) => b.name.length - a.name.length || a.name.localeCompare(b.name))
+}
+
+const hasAsciiBoundary = (content, index, name) => {
+  const edge = /[A-Za-z0-9_]/
+  const before = content[index - 1], after = content[index + name.length]
+  return !(edge.test(name[0]) && before && edge.test(before))
+    && !(edge.test(name.at(-1)) && after && edge.test(after))
+}
+
+function linkPersonNames(token, state) {
+  const names = state.env.personNames || []
+  if (!names.length || !token.content) return [token]
+  const parts = []
+  const text = value => { if (value) { const item = new state.Token('text', '', 0); item.content = value; parts.push(item) } }
+  let offset = 0
+  while (offset < token.content.length) {
+    let found = null
+    for (const candidate of names) {
+      let index = token.content.indexOf(candidate.name, offset)
+      while (index >= 0 && !hasAsciiBoundary(token.content, index, candidate.name)) {
+        index = token.content.indexOf(candidate.name, index + candidate.name.length)
+      }
+      if (index < 0) continue
+      if (!found || index < found.index || (index === found.index && candidate.name.length > found.name.length)) {
+        found = { ...candidate, index }
+      }
+    }
+    if (!found) break
+    text(token.content.slice(offset, found.index))
+    const person = new state.Token('html_inline', '', 0)
+    person.content = personButton(found.reference, found.reference.id, state.env.apiBase)
+    parts.push(person)
+    offset = found.index + found.name.length
+  }
+  if (!parts.length) return [token]
+  text(token.content.slice(offset))
+  return parts
+}
+
 md.core.ruler.after('inline', 'agent_citation', state => {
   for (const block of state.tokens) {
     if (block.type !== 'inline') continue
-    block.children = block.children.flatMap(token => {
+    const resolved = block.children.flatMap(token => {
       if (token.type !== 'text') return [token]
       // 停止或断线后仍隐藏半截协议标记；完整原始正文留在检查点供继续接写。
       const content = normalizeGroupedCitations(token.content, state.env.citations).replace(unfinished, '')
@@ -38,8 +99,7 @@ md.core.ruler.after('inline', 'agent_citation', state => {
         const ref = new state.Token('html_inline', '', 0)
         const reference = state.env.references.find(item => item.id === id && item.kind === kind)
         if (kind === 'person' && reference) {
-          const avatar = referenceUrl(reference.avatar_path, state.env.apiBase)
-          ref.content = `<button type="button" class="agent-person" data-person="${id}" aria-label="查看人物 ${md.utils.escapeHtml(reference.name)}">${avatar ? `<img src="${md.utils.escapeHtml(avatar)}" alt="" loading="lazy" />` : ''}<span>${md.utils.escapeHtml(reference.name)}</span></button>`
+          ref.content = personButton(reference, id, state.env.apiBase)
         } else if (kind === 'image' && reference) {
           ref.content = `<button type="button" class="agent-image-ref" data-image="${id}" aria-haspopup="dialog"><span aria-hidden="true">▧</span> ${md.utils.escapeHtml(reference.label || '图片')}</button>`
         } else if (kind === 'source' && state.env.citations.some(item => item.source === id)) {
@@ -56,6 +116,7 @@ md.core.ruler.after('inline', 'agent_citation', state => {
       text(content.slice(offset))
       return parts
     })
+    block.children = resolved.flatMap(token => token.type === 'text' ? linkPersonNames(token, state) : [token])
   }
 })
 
@@ -64,7 +125,7 @@ export function referenceUrl(path, apiBase = '/api') {
   return typeof path === 'string' && /^\/chat\/(?:avatar|media\/image)\?/.test(path) ? `${apiBase}${path}` : ''
 }
 export function renderAgentMarkdown(text, citations = [], streaming = false, references = [], apiBase = '/api') {
-  return md.render(text || '', { citations, streaming, references, apiBase, ids: [] })
+  return md.render(text || '', { citations, streaming, references, apiBase, ids: [], personNames: personNames(references) })
 }
 export function copyAgentText(text, citations = [], references = []) {
   let content = normalizeGroupedCitations(text || '', citations)

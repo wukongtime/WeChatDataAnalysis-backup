@@ -4,7 +4,8 @@
     <button class="agent-process-toggle" type="button" :aria-expanded="open" :aria-controls="`process-${run.id}`" :title="open ? '收起执行过程' : '展开执行过程'" @click="toggle">
       <span class="agent-process-title">{{ running ? '执行中' : '执行过程' }}</span>
       <small class="agent-process-meta">{{ Math.floor(Math.max(0, elapsed || 0) / 60) }}分{{ Math.floor(Math.max(0, elapsed || 0)) % 60 }}秒</small>
-      <i :class="open ? 'fa-solid fa-chevron-down' : 'fa-solid fa-chevron-right'" aria-hidden="true" />
+      <ChevronDown v-if="open" :size="16" :stroke-width="1.8" aria-hidden="true" />
+      <ChevronRight v-else :size="16" :stroke-width="1.8" aria-hidden="true" />
     </button>
     <div v-show="open || running" class="agent-process-body" :class="{'is-collapsed':!open}">
     <div :id="`process-${run.id}`" v-show="open" class="agent-process" :class="{ 'is-live': running }">
@@ -18,14 +19,15 @@
         <p v-else-if="item.kind === 'notice'" class="agent-process-notice" role="status">{{ item.text }}<small v-if="item.attempt"> · 第 {{ item.attempt }} 次尝试</small></p>
         <div v-else-if="item.kind === 'answer' && item.status === 'superseded'" class="agent-progress-note is-superseded"><small>旧答案已根据补充要求调整</small></div>
         <div v-else-if="item.kind === 'status'" class="agent-stage-row" :class="`is-${item.status}`">
-          <i v-if="item.status !== 'running'" :class="item.status === 'completed' ? 'fa-solid fa-check' : 'fa-regular fa-circle-pause'" aria-hidden="true" />
+          <Check v-if="item.status === 'completed'" :size="16" :stroke-width="1.8" aria-hidden="true" />
+          <CirclePause v-else-if="item.status !== 'running'" :size="16" :stroke-width="1.8" aria-hidden="true" />
           <span :class="{ 'agent-shimmer': item.status === 'running' }">{{ item.text.replace(/^正在/, '') }}</span>
           <small><span class="sr-only">{{ stageOutcome(item.status) }} · </span>{{ duration((item.finished_at ?? now / 1000) - item.started_at) }}</small>
         </div>
       </template>
     </div>
       <div v-if="running && !(open && compacting) && !(open && run.subtasks?.running && run.stage === '执行独立子任务')" class="agent-live-step" role="status" aria-live="polite" aria-atomic="true">
-        <div><span class="agent-live-caption">AI 助手</span><span class="agent-stream-status agent-shimmer">{{ run.stage || (run.status === 'queued' ? '等待开始处理' : '正在查找与分析') }}</span></div>
+        <span class="agent-stream-status agent-shimmer">思考中</span>
         <time aria-hidden="true">{{ duration(stageElapsed) }}</time>
       </div>
     </div>
@@ -40,8 +42,8 @@
         <span v-if="finalSummary" class="agent-final-summary" :title="finalSummaryTitle">{{ finalSummary }}</span>
       </div>
       <button v-if="!running && latest && run.error_info?.action === 'settings'" type="button" @click="$emit('settings')">检查 AI 服务</button>
-      <button v-else-if="!running && run.restart_required" type="button" @click="$emit('restart')"><i class="fa-solid fa-arrow-rotate-right" aria-hidden="true" />使用新引擎重新运行</button>
-      <button v-else-if="!running && latest && run.can_resume !== false && ['budget','failed','cancelled','interrupted'].includes(run.status)" type="button" @click="$emit('continue')"><i class="fa-solid fa-arrow-rotate-right" aria-hidden="true" />{{ run.status === 'failed' ? '重试这一步' : '继续查找' }}</button>
+      <button v-else-if="!running && run.restart_required" type="button" @click="$emit('restart')"><RotateCw :size="16" :stroke-width="1.8" aria-hidden="true" />使用新引擎重新运行</button>
+      <button v-else-if="!running && latest && run.can_resume !== false && ['budget','failed','cancelled','interrupted'].includes(run.status)" type="button" @click="$emit('continue')"><RotateCw :size="16" :stroke-width="1.8" aria-hidden="true" />{{ run.status === 'failed' ? '重试这一步' : '继续查找' }}</button>
     </div>
 
   </section>
@@ -49,6 +51,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import { Check, ChevronDown, ChevronRight, CirclePause, RotateCw } from '@lucide/vue'
 import AgentToolCall from './AgentToolCall.vue'
 import AgentSubtasks from './AgentSubtasks.vue'
 import ChainOfThought from '../ai-elements/chain-of-thought/ChainOfThought.vue'

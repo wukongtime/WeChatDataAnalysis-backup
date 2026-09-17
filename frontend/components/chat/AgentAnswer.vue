@@ -2,26 +2,59 @@
   <div ref="answer" class="agent-answer">
     <div class="agent-markdown" v-html="rendered" @error.capture="hideMissingAvatar" @click="onReference" @pointerover="hoverReference" @pointerout="leaveReference" @focusin="hoverReference" @focusout="leaveReference" />
     <div v-if="selected" :key="selected.source" :id="previewId" ref="preview" popover="manual" class="agent-citation-preview" role="dialog" aria-label="消息来源预览" @pointerenter="cancelClose" @pointerleave="leaveReference" @keydown.esc.stop.prevent="closePreview(true)">
-      <header><AgentAvatar :path="selected.sender_avatar_path" :name="selected.sender" /><div><strong>{{ selected.sender }}</strong><small>{{ selected.name || selected.username }} · {{ new Date(selected.time * 1000).toLocaleString() }}</small></div><button type="button" aria-label="关闭来源预览" @click="closePreview(true)"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button></header>
+      <header><AgentAvatar :path="selected.sender_avatar_path" :name="selected.sender" /><div><strong>{{ selected.sender }}</strong><small>{{ selected.name || selected.username }} · {{ new Date(selected.time * 1000).toLocaleString() }}</small></div><button type="button" aria-label="关闭来源预览" @click="closePreview(true)"><X :size="16" :stroke-width="1.8" aria-hidden="true" /></button></header>
       <p class="agent-citation-text">{{ selected.text }}</p><small v-if="selected.excerpt">此处为原文节选，可定位查看完整消息。</small>
       <p v-if="locateError" class="agent-citation-error" role="alert">{{ locateError }}</p>
       <button type="button" class="agent-citation-locate" :disabled="locating" :aria-busy="locating" :aria-label="locating ? '正在定位原消息' : locateError ? '重试定位原消息' : '定位原消息'" @click="locateSelected">
-        <i :class="locating ? 'fa-solid fa-spinner fa-spin' : located ? 'fa-solid fa-check' : 'fa-solid fa-arrow-up-right-from-square'" aria-hidden="true"></i>
+        <LoaderCircle v-if="locating" class="agent-icon-spin" :size="16" :stroke-width="1.8" aria-hidden="true" />
+        <Check v-else-if="located" :size="16" :stroke-width="1.8" aria-hidden="true" />
+        <ExternalLink v-else :size="16" :stroke-width="1.8" aria-hidden="true" />
         <span role="status">{{ locating ? '正在定位…' : located ? '已定位原消息' : locateError ? '重试定位' : '定位原消息' }}</span>
       </button>
     </div>
     <AgentImageViewer v-if="selectedImage" :selected="selectedImage" :images="answerImages" :citations="citations" :api-base="apiBase" :locating="locatingImage" :locate-error="imageLocateError" @close="selectedImage = null" @locate="locateImage" />
+    <Teleport to="body">
+      <div v-if="personProfileOpen" ref="personProfileHost" class="agent-person-profile" :style="personProfileStyle">
+        <ContactProfileCard :state="profileState" />
+      </div>
+    </Teleport>
   </div>
 </template>
 <script setup>
-import { computed, inject, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, ref, unref, useId, watch } from 'vue'
 import { renderAgentMarkdown, referenceUrl } from '~/utils/agentMarkdown'
 import { useApiBase } from '~/composables/useApiBase'
+import { Check, ExternalLink, LoaderCircle, X } from '@lucide/vue'
 import AgentImageViewer from './AgentImageViewer.vue'
 import AgentAvatar from './AgentAvatar.vue'
+import ContactProfileCard from './ContactProfileCard.vue'
 const props = defineProps({ text: { type: String, default: '' }, citations: { type: Array, default: () => [] }, streaming: Boolean, references: { type: Array, default: () => [] } })
 const emit = defineEmits(['locate'])
 const apiBase = useApiBase(), selectedImage = ref(null)
+const profileState = inject('chatContactProfileState', null)
+const componentId = useId()
+const personCardPrefix = `mention:${componentId}:`
+const answerReferences = computed(() => {
+  const references = props.references.map(item => ({ ...item }))
+  const people = new Map(references.filter(item => item.kind === 'person' && item.username).map(item => [item.username, item]))
+  for (const source of props.citations) {
+    const username = String(source?.sender_id || '').trim()
+    const name = String(source?.sender || '').trim()
+    const id = String(source?.source || '').toLowerCase()
+    if (!username || name.length < 2 || !/^[a-f0-9]{24}$/.test(id)) continue
+    const current = people.get(username)
+    if (current) {
+      current.sources = [...new Set([...(current.sources || []), id])]
+      current.mentioned_sources = [...new Set([...(current.mentioned_sources || []), id])]
+      if (!current.avatar_path && source.sender_avatar_path) current.avatar_path = source.sender_avatar_path
+      continue
+    }
+    const person = { id, kind: 'person', username, name, avatar_path: source.sender_avatar_path || '', sources: [id], mentioned_sources: [id] }
+    references.push(person)
+    people.set(username, person)
+  }
+  return references
+})
 // 缺少头像时保留人名和编号，避免将浏览器破图图标显示为人物头像。
 const hideMissingAvatar = event => { if (event.target?.tagName === 'IMG') event.target.style.display = 'none' }
 const locatingImage = ref(false), imageLocateError = ref('')
@@ -39,14 +72,42 @@ const locateImage = async source => {
 }
 let pinned = false, closeTimer
 const cancelClose = () => clearTimeout(closeTimer)
-const leaveReference = event => { if (!pinned && !preview.value?.contains(event.relatedTarget)) { cancelClose(); closeTimer = setTimeout(() => closePreview(), 180) } }
-const hoverReference = event => { cancelClose(); if (!pinned && event.target.closest('button[data-source]') !== trigger) void onCitation(event, false) }
+const personDetails = button => answerReferences.value.find(item => item.kind === 'person' && item.id === button?.dataset.person)
+const openPersonProfile = button => {
+  const person = personDetails(button)
+  if (!profileState || !person?.username) return
+  const cardId = personCardPrefix + person.username
+  if (String(unref(profileState.contactProfileCardMessageId) || '') !== cardId) profileState.closeContactProfileCard?.()
+  personAnchor = button
+  profileState.onMentionMouseEnter?.({ id: componentId }, {
+    username: person.username,
+    displayName: person.name,
+    avatar: referenceUrl(person.avatar_path, apiBase)
+  })
+}
+const leaveReference = event => {
+  const person = event.target.closest('button[data-person]')
+  if (person) {
+    if (!person.contains(event.relatedTarget)) profileState?.onMentionMouseLeave?.()
+    return
+  }
+  if (!pinned && !preview.value?.contains(event.relatedTarget)) { cancelClose(); closeTimer = setTimeout(() => closePreview(), 180) }
+}
+const hoverReference = event => {
+  const person = event.target.closest('button[data-person]')
+  if (person) {
+    if (!person.contains(event.relatedTarget)) openPersonProfile(person)
+    return
+  }
+  cancelClose(); if (!pinned && event.target.closest('button[data-source]') !== trigger) void onCitation(event, false)
+}
 const onReference = event => {
   const image = event.target.closest('button[data-image]')
   if (image && answerImages.value.some(r => r.id === image.dataset.image)) { imageLocateError.value = ''; selectedImage.value = image.dataset.image; return }
   const person = event.target.closest('button[data-person]')
   if (person) {
-    const ref = props.references.find(r => r.kind === 'person' && r.id === person.dataset.person)
+    closePersonProfile()
+    const ref = answerReferences.value.find(r => r.kind === 'person' && r.id === person.dataset.person)
     const mentioned = ref?.mentioned_sources || [], related = ref?.sources || []
     const cited = [...props.text.matchAll(/\[\[([a-f0-9]{24})\]\]/gi)].map(m => m[1].toLowerCase())
     // 先用这条回答实际引用的证据，避免任务里的无关旧消息抢在当前出处前面。
@@ -59,11 +120,50 @@ const onReference = event => {
 }
 const navigation = inject('agentSourceNavigation', null)
 const answer = ref(null), preview = ref(null), selected = ref(null)
-const previewId = `agent-source-${useId()}`
+const previewId = `agent-source-${componentId}`
+const personProfileHost = ref(null), personProfileStyle = ref({})
+let personAnchor = null, personProfileObserver = null
+const personProfileOpen = computed(() => !!profileState
+  && !!unref(profileState.contactProfileCardOpen)
+  && String(unref(profileState.contactProfileCardMessageId) || '').startsWith(personCardPrefix))
+const closePersonProfile = () => {
+  if (String(unref(profileState?.contactProfileCardMessageId) || '').startsWith(personCardPrefix)) profileState?.closeContactProfileCard?.()
+}
+const positionPersonProfile = () => {
+  const host = personProfileHost.value
+  if (!host || !personAnchor?.isConnected) return
+  const anchor = personAnchor.getBoundingClientRect()
+  const card = host.getBoundingClientRect()
+  const width = card.width || Math.min(400, window.innerWidth - 16)
+  const height = card.height || 0
+  const right = anchor.right + 8
+  const left = right + width <= window.innerWidth - 8 ? right : anchor.left - width - 8
+  const next = {
+    left: `${Math.max(8, Math.min(left, window.innerWidth - width - 8))}px`,
+    top: `${Math.max(8, Math.min(anchor.top, window.innerHeight - height - 8))}px`
+  }
+  if (personProfileStyle.value.left !== next.left || personProfileStyle.value.top !== next.top) personProfileStyle.value = next
+}
+const stopPersonProfilePositioning = () => {
+  personProfileObserver?.disconnect(); personProfileObserver = null
+  window.removeEventListener('scroll', positionPersonProfile, true)
+  window.removeEventListener('resize', positionPersonProfile)
+}
+watch(personProfileHost, element => {
+  stopPersonProfilePositioning()
+  if (!element) return
+  positionPersonProfile()
+  if (typeof ResizeObserver === 'function') {
+    personProfileObserver = new ResizeObserver(positionPersonProfile)
+    personProfileObserver.observe(element)
+  }
+  window.addEventListener('scroll', positionPersonProfile, true)
+  window.addEventListener('resize', positionPersonProfile)
+})
 const selectedNumber = ref(0), locating = ref(false), located = ref(false), locateError = ref('')
 let trigger = null, observer = null, revision = 0
 // 原始 HTML、远程图片和自动链接均禁用；只渲染本地已核验的来源按钮。
-const rendered = computed(() => renderAgentMarkdown(props.text, props.citations, props.streaming, props.references, apiBase))
+const rendered = computed(() => renderAgentMarkdown(props.text, props.citations, props.streaming, answerReferences.value, apiBase))
 const closePreview = (restoreFocus = false) => {
   ++revision; cancelClose(); pinned = false
   observer?.disconnect(); observer = null
@@ -165,5 +265,5 @@ watch(() => props.text, async () => {
   trigger = answer.value?.querySelector(key ? `button[data-source="${key}"]` : `button[data-person="${person}"]`)
   if (!trigger) closePreview(); else { trigger.setAttribute('aria-expanded', 'true'); trigger.setAttribute('aria-controls', previewId); positionPreview() }
 })
-onBeforeUnmount(() => closePreview())
+onBeforeUnmount(() => { closePreview(); closePersonProfile(); stopPersonProfilePositioning() })
 </script>

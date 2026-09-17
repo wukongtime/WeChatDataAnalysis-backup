@@ -4900,6 +4900,7 @@ def list_chat_sessions(
             logger.warning("[sessions] failed to read enterprise group flags: %s", exc)
 
     contact_rows = _load_contact_rows(contact_db_path, usernames)
+    enterprise_contacts = _load_enterprise_contact_info(contact_db_path, usernames, rt_conn=rt_conn)
     local_avatar_usernames = _query_head_image_usernames(head_image_db_path, usernames)
     trace(
         "contacts:loaded",
@@ -5167,6 +5168,7 @@ def list_chat_sessions(
                 "unreadCount": int(r["unread_count"] or 0),
                 "isGroup": bool(username.endswith("@chatroom")),
                 "isEnterpriseGroup": username in enterprise_groups,
+                "enterpriseName": enterprise_contacts.get(username, {}).get("enterpriseName", ""),
                 "isTop": bool(top_flags.get(str(username or "").strip(), False)),
             }
         )

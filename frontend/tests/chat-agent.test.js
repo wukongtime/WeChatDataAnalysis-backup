@@ -46,7 +46,7 @@ describe('聊天 Agent', () => {
   it.each(['friend', 'group@chatroom'])('顶部和左侧显示对应会话头像，支持单聊和群聊：%s', async username => {
     const w = mountPanel(); await flushPromises()
     await w.setProps({contact:{username,name:'测试会话'}}); await flushPromises()
-    expect(w.find('.agent-header > button[aria-label="AI 对话历史"] .fa-table-columns').exists()).toBe(true)
+    expect(w.find('.agent-header > button[aria-label="AI 对话历史"] svg.lucide').exists()).toBe(true)
     expect(w.find('.agent-header > button[aria-label="旧版全局历史"]').exists()).toBe(false)
     const expected = `/api/chat/avatar?${new URLSearchParams({account:'acc',username})}`
     expect(w.find('.agent-owner-avatar img').attributes('src')).toBe(expected)
@@ -257,13 +257,15 @@ describe('聊天 Agent', () => {
   it('SSE 正常时只合并事件不轮询快照，断线后才启用保底同步', async () => {
     vi.useFakeTimers({toFake:['setInterval','clearInterval','Date']})
     threads.live={id:'live',username:'first',title:'实时任务',scope:['first'],latest_run:'r',messages:[{id:'q',role:'user',text:'问题',run_id:'r'}]}
-    runs.r={id:'r',thread_id:'live',version:1,status:'running',stage:'准备中',timeline:[],updated_at:1}
+    runs.r={id:'r',thread_id:'live',version:1,status:'running',stage:'准备中',segment_started:Date.now()/1000,stage_started_at:Date.now()/1000,timeline:[],updated_at:1}
     const w = mountPanel()
     try {
       await flushPromises()
       eventReady.acc({reconnected:false})
       request.mockClear()
       eventCallbacks.acc({run_id:'r',thread_id:'live',version:1,updated_at:2,status:'running',patch:{stage:'正在读取',read_count:12}})
+      await vi.advanceTimersByTimeAsync(1000); await flushPromises()
+      expect(w.find('.agent-live-step time').text()).toBe('1秒')
       await vi.advanceTimersByTimeAsync(4500); await flushPromises()
       expect(w.vm.run).toMatchObject({stage:'正在读取',read_count:12})
       expect(request.mock.calls.filter(([path]) => path === '/agent/threads/live' || path === '/agent/runs/r')).toHaveLength(0)
@@ -583,7 +585,7 @@ describe('聊天 Agent', () => {
     expect(wrapper.text()).toContain('想从聊天里了解什么')
     await send(wrapper,'找一下报价')
     expect(request.mock.calls.find(([p,o])=>p==='/agent/threads'&&o.method==='POST')[1].body).toEqual({account:'acc',username:'first'})
-    expect(wrapper.text()).toContain('搜索相关消息')
+    expect(wrapper.text()).toContain('思考中')
     await send(wrapper,'只看上周')
     const posts = request.mock.calls.filter(([p])=>p.endsWith('/messages'))
     expect(posts).toHaveLength(2)

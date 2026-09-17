@@ -142,23 +142,23 @@ describe('Agent 执行对话流',()=>{
     expect(w.findAll('.agent-stage-row').map(x=>x.text())).toEqual([
       '理解问题与读取范围已完成 · 4秒','读取聊天记录已完成 · 2秒','分段分析已完成 · 3秒',
     ])
-    expect(w.find('.agent-stream-status').text()).toBe('正在分段分析')
+    expect(w.find('.agent-stream-status').text()).toBe('思考中')
     await w.setProps({run:{...r,status:'completed',answer:'总结',timeline:timeline.map(x=>x.id==='s4'?{...x,status:'completed',finished_at:113}:x)}})
     expect(w.find('.agent-process-body').isVisible()).toBe(true)
     expect(w.findAll('.agent-stage-row')).toHaveLength(4)
     expect(w.findAll('.agent-stage-row').at(-1).text()).toContain('已完成 · 4秒')
     w.unmount()
   })
-  it('等待首个工具与折叠历史时持续显示 Agent 提示和真实计时', async () => {
+  it('等待首个工具与折叠历史时持续显示思考状态和真实计时', async () => {
     const r = {...base(),timeline:[],stage:'理解问题与读取范围',stage_started_at:100,read_count:0,usage:{calls:1}}
     const w = setup({run:r,now:105000})
     expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('false')
     expect(w.find('.agent-process').isVisible()).toBe(false)
     expect(w.find('.agent-live-step').isVisible()).toBe(true)
-    expect(w.find('.agent-live-caption').text()).toBe('AI 助手')
-    expect(w.find('.agent-live-step .fa-spin').exists()).toBe(false)
+    expect(w.find('.agent-live-caption').exists()).toBe(false)
+    expect(w.find('.agent-live-step .agent-icon-spin').exists()).toBe(false)
     expect(w.find('.agent-live-step .agent-shimmer').text()).toBe(w.find('.agent-stream-status').text())
-    expect(w.find('.agent-stream-status').text()).toBe('理解问题与读取范围')
+    expect(w.find('.agent-stream-status').text()).toBe('思考中')
     expect(w.find('.agent-process-title').text()).toBe('执行中')
     expect(w.find('.agent-process-meta').text()).toBe('0分5秒')
     expect(w.find('.agent-live-step time').text()).toBe('5秒')
@@ -168,7 +168,7 @@ describe('Agent 执行对话流',()=>{
     expect(w.find('.agent-process-body').isVisible()).toBe(true)
     await w.find('.agent-process-toggle').trigger('click')
     await w.setProps({run:{...r,stage:'搜索聊天记录',stage_started_at:108,timeline:base().timeline,read_count:8}})
-    expect(w.find('.agent-stream-status').text()).toBe('搜索聊天记录')
+    expect(w.find('.agent-stream-status').text()).toBe('思考中')
     expect(w.find('.agent-live-step time').text()).toBe('1秒')
     expect(w.find('.agent-live-hint').exists()).toBe(false)
     expect(w.find('.agent-process').isVisible()).toBe(false)
@@ -263,7 +263,7 @@ describe('Agent 执行对话流',()=>{
     expect(w.find('.agent-process-toggle').attributes('aria-expanded')).toBe('false')
     expect(w.find('.agent-process').element.style.display).toBe('none')
     expect(w.find('.agent-stream-status').isVisible()).toBe(true)
-    expect(w.find('.agent-stream-status').text()).toContain('搜索聊天记录')
+    expect(w.find('.agent-stream-status').text()).toBe('思考中')
     w.unmount()
   })
   it('按顺序显示工具和关键进展，完成后保留可见并支持一键收起',async()=>{

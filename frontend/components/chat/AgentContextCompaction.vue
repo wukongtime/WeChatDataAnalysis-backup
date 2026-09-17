@@ -1,13 +1,13 @@
 <template>
   <section class="agent-compaction" :aria-label="label">
     <div v-if="active" class="compaction-progress" role="status" aria-live="polite">
-      <div class="compaction-divider"><span><i class="fa-regular fa-file-lines" aria-hidden="true" />{{ label }}</span></div>
+      <div class="compaction-divider"><span><FileText :size="16" :stroke-width="1.8" aria-hidden="true" />{{ label }}</span></div>
       <p>{{ beforeUsage ? `当前已用 ${beforeUsage} · ` : '' }}{{ job.reason === 'context-overflow' ? '请求超出容量，正在整理较早对话' : '正在整理较早对话' }}</p>
       <p>原文已保留，完成后自动继续</p>
-      <i class="fa-solid fa-ellipsis compaction-pulse" aria-hidden="true" />
+      <Ellipsis class="compaction-pulse" :size="16" :stroke-width="1.8" aria-hidden="true" />
     </div>
     <template v-else>
-      <button type="button" class="compaction-divider" :aria-expanded="expanded" :aria-controls="detailId" @click="expanded = !expanded"><span><i class="fa-regular fa-file-lines" aria-hidden="true" />{{ label }}</span></button>
+      <button type="button" class="compaction-divider" :aria-expanded="expanded" :aria-controls="detailId" @click="expanded = !expanded"><span><FileText :size="16" :stroke-width="1.8" aria-hidden="true" />{{ label }}</span></button>
       <div v-if="expanded" :id="detailId" class="compaction-details" role="region" :aria-label="label + '详情'">
         <p v-if="job.status !== 'completed'">本次压缩未完成，原上下文已保留。</p>
         <template v-else>
@@ -24,6 +24,7 @@
 
 <script setup>
 import { computed, onUnmounted, ref, watch } from 'vue'
+import { Ellipsis, FileText } from '@lucide/vue'
 const props = defineProps({ item: { type: Object, required: true }, run: { type: Object, required: true }, viewState: { type: Object, required: true } })
 const api = useAiApi()
 const job = computed(() => props.item.context_job)
@@ -71,7 +72,7 @@ button.compaction-divider:hover { color:var(--app-text-primary,#333); }
 button:focus-visible { outline:2px solid var(--app-text-secondary,#737373); outline-offset:3px; border-radius:3px; }
 .compaction-progress { text-align:left; }
 .compaction-progress p { margin:3px 0 0; font-size:12px; }
-.compaction-divider i { font-size:15px; }
+.compaction-divider :is(i,svg) { font-size:15px; }
 .compaction-pulse { margin-top:9px; font-size:14px; animation:compaction-breathe 1.6s ease-in-out infinite; }
 .compaction-details { padding:12px 0; margin-top:6px; border:0; border-top:1px solid var(--app-border,#e7e9ed); border-radius:0; overflow-wrap:anywhere; font-size:12px; }
 .compaction-details p { margin:0 0 8px; }

@@ -1,6 +1,6 @@
 <template>
   <section class="agent-materials" aria-label="任务资料与详细结果">
-    <header><strong>资料与详细结果</strong><button type="button" aria-label="关闭详细结果" @click="$emit('close')">×</button></header>
+    <header><strong>资料与详细结果</strong><button type="button" aria-label="关闭详细结果" @click="$emit('close')"><X :size="16" :stroke-width="1.8" aria-hidden="true" /></button></header>
     <nav aria-label="结果类型">
       <button v-for="option in kinds" :key="option.value" type="button" :aria-pressed="kind === option.value" @click="kind = option.value; offset = 0; load()">{{ option.label }}</button>
     </nav>
@@ -24,6 +24,7 @@
 
 <script setup>
 import { computed, ref, watch, onUnmounted } from 'vue'
+import { X } from '@lucide/vue'
 import AgentAnswer from './AgentAnswer.vue'
 const props = defineProps({ run: { type: Object, required: true }, nameFor: { type: Function, default: value => value } })
 defineEmits(['locate', 'close'])

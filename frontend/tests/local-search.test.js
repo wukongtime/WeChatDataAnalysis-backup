@@ -198,7 +198,7 @@ it('失败保留真实进度并直接显示错误，不藏进详情',async()=>{
   jobs=[{id:'fail',status:'error',stage:'embedding',chat_index:1,segments:[{},{}],processed:100,embedded:8,error:'模型运行中断',started:1,finished:2}]
   await open()
   expect(wrapper.find('.lss-index-progress').attributes('value')).toBe('50')
-  expect(wrapper.find('.lss-status-title .fa-circle-exclamation').exists()).toBe(true)
+  expect(wrapper.find('.lss-status-title svg.lucide').exists()).toBe(true)
   expect(wrapper.find('.lss-status > [role=alert]').text()).toBe('模型运行中断')
   expect(wrapper.find('[data-metric=saved] dd').text()).toBe('100条消息')
 })

@@ -1,11 +1,11 @@
 <template>
   <component :is="expandable ? 'details' : 'div'" class="agent-tool" :class="[`is-${status}`, { 'is-grouped': grouped }]" :open="expandable ? expanded : undefined" @toggle="expanded = $event.target.open">
     <component :is="expandable ? 'summary' : 'div'" class="agent-tool-heading">
-      <i v-if="status !== 'running'" :class="icon" aria-hidden="true" />
+      <component v-if="status !== 'running'" :is="icon" :size="16" :stroke-width="1.8" aria-hidden="true" />
       <span class="agent-tool-title"><span class="agent-tool-label" :class="{ 'agent-shimmer': status === 'running' }">{{ label }}</span><small v-if="first.query" class="agent-tool-query" :title="first.query">{{ first.query }}</small><small v-if="grouped" class="agent-tool-count">{{ items.length }} 次</small></span>
       <span v-if="status !== 'completed'" class="agent-tool-outcome">{{ groupOutcome }}</span>
       <span v-else class="agent-tool-summary">{{ summary }}</span>
-      <i v-if="expandable" class="fa-solid fa-chevron-right agent-tool-chevron" aria-hidden="true" />
+      <ChevronRight v-if="expandable" class="agent-tool-chevron" :size="16" :stroke-width="1.8" aria-hidden="true" />
     </component>
     <div v-if="expandable" class="agent-tool-detail" :class="{ 'agent-tool-timeline': grouped }">
       <section v-for="(item, index) in items" :key="item.id" class="agent-tool-attempt">
@@ -13,7 +13,7 @@
         <component v-if="grouped" :is="hasInspectionDetails(item) ? 'summary' : 'div'" class="agent-tool-attempt-row" :title="hasInspectionDetails(item) ? (item.action === 'commit_findings' ? '展开本次保存详情' : '展开本次操作详情') : undefined" :aria-controls="hasInspectionDetails(item) ? `tool-inspection-${item.id}` : undefined">
           <strong>{{ item.action === 'commit_findings' ? (index === 0 ? '首次保存' : `第 ${index + 1} 次保存`) : item.action === 'compact_context' ? `第 ${index + 1} 次整理` : item.cached ? '复用已读结果' : index === 0 ? '首次读取' : `第 ${index + 1} 次读取` }}</strong>
           <span>{{ item.status !== 'completed' ? outcome(item.status) : item.cached ? '无需重复读取' : callSummary(item) }}</span>
-          <i v-if="hasInspectionDetails(item)" class="fa-solid fa-chevron-right agent-attempt-chevron" aria-hidden="true" />
+          <ChevronRight v-if="hasInspectionDetails(item)" class="agent-attempt-chevron" :size="16" :stroke-width="1.8" aria-hidden="true" />
         </component>
         <div v-if="hasInspectionDetails(item)" :id="`tool-inspection-${item.id}`" class="agent-tool-inspection-panel" :class="`is-${item.status}`">
           <header><strong>{{ toolLabel(item.action) }}</strong></header>
@@ -38,7 +38,12 @@
         </div>
         <footer class="agent-tool-inspection-status">
           <span>{{ duration(elapsed(item)) }}</span>
-          <span :class="{ 'agent-shimmer': item.status === 'running' }"><i v-if="item.status !== 'running'" :class="item.status === 'completed' ? 'fa-solid fa-check' : item.status === 'failed' ? 'fa-solid fa-circle-exclamation' : 'fa-regular fa-circle-pause'" aria-hidden="true" />{{ outcome(item.status) || '状态未知' }}</span>
+          <span :class="{ 'agent-shimmer': item.status === 'running' }">
+            <Check v-if="item.status === 'completed'" :size="16" :stroke-width="1.8" aria-hidden="true" />
+            <CircleAlert v-else-if="item.status === 'failed'" :size="16" :stroke-width="1.8" aria-hidden="true" />
+            <CirclePause v-else-if="item.status !== 'running'" :size="16" :stroke-width="1.8" aria-hidden="true" />
+            {{ outcome(item.status) || '状态未知' }}
+          </span>
         </footer>
         </div>
         </component>
@@ -49,6 +54,7 @@
 
 <script setup>
 import { computed, ref } from 'vue'
+import { Check, ChevronRight, CircleAlert, CirclePause, FileText, Images, Search } from '@lucide/vue'
 const props = defineProps({ items: { type: Array, required: true }, now: Number, nameFor: { type: Function, default: () => '' }, viewState: Object })
 const first = computed(() => props.items[0])
 const grouped = computed(() => props.items.length > 1)
@@ -77,7 +83,7 @@ const recovered = computed(() => {
 const effectiveItems = computed(() => props.items.filter(item => !recovered.value.has(item.id)))
 // 未恢复的失败、运行或暂停仍显露，不能被另一页的成功掩盖。
 const status = computed(() => ['running', 'failed', 'paused', 'cancelled', 'interrupted', 'superseded'].find(status => effectiveItems.value.some(item => item.status === status)) || effectiveItems.value[0]?.status)
-const icon = computed(() => status.value === 'failed' ? 'fa-solid fa-circle-exclamation' : status.value !== 'completed' ? 'fa-regular fa-circle-pause' : first.value.action?.includes('search') ? 'fa-solid fa-magnifying-glass' : first.value.action === 'analyze_media' ? 'fa-regular fa-images' : 'fa-regular fa-file-lines')
+const icon = computed(() => status.value === 'failed' ? CircleAlert : status.value !== 'completed' ? CirclePause : first.value.action?.includes('search') ? Search : first.value.action === 'analyze_media' ? Images : FileText)
 const toolLabel = action => ({ compact_context: '整理上下文', select_chat_scope: '确定查询范围', commit_findings: '保存分析发现', search_messages: '搜索聊天记录', read_messages: '读取聊天记录', read_context: '读取消息上下文', analyze_media: '分析媒体', find_conversations: '查找会话', search_material: '搜索附件内容', read_material: '读取附件', read_results: '读取分析结果' }[action] || '工具调用')
 const label = computed(() => first.value.action === 'compact_context' ? '整理上下文' : ['search_messages', 'read_context'].includes(first.value.action) ? toolLabel(first.value.action) : (first.value.text || toolLabel(first.value.action)).replace(/^(核对|读取)了/, '$1'))
 const outcome = status => ({ completed: '已完成', running: '进行中', failed: '失败', paused: '已暂停', cancelled: '已停止', interrupted: '已中断', superseded: '已调整' }[status] || '')

@@ -1,7 +1,7 @@
 <template>
   <details class="agent-subtasks" :open="opened" @toggle="toggle">
     <summary class="subtasks-summary">
-      <i class="fa-solid fa-chevron-right disclosure-chevron" aria-hidden="true" />
+      <ChevronRight class="disclosure-chevron" :size="16" :stroke-width="1.8" aria-hidden="true" />
       <span class="subtasks-title">{{ summary.plan_version ? phaseLabel : summary.total > 1 ? '并行分析' : '子任务分析' }}</span>
       <span v-if="summary.running" class="subtasks-count">{{ summary.running }} 项运行</span>
       <span v-if="summary.queued" class="subtasks-count">{{ summary.queued }} 项等待</span>
@@ -20,7 +20,7 @@
       <li v-for="item in items" :key="item.id" class="subtask-item">
         <div class="subtask-heading">
           <strong>{{ item.name }}</strong>
-          <span class="subtask-status" :class="[`is-${item.status}`, { 'agent-shimmer': item.status === 'running' }]"><i v-if="item.status !== 'running'" class="fa-solid" :class="statusIcons[item.status] || 'fa-circle-info'" aria-hidden="true" />{{ labels[item.status] || item.status }}</span>
+          <span class="subtask-status" :class="[`is-${item.status}`, { 'agent-shimmer': item.status === 'running' }]"><component v-if="item.status !== 'running'" :is="statusIcons[item.status] || Info" :size="16" :stroke-width="1.8" aria-hidden="true" />{{ labels[item.status] || item.status }}</span>
           <small class="subtask-elapsed">用时 {{ elapsed(item) }}</small>
         </div>
         <p v-if="item.scope_names?.length" class="subtask-range">{{ item.scope_names.join('、') }}</p>
@@ -40,7 +40,7 @@
         <p v-if="item.status === 'running' && item.model_running && actionSeconds(item) >= 30" class="subtask-wait">等待模型返回 · {{ duration(sinceActivity(item)) }}前更新</p>
         <p v-if="item.error" class="subtask-error" role="alert">{{ item.error }}</p>
         <details class="subtask-details">
-          <summary><span>查看详情</span><i class="fa-solid fa-chevron-right disclosure-chevron" aria-hidden="true" /></summary>
+          <summary><span>查看详情</span><ChevronRight class="disclosure-chevron" :size="16" :stroke-width="1.8" aria-hidden="true" /></summary>
           <div class="subtask-detail-body">
             <section v-if="item.activity?.length" class="subtask-records">
               <h4>最近记录</h4>
@@ -56,7 +56,7 @@
               <button v-if="item.result_handle && more[item.id] !== false" type="button" :disabled="loading" @click="details(item)">{{ findings[item.id] ? '更多发现' : '查看分析发现' }}</button>
             </section>
             <details v-if="item.objective" class="subtask-objective">
-              <summary><i class="fa-solid fa-chevron-right disclosure-chevron" aria-hidden="true" />任务说明</summary>
+              <summary><ChevronRight class="disclosure-chevron" :size="16" :stroke-width="1.8" aria-hidden="true" />任务说明</summary>
               <p tabindex="0" aria-label="完整任务说明">{{ item.objective }}</p>
               <p v-if="item.original_goal">原始问题：{{ item.original_goal }}</p>
             </details>
@@ -72,6 +72,7 @@
 
 <script setup>
 import { computed, ref, watch, onUnmounted } from 'vue'
+import { Check, ChevronRight, CircleAlert, Clock, Info, Pause, RotateCw } from '@lucide/vue'
 import { useAiApi } from '~/composables/useAiApi'
 const props = defineProps({ run: { type: Object, required: true }, now: Number })
 const emit = defineEmits(['locate'])
@@ -87,7 +88,7 @@ const rangeLabel = range => {
 }
 const loading = ref(false), error = ref(''), hasMore = ref(false), opened = ref(['queued', 'running'].includes(props.run.status)), locating = ref(false)
 const labels = { queued:'等待执行', running:'分析中', completed:'已完成', failed:'未完成', interrupted:'已暂停', cancelled:'已停止', superseded:'已更新范围' }
-const statusIcons = { queued:'fa-clock', completed:'fa-check', failed:'fa-circle-exclamation', interrupted:'fa-pause', superseded:'fa-rotate' }
+const statusIcons = { queued: Clock, completed: Check, failed: CircleAlert, interrupted: Pause, superseded: RotateCw }
 // 只限制默认摘要的篇幅，原始进展始终可以展开查看。
 const progressText = item => String(item.latest_progress?.text || '')
 const objectivePreview = item => { const first = String(item.objective || '').split('\n')[0]; return first.length > 72 ? `${first.slice(0, 72)}…` : first }
@@ -194,5 +195,5 @@ button:hover, summary:hover { color: var(--subtask-accent); }
 button:disabled { opacity: .5; cursor: wait; }
 button:focus-visible, summary:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--app-accent, #16854b); outline-offset: 2px; border-radius: 3px; }
 .subtask-progress, .subtask-history, .subtask-findings-list, .subtask-objective p { scrollbar-width: thin; scrollbar-color: var(--app-border, #ddd) transparent; overscroll-behavior: contain; }
-@media (prefers-reduced-motion: reduce) { .disclosure-chevron { transition: none; } .fa-spin { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .disclosure-chevron { transition: none; } .agent-icon-spin { animation: none; } }
 </style>

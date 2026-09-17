@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { ref } from 'vue'
 import AgentAnswer from '../components/chat/AgentAnswer.vue'
 import { renderAgentMarkdown, copyAgentText } from '../utils/agentMarkdown'
 import { scanExports } from 'unimport'
@@ -26,6 +27,28 @@ describe('独立且经过校验的引用', () => {
     await w.find('.agent-ref img').trigger('error')
     expect(w.find('.agent-ref img').element.style.display).toBe('none')
     expect(w.find('.agent-ref').text()).toBe('1')
+    w.unmount()
+  })
+  it('已引用消息的发送者姓名自动显示头像标签，悬停复用聊天资料卡', async () => {
+    const cited = { ...source, sender: '测试成员', sender_id: 'wxid_test_member', sender_avatar_path: '/chat/avatar?account=test&username=wxid_test_member' }
+    const open = ref(false), cardId = ref('')
+    const profileState = {
+      contactProfileCardOpen: open,
+      contactProfileCardMessageId: cardId,
+      closeContactProfileCard: vi.fn(() => { open.value = false; cardId.value = '' }),
+      onMentionMouseEnter: vi.fn((message, user) => { cardId.value = `mention:${message.id}:${user.username}`; open.value = true }),
+      onMentionMouseLeave: vi.fn()
+    }
+    const w = mount(AgentAnswer, { attachTo: document.body, props: { text: `测试成员分享了面试体验。[[${source.source}]]`, citations: [cited] },
+      global: { provide: { chatContactProfileState: profileState }, stubs: { Teleport: true, ContactProfileCard: { template: '<div class="profile-card-stub" />' } } } })
+    const person = w.find('[data-person]')
+    expect(person.text()).toBe('测试成员')
+    expect(person.find('img').attributes('src')).toBe('/api/chat/avatar?account=test&username=wxid_test_member')
+    await person.trigger('pointerover'); await flushPromises()
+    expect(profileState.onMentionMouseEnter).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ username: 'wxid_test_member', displayName: '测试成员' }))
+    expect(w.find('.profile-card-stub').exists()).toBe(true)
+    await person.trigger('pointerout', { relatedTarget: document.body })
+    expect(profileState.onMentionMouseLeave).toHaveBeenCalledTimes(1)
     w.unmount()
   })
   it('Nuxt 自动导入扫描只暴露实际导出，防止聊天页加载失败', async () => {

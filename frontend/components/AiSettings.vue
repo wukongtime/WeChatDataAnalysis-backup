@@ -1,45 +1,45 @@
 <template>
   <div class="ai-settings" :inert="dialogStep ? true : undefined">
     <header class="ais-heading">
-      <div class="ais-heading-icon"><i class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></i></div>
+      <div class="ais-heading-icon"><WandSparkles :size="16" :stroke-width="1.8" aria-hidden="true" /></div>
       <div><h3>AI 服务</h3><p>管理 AI 模型、本地搜索与对话体验。</p></div>
-      <span class="ais-local"><i class="fa-solid fa-lock" aria-hidden="true"></i> {{ activeTab==='local' ? '搜索在本机运行' : '密钥本机保存' }}</span>
+      <span class="ais-local"><Lock :size="16" :stroke-width="1.8" aria-hidden="true" /> {{ activeTab==='local' ? '搜索在本机运行' : '密钥本机保存' }}</span>
     </header>
 
     <div class="ais-tabs" role="tablist" aria-label="AI 服务页面">
       <button v-for="tab in settingsTabs" :key="tab.id" :id="`ais-${tab.id}-tab`" type="button" role="tab"
         :aria-selected="activeTab === tab.id" :aria-controls="`ais-${tab.id}`" :tabindex="activeTab===tab.id ? 0 : -1"
         @click="activeTab=tab.id" @keydown="navigateTabs($event,tab.id)">
-        <i class="fa-solid" :class="tab.icon" aria-hidden="true"></i><span class="ais-tab-copy"><strong>{{ tab.label }}</strong><small>{{ tab.hint }}</small></span>
+        <component :is="tab.icon" :size="16" :stroke-width="1.8" aria-hidden="true" /><span class="ais-tab-copy"><strong>{{ tab.label }}</strong><small>{{ tab.hint }}</small></span>
       </button>
     </div>
     <LocalSearchSettings v-if="activeTab === 'local'" account-wide id="ais-local" role="tabpanel" aria-labelledby="ais-local-tab" />
     <p v-if="error" role="alert" class="ais-feedback is-error">{{ error }}</p>
-    <p v-if="notice" role="status" class="ais-feedback is-success"><i class="fa-solid fa-circle-check" aria-hidden="true"></i>{{ notice }}</p>
+    <p v-if="notice" role="status" class="ais-feedback is-success"><CircleCheck :size="16" :stroke-width="1.8" aria-hidden="true" />{{ notice }}</p>
 
     <div id="ais-config" v-show="activeTab === 'config'" role="tabpanel" aria-labelledby="ais-config-tab">
       <div class="ais-profilebar">
         <div><h4>已连接的服务</h4><p class="ais-muted">统一管理聊天总结与关注提醒使用的模型。</p></div>
-        <button type="button" class="ais-add" :disabled="busy" @click="startNew"><i class="fa-solid fa-plus" aria-hidden="true"></i>新增服务</button>
+        <button type="button" class="ais-add" :disabled="busy" @click="startNew"><Plus :size="16" :stroke-width="1.8" aria-hidden="true" />新增服务</button>
       </div>
       <div class="ais-service-list">
         <button v-for="p in profiles" :key="p.id" type="button" class="ais-service-card" :disabled="busy" :aria-label="`编辑 ${p.name}`" @click="edit(p)">
           <AiProviderIcon :provider="p.provider" />
           <span class="ais-service-copy"><strong>{{ p.name }}</strong><small>{{ p.model }}</small><small v-if="p.context_window">上下文 {{ formatNumber(p.context_window) }} tokens</small></span>
-          <span v-if="p.vision" class="ais-tag">支持图片</span><i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+          <span v-if="p.vision" class="ais-tag">支持图片</span><ChevronRight :size="16" :stroke-width="1.8" aria-hidden="true" />
         </button>
-        <div v-if="!profiles.length" class="ais-empty"><i class="fa-solid fa-plug" aria-hidden="true"></i><h4>连接你的第一个 AI 服务</h4><p>选择服务商，填写密钥，即可获取可用模型。</p></div>
+        <div v-if="!profiles.length" class="ais-empty"><Plug :size="16" :stroke-width="1.8" aria-hidden="true" /><h4>连接你的第一个 AI 服务</h4><p>选择服务商，填写密钥，即可获取可用模型。</p></div>
       </div>
       <p class="ais-footnote">密钥仅保存在本机。分析内容将发送至你选择的服务。</p>
 
       <Teleport to="body">
       <div v-if="dialogStep" class="ais-dialog-overlay" @pointerdown="onBackdropPointerDown" @pointerup="onBackdropPointerUp" @pointercancel="backdropPressed = false" @click="onBackdropClick" @keydown.stop="onDialogKeydown">
       <section ref="dialogPanel" class="ai-settings ais-dialog" :class="{ 'ais-provider-picker': dialogStep === 'providers' }" role="dialog" aria-modal="true" aria-labelledby="ais-dialog-title" tabindex="-1">
-        <header class="ais-dialog-heading"><div><h3 id="ais-dialog-title">{{ dialogStep === 'providers' ? '选择 AI 服务' : editId ? '编辑 AI 服务' : '添加 AI 服务' }}</h3><p>{{ dialogStep === 'providers' ? '选择服务商，也可以连接兼容接口的自定义服务。' : '连接服务后，从上游获取并选择可用模型。' }}</p></div><button type="button" class="ais-icon-button" aria-label="关闭服务弹窗" :disabled="busy" @click="closeDialog"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button></header>
+        <header class="ais-dialog-heading"><div><h3 id="ais-dialog-title">{{ dialogStep === 'providers' ? '选择 AI 服务' : editId ? '编辑 AI 服务' : '添加 AI 服务' }}</h3><p>{{ dialogStep === 'providers' ? '选择服务商，也可以连接兼容接口的自定义服务。' : '连接服务后，从上游获取并选择可用模型。' }}</p></div><button type="button" class="ais-icon-button" aria-label="关闭服务弹窗" :disabled="busy" @click="closeDialog"><X :size="16" :stroke-width="1.8" aria-hidden="true" /></button></header>
         <template v-if="dialogStep === 'providers'">
-          <label class="ais-provider-search"><span class="ais-sr-only">搜索 AI 服务</span><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><input v-model="providerSearch" type="search" placeholder="搜索服务名称，例如：谷歌、千问、火山" /></label>
+          <label class="ais-provider-search"><span class="ais-sr-only">搜索 AI 服务</span><Search :size="16" :stroke-width="1.8" aria-hidden="true" /><input v-model="providerSearch" type="search" placeholder="搜索服务名称，例如：谷歌、千问、火山" /></label>
           <div class="ais-provider-grid">
-            <button v-for="p in filteredPresets" :key="p.provider" type="button" class="ais-provider-choice" @click="chooseProvider(p.provider)"><AiProviderIcon :provider="p.provider" /><span><strong>{{ providerInfo(p.provider)?.label || p.name }}</strong><small>{{ providerInfo(p.provider)?.caption || providerHint(p.provider) }}</small></span><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>
+            <button v-for="p in filteredPresets" :key="p.provider" type="button" class="ais-provider-choice" @click="chooseProvider(p.provider)"><AiProviderIcon :provider="p.provider" /><span><strong>{{ providerInfo(p.provider)?.label || p.name }}</strong><small>{{ providerInfo(p.provider)?.caption || providerHint(p.provider) }}</small></span><ChevronRight :size="16" :stroke-width="1.8" aria-hidden="true" /></button>
           </div>
           <div v-if="!filteredPresets.length" class="ais-empty" role="status"><p>没有匹配的 AI 服务，试试其他名称。</p><button type="button" @click="providerSearch = ''">清空搜索</button></div>
         </template>
@@ -68,7 +68,7 @@
           <div class="ais-model-section">
             <div class="ais-section-heading">
               <div><h5>使用模型</h5><span v-if="models.length && !modelError">已从上游获取 {{ models.length }} 个模型</span><span v-else>模型列表直接来自你的服务商</span></div>
-              <button type="button" class="ais-refresh" :disabled="busy || modelsLoading || !form.base_url" @click="getModels"><i class="fa-solid fa-arrows-rotate" :class="{ 'fa-spin': modelsLoading }" aria-hidden="true"></i>{{ modelsLoading ? '获取中…' : '从上游获取' }}</button>
+              <button type="button" class="ais-refresh" :disabled="busy || modelsLoading || !form.base_url" @click="getModels"><LoaderCircle v-if="modelsLoading" class="agent-icon-spin" :size="16" :stroke-width="1.8" aria-hidden="true" /><RefreshCw v-else :size="16" :stroke-width="1.8" aria-hidden="true" />{{ modelsLoading ? '获取中…' : '从上游获取' }}</button>
             </div>
             <p v-if="modelError" role="alert" class="ais-feedback is-error">{{ modelError }}</p>
             <template v-if="!manualModel">
@@ -84,7 +84,7 @@
           </div>
 
           <label class="ais-vision">
-            <span class="ais-vision-icon"><i class="fa-regular fa-image" aria-hidden="true"></i></span>
+            <span class="ais-vision-icon"><ImageIcon :size="16" :stroke-width="1.8" aria-hidden="true" /></span>
             <span class="ais-vision-copy"><strong>此模型支持图片理解</strong><small>{{ capabilitySource('vision') }} · 可手动调整，用于图片与扫描文档。</small></span>
             <input v-model="form.vision" class="ais-switch" type="checkbox" role="switch" @change="setOverride('vision', $event.target.checked)" />
           </label>
@@ -101,8 +101,8 @@
           </div>
         </div>
         <footer class="ais-editor-footer">
-          <button v-if="editId" type="button" class="ais-icon-button ais-delete" :disabled="busy" title="删除配置" aria-label="删除配置" @click="remove"><i class="fa-regular fa-trash-can" aria-hidden="true"></i></button><span v-else>密钥仅保存在本机</span>
-          <div><button type="button" :disabled="busy || !editId" title="检查已保存的服务能否正常响应；修改配置后请先保存" @click="test">{{ testing ? '测试中…' : '测试连接' }}</button><button class="ais-primary" :disabled="busy || modelsLoading || !form.model || (!manualModel && !models.includes(form.model))"><i class="fa-solid fa-check" aria-hidden="true"></i>保存配置</button></div>
+          <button v-if="editId" type="button" class="ais-icon-button ais-delete" :disabled="busy" title="删除配置" aria-label="删除配置" @click="remove"><Trash2 :size="16" :stroke-width="1.8" aria-hidden="true" /></button><span v-else>密钥仅保存在本机</span>
+          <div><button type="button" :disabled="busy || !editId" title="检查已保存的服务能否正常响应；修改配置后请先保存" @click="test">{{ testing ? '测试中…' : '测试连接' }}</button><button class="ais-primary" :disabled="busy || modelsLoading || !form.model || (!manualModel && !models.includes(form.model))"><Check :size="16" :stroke-width="1.8" aria-hidden="true" />保存配置</button></div>
         </footer>
       </form>
       <p class="ais-footnote">测试使用已保存的配置，修改后请先保存。测试会产生少量用量，可在「使用量审计」查看。</p>
@@ -118,7 +118,7 @@
         <div><span>输入 tokens</span><strong>{{ formatNumber(usage?.input_tokens) }}</strong></div>
         <div><span>输出 tokens</span><strong>{{ formatNumber(usage?.output_tokens) }}</strong></div>
       </div>
-      <div class="ais-audit-toolbar"><div><h4>调用明细</h4><p>失败 {{ usage?.failed_calls || 0 }} 次 · 用量未知 {{ usage?.unknown_usage_calls || 0 }} 次</p></div><div><button type="button" :disabled="busy" @click="action(() => loadAudit(true))"><i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i>刷新</button><button type="button" :disabled="!audit.length" @click="exportAudit"><i class="fa-solid fa-download" aria-hidden="true"></i>导出已加载记录</button></div></div>
+      <div class="ais-audit-toolbar"><div><h4>调用明细</h4><p>失败 {{ usage?.failed_calls || 0 }} 次 · 用量未知 {{ usage?.unknown_usage_calls || 0 }} 次</p></div><div><button type="button" :disabled="busy" @click="action(() => loadAudit(true))"><RefreshCw :size="16" :stroke-width="1.8" aria-hidden="true" />刷新</button><button type="button" :disabled="!audit.length" @click="exportAudit"><Download :size="16" :stroke-width="1.8" aria-hidden="true" />导出已加载记录</button></div></div>
       <div class="ais-table-wrap">
         <table v-if="audit.length" class="ais-audit-table"><thead><tr><th>模型 / 时间</th><th>状态</th><th>用量</th><th>详情</th></tr></thead>
           <tbody><tr v-for="r in audit" :key="r.id">
@@ -127,7 +127,7 @@
             <td class="ais-token-cell"><span>输入 {{ r.usage_known === false ? '未知' : (r.usage?.input_tokens ?? '未知') }}</span><span>输出 {{ r.usage_known === false ? '未知' : (r.usage?.output_tokens ?? '未知') }}</span></td>
             <td><details><summary>查看</summary><div class="ais-audit-detail">{{ r.profile_name || r.profile_id }}<br />第 {{ r.attempt || 1 }} 次尝试 · 图片 {{ r.image_count || 0 }} 张<br />{{ r.account ? '账号 ' + r.account : '' }}<br v-if="r.account" />{{ r.task_id ? '任务 ' + r.task_id : '独立调用 / 连接测试' }}</div></details></td>
           </tr></tbody></table>
-        <div v-else class="ais-empty"><i class="fa-regular fa-chart-bar" aria-hidden="true"></i><h4>还没有调用记录</h4><p>完成第一次总结或连接测试后，用量会显示在这里。</p></div>
+        <div v-else class="ais-empty"><ChartBar :size="16" :stroke-width="1.8" aria-hidden="true" /><h4>还没有调用记录</h4><p>完成第一次总结或连接测试后，用量会显示在这里。</p></div>
       </div>
       <button v-if="hasMoreAudit" type="button" class="ais-load-more" :disabled="busy" @click="action(() => loadAudit(false))">加载更多</button>
       <p class="ais-footnote">每次重试单独记录，费用以服务商账单为准。审计不包含密钥和聊天正文。</p>
@@ -136,6 +136,7 @@
 </template>
 
 <script setup>
+import { ChartBar, ChartNoAxesColumn, Check, ChevronRight, CircleCheck, Download, Image as ImageIcon, LoaderCircle, Lock, Plug, Plus, RefreshCw, Search, Trash2, WandSparkles, X } from '@lucide/vue'
 import AiModelMetadata from './AiModelMetadata.vue'
 import LocalSearchSettings from './LocalSearchSettings.vue'
 import AiProviderIcon from './AiProviderIcon.vue'
@@ -144,9 +145,9 @@ import UiSelect from './UiSelect.vue'
 import '~/assets/css/ai-settings.css'
 const activeTab = ref('config')
 const settingsTabs = [
-  {id:'config',label:'模型服务',hint:'连接与模型配置',icon:'fa-plug'},
-  {id:'local',label:'本地检索',hint:'按意思查找聊天',icon:'fa-magnifying-glass'},
-  {id:'usage',label:'用量记录',hint:'调用明细与消耗',icon:'fa-chart-simple'},
+  {id:'config',label:'模型服务',hint:'连接与模型配置',icon:Plug},
+  {id:'local',label:'本地检索',hint:'按意思查找聊天',icon:Search},
+  {id:'usage',label:'用量记录',hint:'调用明细与消耗',icon:ChartNoAxesColumn},
 ]
 function navigateTabs(event,id){
   if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return

@@ -5,23 +5,23 @@
     <AgentThreadList v-if="navigationOpen" :key="selectionKey" :items="history" :current="thread?.id" :running-ids="runningThreadIds" :loading="historyLoading" :busy="historyBusy" :error="historyError" :name-for="nameFor" :avatar-for="avatarFor" @new="newThread" @select="selectHistory" @refresh="loadHistory" @rename="renameHistory" @delete="deleteHistory" @settings="settings.openDialog('ai')" />
     <div class="agent-main">
     <header class="agent-header">
-      <button type="button" aria-label="AI 对话历史" :title="navigationOpen ? '收起侧边栏' : '展开侧边栏'" :aria-expanded="navigationOpen" @click="openHistory"><i class="fa-solid fa-table-columns" aria-hidden="true" /></button>
+      <button type="button" aria-label="AI 对话历史" :title="navigationOpen ? '收起侧边栏' : '展开侧边栏'" :aria-expanded="navigationOpen" @click="openHistory"><PanelLeft :size="16" :stroke-width="1.8" aria-hidden="true" /></button>
       <AgentAvatar v-if="contactUsername" class="agent-owner-avatar" :path="avatarFor(contactUsername)" :name="contactName" />
       <span class="agent-owner" :title="contactName">{{ contactName }}</span><strong class="agent-thread-title" :title="thread?.title || '新对话'">{{ thread?.title || '新对话' }}</strong>
-      <button type="button" aria-label="新建 AI 对话" title="新建对话" @click="mode = 'agent'; newThread()"><i class="fa-regular fa-pen-to-square" aria-hidden="true"></i></button>
-      <button type="button" :aria-label="expanded ? '收起大视图' : '展开大视图'" :title="expanded ? '收起大视图' : '展开大视图'" @click="expanded = !expanded"><i :class="expanded ? 'fa-solid fa-compress' : 'fa-solid fa-expand'" aria-hidden="true"></i></button>
+      <button type="button" aria-label="新建 AI 对话" title="新建对话" @click="mode = 'agent'; newThread()"><SquarePen :size="16" :stroke-width="1.8" aria-hidden="true" /></button>
+      <button type="button" :aria-label="expanded ? '收起大视图' : '展开大视图'" :title="expanded ? '收起大视图' : '展开大视图'" @click="expanded = !expanded"><component :is="expanded ? Minimize2 : Maximize2" :size="16" :stroke-width="1.8" aria-hidden="true" /></button>
       <div class="agent-menu-anchor" ref="menuAnchor">
-        <button ref="menuTrigger" type="button" aria-label="更多 AI 功能" :aria-expanded="menuOpen" aria-controls="agent-more-menu" @click="menuOpen = !menuOpen"><i class="fa-solid fa-ellipsis" aria-hidden="true"></i></button>
+        <button ref="menuTrigger" type="button" aria-label="更多 AI 功能" :aria-expanded="menuOpen" aria-controls="agent-more-menu" @click="menuOpen = !menuOpen"><Ellipsis :size="16" :stroke-width="1.8" aria-hidden="true" /></button>
         <div v-if="menuOpen" id="agent-more-menu" class="agent-menu">
-          <button type="button" aria-label="旧版全局历史" @click="menuOpen = false; legacyHistory = !legacyHistory; navigationOpen = true; loadHistory()"><i class="fa-solid fa-clock-rotate-left" aria-hidden="true" />旧版全局历史</button>
-          <button type="button" @click="mode = 'agent'; menuOpen = false"><i class="fa-regular fa-comment-dots" aria-hidden="true"></i>对话<i v-if="mode === 'agent'" class="fa-solid fa-check" aria-hidden="true"></i></button>
-          <button type="button" @click="mode = 'tools'; menuOpen = false"><i class="fa-solid fa-toolbox" aria-hidden="true"></i>工具与任务<i v-if="mode === 'tools'" class="fa-solid fa-check" aria-hidden="true"></i></button>
-          <button type="button" @click="menuOpen = false; settings.openDialog('ai')"><i class="fa-solid fa-sliders" aria-hidden="true"></i>AI 服务设置</button>
+          <button type="button" aria-label="旧版全局历史" @click="menuOpen = false; legacyHistory = !legacyHistory; navigationOpen = true; loadHistory()"><History :size="16" :stroke-width="1.8" aria-hidden="true" />旧版全局历史</button>
+          <button type="button" @click="mode = 'agent'; menuOpen = false"><MessageCircleMore :size="16" :stroke-width="1.8" aria-hidden="true" />对话<Check v-if="mode === 'agent'" :size="16" :stroke-width="1.8" aria-hidden="true" /></button>
+          <button type="button" @click="mode = 'tools'; menuOpen = false"><Toolbox :size="16" :stroke-width="1.8" aria-hidden="true" />工具与任务<Check v-if="mode === 'tools'" :size="16" :stroke-width="1.8" aria-hidden="true" /></button>
+          <button type="button" @click="menuOpen = false; settings.openDialog('ai')"><SlidersHorizontal :size="16" :stroke-width="1.8" aria-hidden="true" />AI 服务设置</button>
         </div>
       </div>
-      <button type="button" aria-label="关闭 AI 助手" title="关闭 AI 助手" @click="$emit('close')"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
+      <button type="button" aria-label="关闭 AI 助手" title="关闭 AI 助手" @click="$emit('close')"><X :size="16" :stroke-width="1.8" aria-hidden="true" /></button>
     </header>
-    <div v-if="mode === 'tools'" class="agent-tools-heading"><button type="button" @click="mode = 'agent'"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i>返回对话</button><strong>工具与任务</strong></div>
+    <div v-if="mode === 'tools'" class="agent-tools-heading"><button type="button" @click="mode = 'agent'"><ArrowLeft :size="14" :stroke-width="1.8" aria-hidden="true" />返回对话</button><strong>工具与任务</strong></div>
     <AiSidebar v-show="mode === 'tools'" class="agent-tools" :account="account" :contact="contact" :contacts="contacts" :focus-task-id="focusTaskId" @locate="locate" />
     <template v-if="mode === 'agent'">
       <div class="agent-workspace" :class="{ 'has-source': inspectedSource }">
@@ -31,7 +31,7 @@
       <p v-if="threadLoading" class="agent-loading" role="status">正在打开对话…</p>
       <AssistantThread :key="thread?.id || selectionKey" :messages="assistantMessages" :running="running" :expanded="expanded" @scroll="onScroll" @ready="onThreadReady">
         <template #welcome>
-        <div v-if="!thread?.messages?.length && !threadLoading" class="agent-welcome"><span class="agent-welcome-symbol"><i class="fa-regular fa-comment-dots" aria-hidden="true" /></span><h3>想从聊天里了解什么？</h3><p>查找消息、梳理进展，或继续追问。<br>从当前聊天开始，可按需查找其他聊天，回答附上原文出处。</p><button v-for="q in suggestions" :key="q" type="button" :disabled="sending || running || !account || (!contact?.username && !legacyView)" @click="sendSuggestion(q)">{{ q }}<i class="fa-solid fa-arrow-up" aria-hidden="true"></i></button></div>
+        <div v-if="!thread?.messages?.length && !threadLoading" class="agent-welcome"><span class="agent-welcome-symbol"><MessageCircleMore :size="16" :stroke-width="1.8" aria-hidden="true" /></span><h3>想从聊天里了解什么？</h3><p>查找消息、梳理进展，或继续追问。<br>从当前聊天开始，可按需查找其他聊天，回答附上原文出处。</p><button v-for="q in suggestions" :key="q" type="button" :disabled="sending || running || !account || (!contact?.username && !legacyView)" @click="sendSuggestion(q)">{{ q }}<ArrowUp :size="16" :stroke-width="1.8" aria-hidden="true" /></button></div>
         </template>
         <template #message="{ message }">
           <div v-if="message.role === 'user'" class="agent-user"><p>{{ message.text }}</p></div>
@@ -44,14 +44,14 @@
           </section>
         </template>
       </AssistantThread>
-      <button v-if="newContent" type="button" class="agent-new-content" @click="toBottom">有新内容 <i class="fa-solid fa-arrow-down" aria-hidden="true"></i></button>
+      <button v-if="newContent" type="button" class="agent-new-content" @click="toBottom">有新内容 <ArrowDown :size="16" :stroke-width="1.8" aria-hidden="true" /></button>
       <footer class="agent-composer">
         <div class="agent-input-box">
           <textarea ref="draftInput" v-model="draft" aria-label="给 AI 助手的消息" :placeholder="running ? '可以补充要求，例如：只看上周的…' : (contact?.username || legacyView ? '向当前聊天提问…' : '请先选择一个聊天')" rows="1" @input="resizeDraft" @keydown.enter.exact="sendOnEnter" @compositionstart="composing = true" @compositionend="composing = false" />
           <div class="agent-input-actions">
             <AgentContextRing :budget="run?.context_budget" />
             <AgentModelPicker v-model="modelChoice" :profiles="profiles" :profiles-loading="profilesLoading" :profiles-error="profilesError" @refresh="loadProfiles" />
-            <button type="button" class="agent-send" :disabled="running ? stopping : (threadLoading || sending || !draft.trim() || !account || (!contact?.username && !legacyView))" :aria-label="running ? '停止处理' : '发送问题'" @click="primaryAction"><span v-if="running" class="agent-stop-icon" aria-hidden="true" /><i v-else class="fa-solid fa-arrow-up" aria-hidden="true" /></button>
+            <button type="button" class="agent-send" :disabled="running ? stopping : (threadLoading || sending || !draft.trim() || !account || (!contact?.username && !legacyView))" :aria-label="running ? '停止处理' : '发送问题'" @click="primaryAction"><span v-if="running" class="agent-stop-icon" aria-hidden="true" /><ArrowUp v-else :size="16" :stroke-width="1.8" aria-hidden="true" /></button>
           </div>
         </div>
         <small v-if="modelSelection.state.notice" class="agent-error" role="status">{{ modelSelection.state.notice }} <button v-if="modelSelection.state.dirty" type="button" @click="modelSelection.choose(modelChoice)">重试保存</button></small>
@@ -81,9 +81,11 @@ import AgentAvatar from './AgentAvatar.vue'
 import { useAgentPanelResize } from '~/composables/useAgentPanelResize'
 import { mergeTimeline, mergeReferenceData, mergeRunEvent } from '~/utils/agentTimeline'
 import { agentModelSelection } from '~/lib/agent-model-selection'
+import { ArrowDown, ArrowLeft, ArrowUp, Check, Ellipsis, History, Maximize2, MessageCircleMore, Minimize2, PanelLeft, SlidersHorizontal, SquarePen, Toolbox, X } from '@lucide/vue'
 import '~/assets/css/agent.css'
-const props = defineProps({ account: String, contact: Object, contacts: Array, focusTaskId: String, locateSource: Function, prepareSource: Function })
+const props = defineProps({ account: String, contact: Object, contacts: Array, focusTaskId: String, locateSource: Function, prepareSource: Function, profileState: Object })
 const emit = defineEmits(['close', 'locate', 'expanded'])
+provide('chatContactProfileState', props.profileState)
 const api = useAiApi(), settings = useSettingsDialog()
 const saved = useState('chat-agent-ui', () => ({ selected: {}, drafts: {}, pinned: {} }))
 const mode = ref(props.focusTaskId ? 'tools' : 'agent'), expanded = ref(false), thread = ref(null), run = ref(null)
@@ -479,6 +481,6 @@ onMounted(() => {
     // SSE 正常时不发任何周期快照请求；断线后才启用保底轮询。
     if (running.value && !streamConnected.value && !refreshRetryTimer) void refresh()
     if (!streamConnected.value && !historyPending && Date.now() - lastHistorySync >= 5000 && (navigationOpen.value || runningThreadIds.value.length)) void loadHistory({silent:true})
-  }, 1500) })
+  }, 1000) })
 onUnmounted(() => { rememberView(); panelObserver?.disconnect(); document.removeEventListener('pointerdown', onOutside); closeInspector(); disposed = true; ++version; clearInterval(timer); cancelRefreshRetry(); events?.(); emit('expanded', false) })
 </script>

@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { Check, ChevronDown, ChevronLeft, ChevronRight, RotateCcw } from '@lucide/vue'
 
 const props = defineProps({ modelValue: { type: Object, default: () => ({}) }, profiles: { type: Array, default: () => [] }, profilesLoading: Boolean, profilesError: String })
 const emit = defineEmits(['update:modelValue', 'refresh'])
@@ -111,12 +112,12 @@ onBeforeUnmount(() => {
 <template>
   <div class="agent-model-controls">
     <details ref="menu" class="agent-model-menu">
-      <summary @click="opening" :title="profile ? `${profile.name} · ${modelName} · ${label}` : '选择模型'" aria-label="选择模型与思考强度"><span>{{ modelName }}<template v-if="profile"> · {{ label }}</template></span><i class="fa-solid fa-chevron-down" aria-hidden="true" /></summary>
+      <summary @click="opening" :title="profile ? `${profile.name} · ${modelName} · ${label}` : '选择模型'" aria-label="选择模型与思考强度"><span>{{ modelName }}<template v-if="profile"> · {{ label }}</template></span><ChevronDown :size="14" :stroke-width="1.8" aria-hidden="true" /></summary>
       <div class="agent-selection-popover" :aria-busy="profilesLoading">
         <template v-if="view === 'strength' && profile">
           <header class="strength-header">
-            <button ref="center" type="button" class="strength-center" aria-label="切换模型" @click="showModels"><strong>{{ label }} <i class="fa-solid fa-chevron-right" aria-hidden="true" /></strong><span>{{ modelName }}</span></button>
-            <button type="button" class="strength-reset" aria-label="恢复模型默认" title="恢复模型默认" :disabled="isDefault" @click="chooseStrength({})"><i class="fa-solid fa-arrow-rotate-left" aria-hidden="true" /></button>
+            <button ref="center" type="button" class="strength-center" aria-label="切换模型" @click="showModels"><strong>{{ label }} <ChevronRight :size="14" :stroke-width="1.8" aria-hidden="true" /></strong><span>{{ modelName }}</span></button>
+            <button type="button" class="strength-reset" aria-label="恢复模型默认" title="恢复模型默认" :disabled="isDefault" @click="chooseStrength({})"><RotateCcw :size="16" :stroke-width="1.8" aria-hidden="true" /></button>
           </header>
           <div v-if="adjustable" class="strength-control">
             <div class="strength-slider" :class="{ 'is-default': isDefault && draft == null }">
@@ -131,16 +132,16 @@ onBeforeUnmount(() => {
           <p v-if="capabilityError" class="strength-note" role="status">{{ capabilityError }}<button type="button" class="text-action" @click="fetchCapability">重试</button></p>
         </template>
         <div v-else class="model-list">
-          <header class="model-list-heading"><button ref="back" type="button" aria-label="返回思考强度" :disabled="!profile" @click="showStrength"><i class="fa-solid fa-chevron-left" aria-hidden="true" /> 返回</button><strong>选择模型</strong></header>
+          <header class="model-list-heading"><button ref="back" type="button" aria-label="返回思考强度" :disabled="!profile" @click="showStrength"><ChevronLeft :size="14" :stroke-width="1.8" aria-hidden="true" /> 返回</button><strong>选择模型</strong></header>
           <p v-if="profilesLoading" role="status">正在加载模型配置…</p>
           <p v-if="profilesError" role="alert">{{ profilesError }}<button type="button" class="text-action" @click="emit('refresh')">重试</button></p>
           <p v-if="!profilesLoading && !profilesError && !profiles.length">请先在 AI 设置中添加服务配置。</p>
           <section v-for="p in profiles" :key="p.id">
             <header><span>{{ p.name }}</span><button type="button" class="text-action" :disabled="loading[p.id]" @click="fetchModels(p)">{{ loading[p.id] ? '加载中…' : '获取模型' }}</button></header>
             <p v-if="errors[p.id]" role="status">{{ errors[p.id] }}</p>
-            <button v-for="m in choices(p)" :key="m.id" type="button" class="model-row" :aria-pressed="profile?.id === p.id && modelId === m.id" @click="select(p, m.id)"><span>{{ m.name || m.id }}</span><i v-if="profile?.id === p.id && modelId === m.id" class="fa-solid fa-check" aria-hidden="true" /></button>
+            <button v-for="m in choices(p)" :key="m.id" type="button" class="model-row" :aria-pressed="profile?.id === p.id && modelId === m.id" @click="select(p, m.id)"><span>{{ m.name || m.id }}</span><Check v-if="profile?.id === p.id && modelId === m.id" :size="16" :stroke-width="1.8" aria-hidden="true" /></button>
           </section>
-          <button type="button" class="manual-toggle" :aria-expanded="manualOpen" @click="manualOpen = !manualOpen">手动输入模型 <i class="fa-solid fa-chevron-down" aria-hidden="true" /></button>
+          <button type="button" class="manual-toggle" :aria-expanded="manualOpen" @click="manualOpen = !manualOpen">手动输入模型 <ChevronDown :size="14" :stroke-width="1.8" aria-hidden="true" /></button>
           <form v-if="manualOpen" @submit.prevent="submitManual"><select v-model="manualProfile" aria-label="手动模型的服务配置"><option value="">当前服务</option><option v-for="p in profiles" :key="p.id" :value="p.id">{{ p.name }}</option></select><input v-model="manual" aria-label="手动模型 ID" placeholder="输入模型 ID" maxlength="200" /><button type="submit" class="text-action" :disabled="!manual.trim() || !profiles.length">使用</button></form>
         </div>
       </div>
@@ -160,8 +161,8 @@ html[data-theme="dark"] .agent-selection-popover { --strength-green: #3eb575; }
 .strength-header { display: grid; grid-template-columns: 24px minmax(0, 1fr) 24px; align-items: start; gap: 4px; margin-bottom: 6px; }
 .strength-center { grid-column: 2; display: flex; min-width: min(80px, 100%); max-width: 100%; justify-self: center; flex-direction: column; align-items: center; gap: 0; padding: 0 6px; border: 0; border-radius: 7px; background: var(--app-surface-soft, #f5f5f5); }
 .strength-center:hover { background: var(--app-surface-soft, #f5f5f5); }
-.strength-center strong { color: var(--strength-green); font-size: 14px; font-weight: 600; }
-.strength-center strong i { color: var(--app-text-muted, #999); font-size: 10px; margin-left: 3px; vertical-align: 1px; }
+.strength-center strong { display:inline-flex; align-items:center; color: var(--strength-green); font-size: 14px; font-weight: 600; }
+.strength-center strong :is(i,svg) { color: var(--app-text-muted, #999); font-size: 10px; margin-left: 3px; vertical-align: 1px; }
 .strength-center>span { max-width: 100%; color: var(--app-text-secondary, #777); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .strength-reset { grid-column: 3; height: 24px; width: 24px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--app-text-secondary, #888); }
 .strength-reset:hover:not(:disabled) { background: var(--app-surface-soft, #f5f5f5); }
@@ -189,10 +190,10 @@ html[data-theme="dark"] .agent-selection-popover { --strength-green: #3eb575; }
 .model-row>span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .model-row:hover { background: var(--app-surface-soft, #f5f5f5); }
 .model-row[aria-pressed=true] { background: color-mix(in srgb, var(--strength-green) 8%, transparent); }
-.model-row>i { color: var(--strength-green); }
+.model-row>:is(i,svg) { color: var(--strength-green); }
 .model-list p { color: var(--app-text-secondary, #777); font-size: 12px; margin: 8px; }
 .manual-toggle { width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 10px; margin-top: 8px; border: 0; border-top: 1px solid var(--app-border, #eee); background: transparent; color: var(--app-text-secondary, #777); text-align: left; }
-.manual-toggle i { font-size: 9px; }
+.manual-toggle :is(i,svg) { font-size: 9px; }
 .model-list form { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 4px 8px 8px; }
 .model-list form select { grid-column: 1 / -1; }
 .model-list form input, .model-list form select { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--app-border, #ddd); border-radius: 6px; padding: 6px 8px; background: var(--app-surface-bg, #fff); color: inherit; font: inherit; }

@@ -825,6 +825,8 @@ export const useApi = () => {
     if (params && params.keyword) query.set('keyword', params.keyword)
     if (params && params.include_friends != null) query.set('include_friends', String(!!params.include_friends))
     if (params && params.include_groups != null) query.set('include_groups', String(!!params.include_groups))
+    if (params && params.include_enterprise_friends != null) query.set('include_enterprise_friends', String(!!params.include_enterprise_friends))
+    if (params && params.include_enterprise_groups != null) query.set('include_enterprise_groups', String(!!params.include_enterprise_groups))
     if (params && params.include_officials != null) query.set('include_officials', String(!!params.include_officials))
     if (params && params.include_official_subscriptions != null) query.set('include_official_subscriptions', String(!!params.include_official_subscriptions))
     if (params && params.include_official_services != null) query.set('include_official_services', String(!!params.include_official_services))
@@ -888,6 +890,8 @@ export const useApi = () => {
         contact_types: {
           friends: payload?.contact_types?.friends == null ? true : !!payload.contact_types.friends,
           groups: payload?.contact_types?.groups == null ? true : !!payload.contact_types.groups,
+          enterprise_friends: payload?.contact_types?.enterprise_friends == null ? null : !!payload.contact_types.enterprise_friends,
+          enterprise_groups: payload?.contact_types?.enterprise_groups == null ? null : !!payload.contact_types.enterprise_groups,
           officials: payload?.contact_types?.officials == null ? true : !!payload.contact_types.officials,
           official_subscriptions: payload?.contact_types?.official_subscriptions == null ? null : !!payload.contact_types.official_subscriptions,
           official_services: payload?.contact_types?.official_services == null ? null : !!payload.contact_types.official_services,

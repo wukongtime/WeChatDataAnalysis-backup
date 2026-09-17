@@ -9,8 +9,8 @@
       <div v-if="!account" class="lss-feedback">请先在聊天页面选择账号。现在也可以下载模型，之后再开始整理。</div>
       <div v-if="job && (form.enabled || job.status==='error')" ref="statusRef" class="lss-status" tabindex="-1" :class="{ 'is-error': job.status==='error', 'is-paused': job.status==='paused' }">
         <div class="lss-status-heading">
-          <div class="lss-status-title" role="status"><i class="fa-solid" :class="running ? 'fa-circle-notch fa-spin' : job.status==='error' ? 'fa-circle-exclamation' : job.status==='done' ? (hasSearchData ? 'fa-circle-check' : 'fa-circle-info') : 'fa-circle-pause'" aria-hidden="true"></i><strong>{{ job.status==='done' ? completedTitle : stage(job) }}</strong></div>
-          <div class="lss-status-meta"><span class="lss-device-badge"><i class="fa-solid fa-microchip" aria-hidden="true"></i>{{ actualDevice }}</span><span class="lss-note">用时 {{ elapsed(job) }}</span></div>
+          <div class="lss-status-title" role="status"><LoaderCircle v-if="running" class="agent-icon-spin" :size="16" :stroke-width="1.8" aria-hidden="true" /><CircleAlert v-else-if="job.status==='error'" :size="16" :stroke-width="1.8" aria-hidden="true" /><CircleCheck v-else-if="job.status==='done' && hasSearchData" :size="16" :stroke-width="1.8" aria-hidden="true" /><Info v-else-if="job.status==='done'" :size="16" :stroke-width="1.8" aria-hidden="true" /><CirclePause v-else :size="16" :stroke-width="1.8" aria-hidden="true" /><strong>{{ job.status==='done' ? completedTitle : stage(job) }}</strong></div>
+          <div class="lss-status-meta"><span class="lss-device-badge"><Microchip :size="16" :stroke-width="1.8" aria-hidden="true" />{{ actualDevice }}</span><span class="lss-note">用时 {{ elapsed(job) }}</span></div>
         </div>
         <div class="lss-progress-heading">
           <span>{{ progress.total ? (progress.unit==='消息' ? '已保存消息进度' : `${progress.unit}进度`) : job.status==='done' ? '本轮整理进度' : job.stage==='counting' ? '统计完成后显示总量' : '正在确认整理范围' }}<span v-if="progress.total" class="lss-progress-count">{{ number(progress.completed) }} / {{ number(progress.total) }} 已完成</span></span>
@@ -23,14 +23,14 @@
           <div class="lss-metric" data-metric="generated"><dt>{{ running ? '本次生成片段' : '本次已保存片段' }}</dt><dd><strong>{{ number(running ? (job.embedded_count ?? job.embedded ?? 0) : (job.embedded ?? 0)) }}</strong><span>个片段</span></dd></div>
           <div class="lss-metric lss-metric-index" data-metric="indexed"><dt>当前索引片段</dt><dd><strong>{{ indexStats ? number(indexStats.chunks) : '—' }}</strong><span>{{ indexStats ? `覆盖 ${number(indexStats.messages)} 条消息` : '等待索引统计' }}</span></dd></div>
         </dl>
-        <p v-if="job.warning" class="lss-status-warning" role="status"><i class="fa-solid fa-circle-info" aria-hidden="true"></i>{{ job.warning }}</p>
+        <p v-if="job.warning" class="lss-status-warning" role="status"><Info :size="16" :stroke-width="1.8" aria-hidden="true" />{{ job.warning }}</p>
         <p v-if="job.error" :class="job.status==='paused' ? 'lss-note' : 'lss-error'" :role="job.status==='paused' ? 'status' : 'alert'">{{ job.error }}</p>
         <div class="lss-status-footer">
           <p class="lss-note">{{ statusHint }}</p>
-          <button v-if="running" type="button" :disabled="busy" @click="act(()=>request('/index/pause',{method:'POST'},true))"><i class="fa-solid fa-pause" aria-hidden="true"></i>暂停整理</button>
+          <button v-if="running" type="button" :disabled="busy" @click="act(()=>request('/index/pause',{method:'POST'},true))"><Pause :size="16" :stroke-width="1.8" aria-hidden="true" />暂停整理</button>
         </div>
         <details class="lss-status-details">
-          <summary>处理详情<i class="fa-solid fa-chevron-down" aria-hidden="true"></i></summary>
+          <summary>处理详情<ChevronDown :size="16" :stroke-width="1.8" aria-hidden="true" /></summary>
           <div>
             <p v-if="job.mode" class="lss-note">{{ indexMode(job.mode) }}</p>
             <p v-if="job.unchanged" class="lss-note">已复用 {{ number(job.unchanged) }} 条未变化消息，无需重复生成片段。</p>
@@ -45,12 +45,12 @@
 
       <div class="lss-setup">
         <section class="lss-step" aria-labelledby="lss-model-title">
-          <div class="lss-step-heading"><span class="lss-step-number" :class="{ complete: modelReady }"><i v-if="modelReady" class="fa-solid fa-check" aria-hidden="true"></i><template v-else>1</template></span><div><h5 id="lss-model-title">选择检索模型</h5><p>模型只需下载一次，所有账号都可使用。</p></div><button type="button" class="lss-link" :disabled="busy || running" @click="dialog='models'">更换模型</button></div>
+          <div class="lss-step-heading"><span class="lss-step-number" :class="{ complete: modelReady }"><Check v-if="modelReady" :size="16" :stroke-width="1.8" aria-hidden="true" /><template v-else>1</template></span><div><h5 id="lss-model-title">选择检索模型</h5><p>模型只需下载一次，所有账号都可使用。</p></div><button type="button" class="lss-link" :disabled="busy || running" @click="dialog='models'">更换模型</button></div>
           <div v-if="displayModel" class="lss-model-summary">
-            <div class="lss-model-icon"><i class="fa-solid fa-cube" aria-hidden="true"></i></div>
+            <div class="lss-model-icon"><Box :size="16" :stroke-width="1.8" aria-hidden="true" /></div>
             <div class="lss-grow"><strong>{{ displayModel.name }}</strong><span v-if="displayModel.recommended" class="lss-tag">推荐</span><p>{{ displayModel.description }} · {{ bytes(displayModel.size) }}</p><span class="lss-note">{{ modelReady ? '已就绪' : displayModel.downloaded ? '已下载，点击右侧使用' : '首次使用需要下载 · Hugging Face 免登录' }}</span></div>
             <button v-if="displayModel.downloaded && !modelReady" type="button" :disabled="busy || running || !account" @click="selectModel(displayModel)">使用此模型</button>
-            <span v-else-if="modelReady" class="lss-ready"><i class="fa-solid fa-circle-check" aria-hidden="true"></i> 已选择</span>
+            <span v-else-if="modelReady" class="lss-ready"><CircleCheck :size="16" :stroke-width="1.8" aria-hidden="true" /> 已选择</span>
             <button v-else-if="['running','queued'].includes(displayModel.job?.status)" type="button" :disabled="busy" @click="act(()=>request(`/models/${displayModel.id}/pause`,{method:'POST'}))">暂停下载</button>
             <button v-else type="button" :disabled="busy" @click="act(()=>request(`/models/${displayModel.id}/download`,{method:'POST'}))">{{ displayModel.job ? '继续下载' : '下载模型' }}</button>
           </div>
@@ -68,7 +68,7 @@
           <p class="lss-note" role="status">{{ globalCoverage }}</p>
         </section>
         <section v-else class="lss-step" aria-labelledby="lss-scope-title">
-          <div class="lss-step-heading"><span class="lss-step-number" :class="{ complete: form.usernames.length }"><i v-if="form.usernames.length" class="fa-solid fa-check" aria-hidden="true"></i><template v-else>2</template></span><div><h5 id="lss-scope-title">选择要搜索的聊天</h5><p>只整理选中的聊天，不会自动扩大范围。</p></div></div>
+          <div class="lss-step-heading"><span class="lss-step-number" :class="{ complete: form.usernames.length }"><Check v-if="form.usernames.length" :size="16" :stroke-width="1.8" aria-hidden="true" /><template v-else>2</template></span><div><h5 id="lss-scope-title">选择要搜索的聊天</h5><p>只整理选中的聊天，不会自动扩大范围。</p></div></div>
           <div class="lss-scope-row"><div class="lss-grow"><strong>{{ form.usernames.length ? '已选择 '+form.usernames.length+' 个聊天' : '还没有选择聊天' }}</strong><p>{{ selectedChatNames || '选择你经常需要查找的好友或群聊' }}</p></div><button type="button" :disabled="!account || busy || running" @click="openScope">{{ form.usernames.length ? '调整聊天' : '选择聊天' }}</button></div>
           <div class="lss-time-row"><span>聊天时间</span><UiSelect v-model="period" label="聊天时间" :disabled="running || busy" :options="periods" @change="changePeriod" /><span class="lss-note">时间范围越大，首次整理越久</span></div>
           <div v-if="period==='custom'" class="lss-grid"><label>开始日期<input v-model="startDate" type="date" :disabled="running || busy" /></label><label>结束日期<input v-model="endDate" type="date" :disabled="running || busy" /></label></div>
@@ -77,7 +77,7 @@
         <footer class="lss-start">
           <div><strong>{{ running ? (accountWide ? '正在整理全部聊天' : '正在整理所选聊天') : canResume ? '上次整理尚未完成' : modelChanged ? '新模型需要从头整理' : form.enabled && state.config?.active ? '按当前设置更新聊天' : '准备好后，一次开启' }}</strong><p id="lss-start-hint">{{ blockingReason || (accountWide ? '保存模型并开始整理全部历史；前台提问优先使用计算资源。' : running ? '整理会在后台继续，可以随时暂停。' : canResume ? '继续会保留已完成的进度；从头整理会重新处理所选范围的全部内容。' : modelChanged ? '保存当前选择，用新模型重新生成全部向量，完成后切换索引。' : state.config?.active ? '默认增量更新；从头整理会重新生成所选范围的全部向量。' : '点击后保存选择并开始整理，无需另开功能开关。') }}</p></div>
           <div class="lss-start-actions">
-            <button type="button" class="lss-primary" aria-describedby="lss-start-hint" :disabled="busy || !!blockingReason || running" @click="primaryAction"><i class="fa-solid" :class="busy || running ? 'fa-circle-notch fa-spin' : 'fa-play'" aria-hidden="true"></i>{{ busy ? '正在提交…' : running ? '正在整理' : canResume ? '继续整理' : modelChanged ? '使用新模型从头整理' : form.enabled ? '保存并开始整理' : '开启并开始整理' }}</button>
+            <button type="button" class="lss-primary" aria-describedby="lss-start-hint" :disabled="busy || !!blockingReason || running" @click="primaryAction"><LoaderCircle v-if="busy || running" class="agent-icon-spin" :size="16" :stroke-width="1.8" aria-hidden="true" /><Play v-else :size="16" :stroke-width="1.8" aria-hidden="true" />{{ busy ? '正在提交…' : running ? '正在整理' : canResume ? '继续整理' : modelChanged ? '使用新模型从头整理' : form.enabled ? '保存并开始整理' : '开启并开始整理' }}</button>
             <button v-if="(job || state.config?.active) && (!modelChanged || canResume || running)" type="button" :disabled="busy || !!blockingReason || running" aria-describedby="lss-start-hint" @click="rebuildIndex">从头整理</button>
           </div>
         </footer>
@@ -86,9 +86,9 @@
 
       <details class="lss-advanced" @toggle="advancedOpen=$event.target.open">
         <summary>
-          <span class="lss-advanced-icon"><i class="fa-solid fa-sliders" aria-hidden="true"></i></span>
+          <span class="lss-advanced-icon"><SlidersHorizontal :size="16" :stroke-width="1.8" aria-hidden="true" /></span>
           <span class="lss-advanced-copy"><strong>高级设置</strong><span>{{ isMac ? '运行设备 · 读取批量 · 自动更新' : '运行设备与 GPU 加速 · 读取批量 · 自动更新' }}</span></span>
-          <span class="lss-advanced-action">{{ advancedOpen ? '收起设置' : '展开设置' }}<i class="fa-solid fa-chevron-down" aria-hidden="true"></i></span>
+          <span class="lss-advanced-action">{{ advancedOpen ? '收起设置' : '展开设置' }}<ChevronDown :size="16" :stroke-width="1.8" aria-hidden="true" /></span>
         </summary>
         <div class="lss-advanced-body">
           <p class="lss-note">{{ isMac ? 'macOS 使用 CPU 在本机运行检索模型，无需下载加速组件。' : 'CPU 即可使用，NVIDIA 加速为可选项，无需先下载加速组件。' }}</p>
@@ -119,12 +119,12 @@
           <details v-if="state.audit?.length" class="lss-section"><summary>本地处理记录</summary><p v-for="a in state.audit" :key="a.id" class="lss-note">{{ a.kind==='search' ? '检索' : '整理聊天' }} · {{ a.model }} · {{ a.actual_device==='cuda' ? 'NVIDIA GPU' : 'CPU' }} · {{ Number(a.seconds).toFixed(1) }} 秒</p></details>
         </div>
       </details>
-      <div class="lss-bottom-note"><i class="fa-solid fa-laptop" aria-hidden="true"></i><span>本地搜索不上传聊天。AI 助手回答时，引用的内容仍会发送至你配置的模型服务。</span></div>
+      <div class="lss-bottom-note"><Laptop :size="16" :stroke-width="1.8" aria-hidden="true" /><span>本地搜索不上传聊天。AI 助手回答时，引用的内容仍会发送至你配置的模型服务。</span></div>
     </div>
 
     <Teleport to="body"><div v-if="dialog" class="lss-overlay" @click.self="closeDialog" @keydown.esc.stop="closeDialog" @keydown.tab="trapFocus">
       <section ref="dialogRef" class="lss-dialog local-search-settings" :class="{ 'lss-model-dialog':dialog==='models', 'lss-scope-dialog':dialog==='scope' }" role="dialog" aria-modal="true" :aria-label="dialogTitle" tabindex="-1">
-        <header class="lss-dialog-heading"><div><h4>{{ dialogTitle }}</h4><p>{{ dialog==='models' ? '按语言和电脑配置选择，下载完成后点击「使用此模型」。' : dialog==='scope' ? '按分类选择要检索的聊天' : '导入后会校验版本和文件完整性。' }}</p></div><button type="button" aria-label="关闭" :disabled="busy" @click="closeDialog"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button></header>
+        <header class="lss-dialog-heading"><div><h4>{{ dialogTitle }}</h4><p>{{ dialog==='models' ? '按语言和电脑配置选择，下载完成后点击「使用此模型」。' : dialog==='scope' ? '按分类选择要检索的聊天' : '导入后会校验版本和文件完整性。' }}</p></div><button type="button" aria-label="关闭" :disabled="busy" @click="closeDialog"><X :size="16" :stroke-width="1.8" aria-hidden="true" /></button></header>
         <p v-if="dialogError" class="lss-feedback lss-error" role="alert">{{ dialogError }}</p>
         <template v-if="dialog==='models'">    <div class="lss-models" role="list" aria-label="可用检索模型">
       <article v-for="m in state.models || []" :key="m.id" class="lss-card lss-model" :class="{selected: form.model===m.id}" role="listitem">
@@ -145,7 +145,7 @@
 
 </template>
         <template v-else-if="dialog==='scope'">
-          <div class="lss-scope-search"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><input v-model="scopeSearch" type="search" placeholder="搜索群聊或个人聊天" aria-label="搜索群聊或个人聊天" /></div>
+          <div class="lss-scope-search"><Search :size="16" :stroke-width="1.8" aria-hidden="true" /><input v-model="scopeSearch" type="search" placeholder="搜索群聊或个人聊天" aria-label="搜索群聊或个人聊天" /></div>
           <div class="lss-scope-columns">
             <section v-for="category in scopeCategories" :key="category.key" class="lss-scope-category" :aria-labelledby="`lss-category-${category.key}`" :data-category="category.key">
               <header class="lss-category-heading">
@@ -170,6 +170,7 @@
 </template>
 
 <script setup>
+import { Box, Check, ChevronDown, CircleAlert, CircleCheck, CirclePause, Info, Laptop, LoaderCircle, Microchip, Pause, Play, Search, SlidersHorizontal, X } from '@lucide/vue'
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useChatAccountsStore } from '~/stores/chatAccounts'
@@ -396,6 +397,7 @@ onBeforeUnmount(()=>{clearInterval(timer);stopEvents?.()})
 
 
 <style scoped>
+.local-search-settings svg.lucide{display:block;flex:none}
 .local-search-settings{color:var(--app-text-primary,#20272f);font-size:12px;line-height:1.5}
 .local-search-settings *{box-sizing:border-box}
 .local-search-settings h4,.local-search-settings h5,.local-search-settings p{margin:0}
@@ -432,7 +434,7 @@ onBeforeUnmount(()=>{clearInterval(timer);stopEvents?.()})
 @container (max-width:600px){.lss-start-actions button{flex:1}}
 .lss-status{--lss-green:#07834b;--lss-blue:#526d9e;border:1px solid color-mix(in srgb,var(--app-border,#e7e9ed),#079b57 20%);border-radius:12px;background:var(--app-surface-bg,#fff);padding:20px;margin-bottom:16px;container-type:inline-size;font-variant-numeric:tabular-nums}
 .lss-status-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
-.lss-status-title{display:flex;align-items:center;gap:8px;font-size:14px;min-width:0}.lss-status-title>i{color:var(--lss-green);flex-shrink:0}
+.lss-status-title{display:flex;align-items:center;gap:8px;font-size:14px;min-width:0}.lss-status-title>:is(i,svg){color:var(--lss-green);flex-shrink:0}
 .lss-status-meta{display:flex;align-items:center;gap:12px;min-width:0;margin-left:auto}.lss-status-meta>.lss-note{white-space:nowrap}
 .lss-device-badge{display:inline-flex;align-items:center;gap:6px;min-width:0;font-size:11px;padding:4px 9px;border-radius:6px;background:var(--app-accent-soft,#edf8f1);color:var(--lss-green);overflow-wrap:anywhere}
 .lss-progress-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:20px 0 8px;color:var(--app-text-secondary,#687582);font-size:11px}
@@ -446,14 +448,14 @@ onBeforeUnmount(()=>{clearInterval(timer);stopEvents?.()})
 .lss-metric-saved{color:var(--lss-green)}.lss-metric-index{color:var(--lss-blue);border-left:1px solid var(--app-border,#e7e9ed)}
 .lss-read-total{display:flex;align-items:baseline;justify-content:center;flex-wrap:wrap;gap:4px}.lss-total-denominator{font-size:14px;font-weight:400;white-space:nowrap;color:var(--app-text-secondary,#687582)}
 .lss-status-footer{display:flex;align-items:center;justify-content:space-between;gap:16px}.lss-status-footer>.lss-note{margin:0;font-size:11px}.lss-status-footer button{flex-shrink:0}
-.lss-status-details{border-top:1px solid var(--app-border,#e7e9ed);margin-top:16px;padding-top:12px}.lss-status-details summary{display:flex;align-items:center;gap:8px;width:fit-content;min-height:28px;font-size:11px;color:var(--app-text-secondary,#687582);list-style:none}.lss-status-details summary::-webkit-details-marker{display:none}.lss-status-details summary>i{font-size:9px}.lss-status-details[open] summary>i{transform:rotate(180deg)}.lss-status-details summary:hover{color:var(--lss-green)}.lss-status-details>div{padding-top:4px}
+.lss-status-details{border-top:1px solid var(--app-border,#e7e9ed);margin-top:16px;padding-top:12px}.lss-status-details summary{display:flex;align-items:center;gap:8px;width:fit-content;min-height:28px;font-size:11px;color:var(--app-text-secondary,#687582);list-style:none}.lss-status-details summary::-webkit-details-marker{display:none}.lss-status-details summary>:is(i,svg){font-size:9px}.lss-status-details[open] summary>:is(i,svg){transform:rotate(180deg)}.lss-status-details summary:hover{color:var(--lss-green)}.lss-status-details>div{padding-top:4px}
 .lss-status :is(.lss-error,.lss-status-warning){overflow-wrap:anywhere;margin-bottom:12px}.lss-status-warning{display:flex;align-items:baseline;gap:7px}
 .lss-status.is-error{border-color:var(--danger-color,#cb4b43)}
-.lss-status.is-error .lss-status-title>i{color:var(--danger-color,#cb4b43)}
+.lss-status.is-error .lss-status-title>:is(i,svg){color:var(--danger-color,#cb4b43)}
 :global([data-theme=dark] .lss-status){--lss-green:#64d49c;--lss-blue:#9aafd7}
 @container(max-width:520px){.lss-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 12px}.lss-metric-index{border-left:0}.lss-progress-count{display:block;margin:4px 0 0}.lss-status-footer{align-items:flex-start;flex-wrap:wrap}.lss-status-footer button{margin-left:auto}.lss-metric{font-size:22px}}
 .lss-bottom-note{display:flex;align-items:flex-start;gap:7px;font-size:10px;color:var(--app-text-secondary,#687582);padding:12px 1px;line-height:1.7}
-.lss-bottom-note>i{margin-top:3px}
+.lss-bottom-note>:is(i,svg){margin-top:3px}
 .lss-advanced{border:1px solid var(--app-border,#e7e9ed);border-radius:9px;margin-top:14px;background:var(--app-surface-soft,#f7f7f7);overflow:hidden}
 .lss-advanced>summary{display:flex;align-items:center;gap:12px;padding:16px;list-style:none}
 .lss-advanced>summary::-webkit-details-marker{display:none}
@@ -464,7 +466,7 @@ onBeforeUnmount(()=>{clearInterval(timer);stopEvents?.()})
 .lss-advanced-copy strong{font-size:13px;font-weight:600}
 .lss-advanced-copy>span{color:var(--app-text-secondary,#687582);font-size:11px}
 .lss-advanced-action{display:flex;align-items:center;gap:8px;flex-shrink:0;padding:7px 10px;border:1px solid var(--app-border,#e7e9ed);border-radius:6px;color:var(--app-accent,#079b57);background:var(--app-surface-bg,#fff);font-size:11px;font-weight:500}
-.lss-advanced[open]>summary .fa-chevron-down{transform:rotate(180deg)}
+.lss-advanced[open]>summary .lucide-chevron-down{transform:rotate(180deg)}
 .lss-advanced-body{border-top:1px solid var(--app-border,#e7e9ed);padding:16px;background:var(--app-surface-bg,#fff)}
 .lss-device-panel{margin-top:14px}.lss-device-state{margin:12px 0;color:var(--app-text-secondary)}
 .lss-segments{display:flex;flex-shrink:0;gap:2px}
@@ -488,7 +490,7 @@ summary{cursor:pointer}
 .lss-scope-dialog .lss-dialog-heading p{font-size:14px;margin-top:7px}
 .lss-scope-dialog .lss-dialog-heading>button{width:38px;height:38px;font-size:17px;color:var(--app-text-secondary,#687582)}
 .lss-scope-search{position:relative;flex-shrink:0;margin-bottom:24px}
-.lss-scope-search>i{position:absolute;left:15px;top:50%;transform:translateY(-50%);color:var(--app-text-secondary,#687582);pointer-events:none}
+.lss-scope-search>:is(i,svg){position:absolute;left:15px;top:50%;transform:translateY(-50%);color:var(--app-text-secondary,#687582);pointer-events:none}
 .lss-scope-search input[type=search]{height:46px;padding:10px 14px 10px 43px;border-radius:8px;background:var(--app-surface-soft,#f7f8fa);font-size:14px}
 .lss-scope-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:30px;min-height:0;overflow:hidden}
 .lss-scope-category{display:flex;flex-direction:column;min-width:0;min-height:0}
@@ -519,5 +521,5 @@ summary{cursor:pointer}
 .lss-source{font-size:10px;color:var(--app-text-secondary);margin-top:10px;overflow-wrap:anywhere}.lss-source a{color:#079b57}
 @container (max-width:600px){.lss-heading{flex-wrap:wrap}.lss-start{align-items:stretch;flex-direction:column}.lss-start>button{width:100%}.lss-time-row{flex-wrap:wrap}.lss-time-row>.lss-note{width:100%}.lss-model-summary{flex-wrap:wrap}.lss-model-summary>.lss-grow{min-width:180px}.lss-step{padding:15px}.lss-advanced>summary>.lss-note{font-size:9px}.lss-advanced .lss-row{flex-wrap:wrap}}
 @media(max-width:600px){.lss-models,.lss-grid{grid-template-columns:1fr}.lss-row{flex-wrap:wrap}.lss-dialog{padding:16px}.lss-model-dialog{width:100%}}
-@media(prefers-reduced-motion:reduce){.fa-spin{animation:none}}
+@media(prefers-reduced-motion:reduce){.agent-icon-spin{animation:none}}
 </style>
