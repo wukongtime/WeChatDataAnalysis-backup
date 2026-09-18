@@ -1170,9 +1170,10 @@ def capture_salt_matched_passphrase(
         f"候选校验失败 {candidate_rejections}，仅部分库匹配 {partial_candidates}，参数样本 {pbkdf_profiles}。"
     )
     process_exit = payload.get("process_exit") if isinstance(payload.get("process_exit"), dict) else None
-    if process_exit is not None:
+    process_state = " ".join(str((process_exit or {}).get("state") or "").split()).lower()
+    if process_exit is not None and process_state in {"crashed", "exited"}:
         exit_pid = int(process_exit.get("pid") or pid)
-        exit_state = " ".join(str(process_exit.get("state") or "unknown").split())[:40]
+        exit_state = process_state[:40]
         exit_status = int(process_exit.get("exit_status") or 0)
         exit_description = " ".join(str(process_exit.get("exit_description") or "").split())[:240]
         exit_detail = f"PID {exit_pid}，状态 {exit_state}，退出码 {exit_status}"
@@ -1182,6 +1183,13 @@ def capture_salt_matched_passphrase(
             "debug_wechat_exited_during_capture",
             f"临时调试微信在捕获阶段提前结束（{exit_detail}）。" + detail
             + "未保存任何未经数据库校验的候选；请将这段非敏感诊断随微信版本和 build 一并反馈。",
+            process_attached=True,
+        )
+    if re.search(r"wedata_lldb_exit=(?:130|137|143)(?:\s|$)", compact):
+        raise MacOSDBKeyCaptureFailure(
+            "capture_timeout",
+            "密钥监测窗口已结束，但调试微信进程没有提前退出。" + detail
+            + "未保存任何未经数据库校验的候选；请等待监测就绪后在时限内完成同一账号登录。",
             process_attached=True,
         )
     raise MacOSDBKeyCaptureFailure(
