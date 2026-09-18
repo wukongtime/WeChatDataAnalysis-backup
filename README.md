@@ -92,6 +92,30 @@
   <tr>
     <td colspan="2" align="center"><img src="frontend/public/Contact.png" alt="联系人导出" width="800"/></td>
   </tr>
+  <tr>
+    <td align="center" colspan="2"><b>微信收藏</b></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="frontend/public/readme-favorites.png" alt="微信收藏" width="800"/></td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2"><b>转账与红包</b></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="frontend/public/readme-payments.png" alt="转账与红包" width="800"/></td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2"><b>小程序</b></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="frontend/public/readme-mini-programs.png" alt="小程序" width="800"/></td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2"><b>视频号直播</b></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="frontend/public/readme-finder.png" alt="视频号直播" width="800"/></td>
+  </tr>
 </table>
 
 ## 高级版

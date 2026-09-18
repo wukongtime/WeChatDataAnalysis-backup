@@ -24,10 +24,10 @@
             :key="item.key"
             type="button"
             class="group flex w-full flex-col items-start rounded-[6px] px-3 py-1.5 text-left transition select-none"
-            :class="activeSection === item.key ? 'bg-white shadow-sm ring-1 ring-[#e5e5e5]' : 'hover:bg-[#f0f0f0]/60'"
+            :class="activeSection === item.key ? 'bg-[var(--app-accent)]' : 'hover:bg-[#f0f0f0]/60'"
             @click="scrollToSection(item.key)"
           >
-            <div class="text-[12px] font-medium" :class="activeSection === item.key ? 'text-[#111]' : 'text-[#777] group-hover:text-[#333]'">
+            <div class="text-[12px] font-medium" :class="activeSection === item.key ? 'text-white' : 'text-[#777] group-hover:text-[#333]'">
               {{ item.label }}
             </div>
           </button>

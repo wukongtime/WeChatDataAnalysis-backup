@@ -99,7 +99,7 @@
           <div class="flex-1 min-w-0">
             <div class="truncate" :class="{ 'privacy-blur': privacyMode }">{{ u.displayName || u.username }}</div>
             <div class="text-[11px] text-gray-400 truncate">
-              <span>{{ u.username }}</span>
+              <span :class="{ 'privacy-blur': privacyMode }">{{ u.username }}</span>
               <span> · </span>
               <!-- `postCount` is computed from the decrypted sqlite snapshot (cache). The timeline API may only return
                    the visible subset (e.g. privacy setting: "only last 3 days"), so show loaded/cache for the selected user. -->
