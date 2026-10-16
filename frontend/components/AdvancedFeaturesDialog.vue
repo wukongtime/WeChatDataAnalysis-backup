@@ -24,6 +24,7 @@
             <div class="afd-titlerow">
               <h2 :id="titleId" class="afd-title">不止能读，<em>还能写</em></h2>
               <span class="afd-support afd-mono">支持 Windows · macOS · Linux · 不限制微信版本</span>
+              <span class="afd-support afd-mono">macOS 100% 获取密钥 · 不用关闭 SIP</span>
             </div>
             <p :id="descId" class="afd-desc">
               {{ DEVELOPER_CONTACT_TITLE }}

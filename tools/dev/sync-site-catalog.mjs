@@ -15,10 +15,10 @@
        便当盒「77 项」格的详情浮层里一处（<b>，不带 data-pro-at；只有 WRITE_KEYS 那 9 组），权益对比该组那一行的条数大字一处（data-pro-at="compare"）；
        另外，权益对比组说明里提到条数的地方（如「在任意位置补录 17 类消息」）写 data-pro-at="compare-d"，可有可无，有就核对数值
      - 权益对比区块（<section … id="compare">）的结构：.cmp__duo 里每一行 <div class="r r--…"> 同时含普通版一格（r__f）与高级版一格（r__p）；
-       r--x 行的 data-i 依次是 catalog 的 10 个组 key 与 e0…e7；另有「两版都有」（data-i="both"）与平台、微信版本两行（v0、v1）；
+       r--x 行的 data-i 依次是 catalog 的 10 个组 key 与 e0…e7；另有「两版都有」（data-i="both"）与平台、微信版本、macOS 取密钥三行（v0、v1、v2）；
        10 组每组一个条目列表（data-items="<组 key>"，compare.js 往里一行一个填条目名），顺序与 catalog 一致；各组条数大字之和 = 79；
-       行总数 = 25；体验行（r--x r--e）数 = 8，且等于「体验与服务」分组标题（r--sec-e）里两处手写的 <b>N</b>；
-       带 data-i 的每一行（两版都有、10 组、体验各项、平台两行），普通版一格都有一句非空短说明（<span class="f__d">）；
+       行总数 = 26；体验行（r--x r--e）数 = 8，且等于「体验与服务」分组标题（r--sec-e）里两处手写的 <b>N</b>；
+       带 data-i 的每一行（两版都有、10 组、体验各项、平台三行），普通版一格都有一句非空短说明（<span class="f__d">）；
        区块里不得有浮层、弹框、抽屉或点击展开（role="dialog"、<details>、aria-expanded、hidden 都不该出现）
      - website/assets/img/figs/drawers.svg（便当盒「77 项」格的九屉目录柜插图）根节点 data-n 的九个卡片张数
        = WRITE_KEYS 各组条数（按 catalog 顺序）；插图是 anatomy 生成的静态 SVG，catalog 变了要重新出图，这里只报错不改写
@@ -134,7 +134,7 @@ for (const [where, label, ks] of [["bento", "便当盒「77 项」格的详情",
   for (const k of keys) if (!WRITE_KEYS.includes(k) && got.has(k)) bad.push(`index.html 便当盒「77 项」格的详情不该列「${k}」（不属于写入与动作）`);
 }
 // 权益对比区块的结构
-const WANT_ROWS = 25, WANT_E = 8;
+const WANT_ROWS = 26, WANT_E = 8;
 let cmpRows = 0, cmpE = 0, cmpFd = 0;
 {
   const a = html.search(/<section\b[^>]*\bid="compare"/), b = a < 0 ? -1 : html.indexOf("</section>", a);
@@ -155,9 +155,9 @@ let cmpRows = 0, cmpE = 0, cmpFd = 0;
     const wantX = [...keys, ...Array.from({ length: 8 }, (_, i) => `e${i}`)].join(" ");
     const gotX = rows.filter((r) => r.cls.includes("r--x")).map((r) => r.i).join(" ");
     if (gotX !== wantX) bad.push(`权益对比的组与体验行（${gotX || "没找到"}）应依次为 ${wantX}`);
-    for (const want of ["both", "v0", "v1"]) if (!rows.some((r) => r.i === want)) bad.push(`权益对比缺少 data-i="${want}" 的行`);
-    // 行总数：卡顶 1 + 两版都有 1 + 分组标题 2 + 10 组 + 体验 8 + 平台 2 + 卡脚 1 = 25
-    if (rows.length !== WANT_ROWS) bad.push(`权益对比共 ${rows.length} 行，应为 ${WANT_ROWS} 行（卡顶 · 两版都有 · 2 个分组标题 · ${keys.length} 组 · 体验 8 项 · 平台 2 行 · 卡脚）`);
+    for (const want of ["both", "v0", "v1", "v2"]) if (!rows.some((r) => r.i === want)) bad.push(`权益对比缺少 data-i="${want}" 的行`);
+    // 行总数：卡顶 1 + 两版都有 1 + 分组标题 2 + 10 组 + 体验 8 + 平台 3 + 卡脚 1 = 26
+    if (rows.length !== WANT_ROWS) bad.push(`权益对比共 ${rows.length} 行，应为 ${WANT_ROWS} 行（卡顶 · 两版都有 · 2 个分组标题 · ${keys.length} 组 · 体验 8 项 · 平台 3 行 · 卡脚）`);
     // 「体验与服务 N 项」：分组标题里两格手写的 N 都要等于实际的体验行数（r--x r--e）
     cmpE = rows.filter((r) => r.cls.includes("r--x") && r.cls.includes("r--e")).length;
     if (cmpE !== WANT_E) bad.push(`权益对比体验与服务有 ${cmpE} 行，应为 ${WANT_E} 行`);
@@ -169,7 +169,7 @@ let cmpRows = 0, cmpE = 0, cmpFd = 0;
         if (ns.length !== 2 || ns.some((x) => x !== cmpE)) bad.push(`权益对比「体验与服务」分组标题写的是 ${ns.join(" / ") || "（没找到 <b>数字</b>）"} 项，两格都应为实际体验行数 ${cmpE}`);
       }
     }
-    // 两版都有、10 组、体验各项、平台两行：普通版一格都要有一句短说明（f__d，非空）
+    // 两版都有、10 组、体验各项、平台三行：普通版一格都要有一句短说明（f__d，非空）
     for (const r of rows.filter((x) => x.i)) {
       const f = r.body.slice(r.body.indexOf('class="r__f"'), r.body.indexOf('class="r__p"'));
       const m = f.match(/<span class="f__d"[^>]*>([\s\S]*?)<\/span>/);

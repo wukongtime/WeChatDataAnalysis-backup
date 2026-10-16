@@ -370,13 +370,14 @@ img { display: block; }
 /* ═════════ 高级版独有 · 便当盒（一屏） ═════════ */
 .bento-sec { position: relative; height: calc(100svh - var(--nav)); scroll-margin-top: var(--nav); padding: clamp(4px, 1.2svh, 14px) 0 clamp(12px, 2.6svh, 32px); display: flex; flex-direction: column; }
 .bento { flex: 1; min-height: 0; display: grid; gap: clamp(8px, 1.2svh, 12px);
-  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, .64fr); grid-template-rows: repeat(6, minmax(0, 1fr));
-  grid-template-areas: "ops ai face e146" "ops ai face mcp" "ops ai face search" "trial rt sup ui" "trial rt sup sched" "trial rt sup live"; }
+  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, .64fr); grid-template-rows: repeat(6, minmax(0, 1fr)) minmax(0, 1.25fr);
+  grid-template-areas: "ops ai face e146" "ops ai face mcp" "ops ai face search" "trial rt sup ui" "trial rt sup sched" "trial rt sup live" "mac mac mac mac"; }
 .bento.is-off * { animation-play-state: paused !important; }
 .tile[data-k="ops"] { grid-area: ops; } .tile[data-k="ai"] { grid-area: ai; } .tile[data-k="face"] { grid-area: face; }
 .tile[data-k="trial"] { grid-area: trial; } .tile[data-k="rt"] { grid-area: rt; } .tile[data-k="sup"] { grid-area: sup; }
 .tile[data-k="e146"] { grid-area: e146; } .tile[data-k="mcp"] { grid-area: mcp; } .tile[data-k="search"] { grid-area: search; }
 .tile[data-k="ui"] { grid-area: ui; } .tile[data-k="sched"] { grid-area: sched; } .tile[data-k="live"] { grid-area: live; }
+.tile[data-k="mac"] { grid-area: mac; }
 
 /* 格子：小圆角、零投影，靠底色差与 1px 描边分开；四种调子的底色要肉眼可分 */
 .tile { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; border-radius: 8px; background: var(--paper); border: 1px solid var(--line); overflow: hidden; container-type: size; }
@@ -435,9 +436,17 @@ img { display: block; }
 .tile--sm h3 { font-size: clamp(12px, min(11cqh, 5.8cqw), 15.5px); margin-top: clamp(3px, 3cqh, 6px); text-wrap: balance; }
 .tile--sm .tile__s { font-size: clamp(11px, min(9.6cqh, 5.2cqw), 13px); margin-top: clamp(2px, 2.4cqh, 5px); }
 .tile--sm .tile__stage { flex: none; width: 44%; padding: clamp(6px, 7cqh, 12px) clamp(8px, 3.4cqw, 14px) clamp(10px, 9cqmin, 18px) 0; } /* 底边距 = 文字区底边距：图和字落在同一条底线 */
-.tile--sm .plus { width: 20px; height: 20px; top: 8px; right: 8px; opacity: 0; }
-.tile--sm .plus::before, .tile--sm .plus::after { width: 8px; margin-left: -4px; }
-.tile--sm:hover .plus, .tile--sm .tile__hit:focus-visible .plus, .tile--sm.is-on .plus { opacity: 1; }
+.tile--sm .plus, .tile--wide .plus { width: 20px; height: 20px; top: 8px; right: 8px; opacity: 0; }
+.tile--sm .plus::before, .tile--sm .plus::after, .tile--wide .plus::before, .tile--wide .plus::after { width: 8px; margin-left: -4px; }
+.tile--sm:hover .plus, .tile--sm .tile__hit:focus-visible .plus, .tile--sm.is-on .plus, .tile--wide:hover .plus, .tile--wide .tile__hit:focus-visible .plus, .tile--wide.is-on .plus { opacity: 1; }
+/* 通栏（macOS 取密钥）：横跨四栏、比小格高四分之一。左边「100% 获取密钥」大字 + 标题与要点（按内容宽），右边剩下的宽度全给横向插图、居中；字和图都按格子高度（cqh）缩放 */
+.tile--wide { flex-direction: row; }
+.tile--wide .tile__cap { flex: none; display: flex; align-items: center; gap: clamp(14px, 2.4cqw, 40px); padding: 0 clamp(14px, 1.8cqw, 28px); }
+.tile--wide .tile__num b { font-size: clamp(26px, 42cqh, 54px); }
+.tile--wide .tile__num span { font-size: clamp(11.5px, 12.5cqh, 16px); }
+.tile--wide h3 { margin-top: 0; font-size: clamp(13px, 15cqh, 19px); white-space: nowrap; }
+.tile--wide .tile__s { margin-top: clamp(2px, 3cqh, 6px); font-size: clamp(11.5px, 12.5cqh, 15px); white-space: nowrap; }
+.tile--wide .tile__stage { flex: 1; min-width: 0; padding: clamp(6px, 8cqh, 14px) clamp(36px, 3cqw, 48px) clamp(6px, 8cqh, 14px) clamp(12px, 2cqw, 32px); }
 .tile .m { display: none; }
 .tile--ink { background: #1b1d33; border-color: #1b1d33; }
 .tile--ink:hover { border-color: #3a3d5c; }
@@ -507,6 +516,24 @@ img { display: block; }
 .ph-sun { animation: sun 5s ease-in-out infinite alternate; }
 @keyframes sun { from { transform: translate(0, 7px); } to { transform: translate(0, -1px); } }
 .ph-ring { animation: spin 8s linear infinite; transform-origin: 0 0; }
+/* macOS 取密钥：钥匙沿虚线依次停到三摞数据库的锁前，每到一把锁：锁梁弹起、上方亮起对勾、电脑屏上的进度条走一段；6 秒一轮，最后一齐复位。
+   不带动画时（减少动态效果）停在「全部解锁」那一帧：钥匙在第三把锁前、三把锁梁抬起、三个对勾亮着、进度条满格 */
+.mk-key { transform: translate(var(--t3), 0); animation: mkKey 6s var(--ease) infinite; }
+@keyframes mkKey { 0% { transform: translate(0, 0); opacity: 0; } 5% { transform: translate(0, 0); opacity: 1; }
+  20%, 28% { transform: translate(var(--t1), 0); } 44%, 52% { transform: translate(var(--t2), 0); } 68%, 82% { transform: translate(var(--t3), 0); opacity: 1; }
+  90%, 100% { transform: translate(var(--t3), 0); opacity: 0; } }
+.mk-sh { transform: translate(0, -2.2px); }
+.mk-sh1 { animation: mkSh1 6s var(--ease) infinite; } .mk-sh2 { animation: mkSh2 6s var(--ease) infinite; } .mk-sh3 { animation: mkSh3 6s var(--ease) infinite; }
+@keyframes mkSh1 { 0%, 21% { transform: translate(0, 0); } 25%, 90% { transform: translate(0, -2.2px); } 95%, 100% { transform: translate(0, 0); } }
+@keyframes mkSh2 { 0%, 45% { transform: translate(0, 0); } 49%, 90% { transform: translate(0, -2.2px); } 95%, 100% { transform: translate(0, 0); } }
+@keyframes mkSh3 { 0%, 69% { transform: translate(0, 0); } 73%, 90% { transform: translate(0, -2.2px); } 95%, 100% { transform: translate(0, 0); } }
+.mk-ok { transform-box: fill-box; transform-origin: center; }
+.mk-ok1 { animation: mkOk1 6s var(--ease) infinite; } .mk-ok2 { animation: mkOk2 6s var(--ease) infinite; } .mk-ok3 { animation: mkOk3 6s var(--ease) infinite; }
+@keyframes mkOk1 { 0%, 23% { opacity: 0; transform: scale(.6); } 28%, 90% { opacity: 1; transform: scale(1); } 95%, 100% { opacity: 0; transform: scale(.6); } }
+@keyframes mkOk2 { 0%, 47% { opacity: 0; transform: scale(.6); } 52%, 90% { opacity: 1; transform: scale(1); } 95%, 100% { opacity: 0; transform: scale(.6); } }
+@keyframes mkOk3 { 0%, 71% { opacity: 0; transform: scale(.6); } 76%, 90% { opacity: 1; transform: scale(1); } 95%, 100% { opacity: 0; transform: scale(.6); } }
+.mk-bar { transform-box: fill-box; transform-origin: 0 50%; animation: mkBar 6s var(--ease) infinite; }
+@keyframes mkBar { 0%, 21% { transform: scaleX(0); } 26%, 45% { transform: scaleX(.3333); } 50%, 69% { transform: scaleX(.6667); } 74%, 90% { transform: scaleX(1); } 96%, 100% { transform: scaleX(0); } }
 /* 深色 */
 /* 不是把浅色插图原样贴在深底上，也不是整体压灰：同一套「四档平涂 + 细描边」换成深色版——
    每个色相一条五档色阶（顶面 t → 侧面 3 / 2 / 1 → 最深的 0），顶面最亮、侧面一档档压深，压深时保住饱和度（不往灰里掉）；
@@ -1106,8 +1133,8 @@ img { display: block; }
 }
 /* 中屏：便当改 6 列（每行两只大格、三只小格） */
 @media (max-width: 1020px) {
-  .bento { grid-template-columns: repeat(6, minmax(0, 1fr)); grid-template-rows: 1fr 1fr 1fr .6fr .6fr;
-    grid-template-areas: "ops ops ops ai ai ai" "face face face trial trial trial" "rt rt rt sup sup sup" "e146 e146 mcp mcp search search" "ui ui sched sched live live"; }
+  .bento { grid-template-columns: repeat(6, minmax(0, 1fr)); grid-template-rows: 1fr 1fr 1fr .6fr .6fr .7fr;
+    grid-template-areas: "ops ops ops ai ai ai" "face face face trial trial trial" "rt rt rt sup sup sup" "e146 e146 mcp mcp search search" "ui ui sched sched live live" "mac mac mac mac mac mac"; }
   .tile--sm { flex-direction: column-reverse; }
   .tile--sm .tile__stage { width: 100%; flex: 1; padding: 8px 8px 4px; }
   .tile--sm .tile__cap { flex: none; justify-content: flex-start; padding: 0 10px 9px; }
@@ -1164,6 +1191,10 @@ img { display: block; }
   .plus { width: 20px; height: 20px; top: 8px; right: 8px; }
   .plus::before, .plus::after { width: 8px; margin-left: -4px; }
   .tile--sm .plus { display: none; }
+  /* 通栏：手机上大字在上、标题与要点在下，图占右边将近一半 */
+  .tile--wide .tile__cap { flex-direction: column; align-items: flex-start; justify-content: center; gap: 4px; padding: 0 10px; }
+  .tile--wide .tile__stage { padding: 4px 10px 4px 4px; }
+  .tile--wide .plus { display: none; }
 
   .get h2 { font-size: 28px; }
   .plate { grid-column: 1 / -1; padding: 22px 18px 20px; }

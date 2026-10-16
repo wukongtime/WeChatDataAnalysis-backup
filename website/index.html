@@ -275,6 +275,14 @@
         <button class="tile__hit" type="button" aria-haspopup="dialog" aria-expanded="false" aria-label="实况照片能播：查看详情"><i class="plus" aria-hidden="true"></i></button>
         <template class="tile__more"><p class="pd__h">实况照片能播</p><p class="pd__d">聊天里的实况照片常驻实况标识，悬停即播放原视频，可开关声音；多图叠放里同样能播。</p></template>
       </article>
+
+      <!-- 通栏：macOS 取密钥（横跨四栏，和小格一样高；插图是电脑 → 钥匙 → 数据库解锁的横向场景） -->
+      <article class="tile tile--wide" data-k="mac" data-tone="peach">
+        <div class="tile__cap"><p class="tile__num"><b>100%</b><span>获取密钥</span></p><div class="tile__t"><h3>macOS 不限微信版本</h3><p class="tile__s">不用关闭 SIP</p></div></div>
+        <div class="tile__stage"><div class="tile-ill" data-art="mackey"></div></div>
+        <button class="tile__hit" type="button" aria-haspopup="dialog" aria-expanded="false" aria-label="macOS 100% 获取密钥：查看详情"><i class="plus" aria-hidden="true"></i></button>
+        <template class="tile__more"><p class="pd__h">macOS 100% 获取密钥</p><p class="pd__d">高级版在 macOS 上 100% 获取数据库密钥：不限制微信版本，也不用关闭 SIP。普通版的 macOS 取密钥是实验性的，要临时重签微信、退出重登，不保证所有版本都能成功。</p></template>
+      </article>
     </div>
   </section>
 
@@ -411,7 +419,7 @@
             <div class="r__p"><p class="p__h"><svg class="st" role="img" aria-label="支持"><use href="#st-yes"/></svg><span class="p__n">1 天试用</span></p><p class="p__d"><span class="lab lab--pro">高级版</span><svg class="st" role="img" aria-label="支持"><use href="#st-yes"/></svg><span class="p__t">注册即送&nbsp;<b>1</b>&nbsp;天试用，期间每项高级功能<wbr>体验&nbsp;<b>1</b>&nbsp;次；每个微信账号<wbr>限领一次，同一电脑<wbr>短期领取过多<wbr>需人工确认。</span></p></div>
           </div>
 
-          <!-- 平台与微信版本 -->
+          <!-- 平台、微信版本与 macOS 取密钥 -->
           <div class="r r--env r--env1" data-i="v0">
             <div class="r__f"><span class="lab">普通版</span><span class="f__n">平台</span><span class="f__v">Windows · macOS 15+</span><span class="f__d">普通版提供&nbsp;Windows&nbsp;安装包，以及 macOS&nbsp;15+<wbr>（Apple&nbsp;Silicon）安装包。</span></div>
             <div class="r__p"><p class="p__h"><span class="p__n">平台</span></p><p class="p__d"><span class="lab lab--pro">高级版</span><b class="p__v">Windows · macOS · Linux</b><span class="p__t">Linux&nbsp;版只含读取与导出，不含微信动作<wbr>和语音转文字；网页版可用 Linux&nbsp;离线包、Docker 或 nginx&nbsp;部署。</span></p></div>
@@ -419,6 +427,10 @@
           <div class="r r--env r--env2" data-i="v1">
             <div class="r__f"><span class="lab">普通版</span><span class="f__n">微信版本</span><span class="f__v">微信 4.x</span><span class="f__d">普通版解密<wbr>微信&nbsp;4.x&nbsp;数据库。</span></div>
             <div class="r__p"><p class="p__h"><span class="p__n">微信版本</span></p><p class="p__d"><span class="lab lab--pro">高级版</span><b class="p__v">不限制微信版本</b><span class="p__t">在线功能<wbr>独立登录微信账号，不依赖<wbr>本机微信客户端版本。</span></p></div>
+          </div>
+          <div class="r r--env r--env2" data-i="v2">
+            <div class="r__f"><span class="lab">普通版</span><span class="f__n">macOS 取密钥</span><span class="f__v">实验性</span><span class="f__d">普通版要临时重签微信、退出重登，不保证所有版本都能成功。</span></div>
+            <div class="r__p"><p class="p__h"><span class="p__n">macOS 取密钥</span></p><p class="p__d"><span class="lab lab--pro">高级版</span><b class="p__v">100% 获取</b><span class="p__t">不限制微信版本，不用关闭&nbsp;SIP。</span></p></div>
           </div>
           <div class="r r--foot"><div class="r__f"></div><div class="r__p"><p>高级版能力需在会员或试用期内使用；到期后已有记录仍可查看、搜索和导出。</p></div></div>
         </div>
@@ -437,8 +449,8 @@
       <article class="plate">
         <header class="plate__h"><h3>普通版</h3><span class="tag">免费</span></header>
         <p class="plate__big">免费下载</p>
-        <p class="plate__p">解密、浏览、搜索、导出、年度总结与 AI 总结。</p>
-        <dl class="plate__meta"><div><dt>平台</dt><dd>Windows · macOS 15+（Apple Silicon）</dd></div><div><dt>微信</dt><dd>微信 4.x</dd></div></dl>
+        <p class="plate__p">解密、浏览、搜索、导出与年度总结。</p>
+        <dl class="plate__meta"><div><dt>平台</dt><dd>Windows · macOS 15+（Apple Silicon）</dd></div><div><dt>微信</dt><dd>微信 4.x</dd></div><div><dt>密钥</dt><dd>macOS 取密钥为实验性</dd></div></dl>
         <div class="plate__foot">
           <p class="plate__note dl-hint" data-dl-hint="get" hidden></p>
           <a class="btn btn--sec btn--l" href="https://github.com/LifeArchiveProject/WeChatDataAnalysis/releases" target="_blank" rel="noopener" data-dl="get"><svg class="ic" aria-hidden="true"><use href="#i-gh"/></svg><span data-dl-t>在 GitHub 免费下载</span><svg class="ic" aria-hidden="true"><use href="#i-ext"/></svg></a>
@@ -448,7 +460,7 @@
         <header class="plate__h"><h3>高级版</h3><span class="pro">PRO</span></header>
         <p class="plate__big"><b>1</b> 天免费试用</p>
         <p class="plate__p">注册送 1 天试用，每项高级功能体验 1 次。</p>
-        <dl class="plate__meta"><div><dt>平台</dt><dd>Windows · macOS · Linux</dd></div><div><dt>微信</dt><dd>不限制微信版本</dd></div></dl>
+        <dl class="plate__meta"><div><dt>平台</dt><dd>Windows · macOS · Linux</dd></div><div><dt>微信</dt><dd>不限制微信版本</dd></div><div><dt>密钥</dt><dd>macOS 100% 获取，不用关闭 SIP</dd></div></dl>
         <div class="plate__foot">
           <p class="plate__note">点下面的按钮在 Telegram 私聊，或<a href="https://t.me/+IQKBDeXtaKozZWYx" target="_blank" rel="noopener">加入 TG 群</a>私聊群所有者，获取高级版；安装后邮箱注册即送 1 天试用。每个微信账号限领一次，同一电脑短期领取过多需人工确认。</p>
           <a class="btn btn--pri btn--l" href="https://t.me/knchudj" target="_blank" rel="noopener"><svg class="ic" aria-hidden="true"><use href="#i-tg"/></svg>Telegram 咨询试用与购买</a>

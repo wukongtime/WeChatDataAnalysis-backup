@@ -256,4 +256,48 @@ export function photo() {
   return g.svg("fig-photo", 3, `<clipPath id="${id}"><rect x="3" y="3" width="42" height="30" rx=".8"/></clipPath>`);
 }
 
-export const ART = { keys, plug, search, swatch, clock, photo };
+/* macOS 取密钥（便当盒底部通栏）：左边一台笔记本（屏上钥匙图标 + 三段进度条），右边一排三摞数据库（三种颜色 = 不同的微信版本），
+   一把钥匙平躺着沿虚线依次滑到每一摞的挂锁前：锁梁弹起、上方亮起对勾，进度条走一段。
+   电脑与数据库沿世界 (1, -1) 排开——这条线在屏幕上正好水平，整幅图是一条横向场景 */
+export function mackey() {
+  const g = new Iso();
+  // 笔记本：底座台 + 机身（键盘、触控板）+ 立在机身后沿的屏幕
+  plate(g, 0, 26, 36, 28, 3, false);
+  g.box(4, 30, 3, 28, 19, 2, I, { seam: true });
+  g.fz(4, 30, 5, 28, 19, `<rect x="2.2" y="2" width="23.6" height="9" rx=".8" fill="${I[3]}" class="f"/>${rules(4, 4.2, 19.6, 3, 2.1)}<rect x="9" y="12.6" width="10" height="4.8" rx=".8" fill="${I[3]}" class="f"/>`);
+  g.box(4, 28.8, 5, 28, 1.2, 19, I);
+  g.fy(4, 30, 24, 28, 19, `<rect x="1.3" y="1.3" width="25.4" height="15.2" rx=".8" fill="${PAPER}" class="d"/>
+    <g transform="translate(6.4 6.4)"><circle r="2.3" fill="none" stroke="${BLUE}" stroke-width="1.1"/><path d="M2.3 0H9M6.6 0V2M8.4 0V1.6" fill="none" stroke="${BLUE}" stroke-width="1.1" stroke-linecap="round"/></g>
+    ${rules(16, 4.6, 8.6, 2, 2)}<rect x="4.2" y="11.4" width="19.6" height="1.9" rx=".95" fill="${L[3]}"/><rect class="mk-bar" x="4.2" y="11.4" width="19.6" height="1.9" rx=".95" fill="${BLUE}"/>
+    <path d="M10.73 11.2V13.5M17.27 11.2V13.5" stroke="${PAPER}" stroke-width=".6"/>`);
+  // 三摞数据库：中心在 (18 + s, 41 − s)，s = 56 / 86 / 116；底座台 24 见方，三层圆盘，正面（+y 侧）挂一把锁
+  const S = [56, 86, 116], COL = [M, L, I];
+  const [ax, ay] = g.P(33, 27, 0), [bx, by] = g.P(18 + S[2] - 12, 41 - S[2] + 12, 0);
+  g.add(`<line x1="${r2(ax)}" y1="${r2(ay)}" x2="${r2(bx)}" y2="${r2(by)}" class="d" stroke-dasharray="1.4 2.2"/>`);
+  S.forEach((sv, i) => {
+    const cx = 18 + sv, cy = 41 - sv, T = COL[i];
+    plate(g, cx - 12, cy - 12, 24, 24, 3, false);
+    [3, 7.6, 12.2].forEach((z) => g.cyl(cx, cy, z, 7.5, 4, T));
+    g.open(`class="mk-sh mk-sh${i + 1}"`);
+    g.fy(cx - 3.5, cy + 8.2, 12, 7, 0, `<path d="M1.5 .4V-2.2A2 2 0 0 1 5.5 -2.2V.4" fill="none" stroke="${INKP}" stroke-opacity=".55" stroke-width="2.3" stroke-linecap="round"/><path d="M1.5 .4V-2.2A2 2 0 0 1 5.5 -2.2V.4" fill="none" stroke="${I[0]}" stroke-width="1.3" stroke-linecap="round"/>`);
+    g.P(cx - 3.5, cy + 8.2, 17);
+    g.close();
+    g.box(cx - 3.5, cy + 6.9, 6, 7, 2.6, 6, P, { seam: true });
+    g.fy(cx - 3.5, cy + 9.5, 12, 7, 6, `<circle cx="3.5" cy="2.5" r="1" fill="${INKP}" fill-opacity=".7"/><path d="M3.5 3V4.7" stroke="${INKP}" stroke-opacity=".7" stroke-width="1" stroke-linecap="round"/>`);
+    const [ox, oy] = g.P(cx, cy, 24);
+    g.t(ox - 5, oy - 5); g.t(ox + 5, oy + 5);
+    g.add(`<g class="mk-ok mk-ok${i + 1}"><circle cx="${r2(ox)}" cy="${r2(oy)}" r="4" fill="${BLUE}" class="o"/><path d="M${r2(ox - 1.8)} ${r2(oy)}L${r2(ox - .45)} ${r2(oy + 1.45)}L${r2(ox + 2)} ${r2(oy - 1.35)}" fill="none" stroke="${HL}" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></g>`);
+  });
+  // 钥匙：平躺在 z = 10 的水平面上，沿 (1, -1) 方向、放大 1.25 倍；先画一层压深的当厚度，再画顶面。
+  // 从电脑旁 (35, 30) 出发，三处停靠点在第 i 把锁的左前角前面一个钥匙长：沿路走 s − 31.3 个单位；--t1/2/3 是这几段在屏幕上的水平位移
+  const key = (fill, hole) => `<g transform="rotate(-45) scale(1.25)"><circle r="3.3" fill="${fill}" class="o"/><circle r="1.3" fill="${hole}" class="d"/><rect x="2.8" y="-.85" width="9.4" height="1.7" rx=".4" fill="${fill}" class="o"/><path d="M9 .8V2.6H10.2V1.7H11.2V2.6H12.2V.8Z" fill="${fill}" class="o"/></g>`;
+  const tx = (sv) => `${r2(2 * C * (sv - 31.3))}px`;
+  g.open(`class="mk-key" style="--t1:${tx(S[0])};--t2:${tx(S[1])};--t3:${tx(S[2])}"`);
+  g.fz(35, 30, 9.3, 1, 1, key(P[0], P[0]));
+  g.fz(35, 30, 10, 1, 1, key(P[2], PAPER));
+  g.close();
+  g.P(31, 34.5, 10);
+  return g.svg("fig-mackey", 3);
+}
+
+export const ART = { keys, plug, search, swatch, clock, photo, mackey };
