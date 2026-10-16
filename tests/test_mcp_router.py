@@ -1,0 +1,1158 @@
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+
+class TestMcpRouter(unittest.TestCase):
+    TEST_TOKEN = "test-mcp-token-1234567890"
+    REMOVED_MCP_TOOLS = {
+        "wechat.setup.get_saved_keys",
+        "wechat.setup.get_database_key",
+        "wechat.setup.get_image_key",
+        "wechat.setup.decrypt_databases",
+        "wechat.setup.get_decrypt_stream_url",
+        "wechat.setup.preview_import_decrypted",
+        "wechat.setup.get_import_decrypted_stream_url",
+        "wechat.setup.cancel_import_decrypted",
+        "wechat.setup.save_media_keys",
+        "wechat.setup.decrypt_all_media",
+        "wechat.setup.get_decrypt_all_media_stream_url",
+        "wechat.setup.get_download_all_emojis_stream_url",
+        "wechat.contacts.export_contacts",
+        "wechat.chat.get_realtime_status",
+        "wechat.chat.sync_realtime_session",
+        "wechat.chat.sync_realtime_all_sessions",
+        "wechat.chat.get_realtime_events_url",
+        "wechat.moments.sync_latest",
+        "wechat.editing.list_edited_sessions",
+        "wechat.editing.list_edited_messages",
+        "wechat.editing.get_message_edit_status",
+        "wechat.editing.edit_message",
+        "wechat.editing.repair_message_sender",
+        "wechat.editing.flip_message_direction",
+        "wechat.editing.reset_message_edit",
+        "wechat.editing.reset_session_edits",
+        "wechat.export.preview_chat_targets",
+        "wechat.export.create_chat_export",
+        "wechat.export.list_chat_exports",
+        "wechat.export.get_chat_export",
+        "wechat.export.cancel_chat_export",
+        "wechat.export.get_chat_export_download",
+        "wechat.export.get_chat_export_events_url",
+        "wechat.export.create_moments_export",
+        "wechat.export.list_moments_exports",
+        "wechat.export.get_moments_export",
+        "wechat.export.cancel_moments_export",
+        "wechat.export.get_moments_export_download",
+        "wechat.export.get_moments_export_events_url",
+        "wechat.export.create_account_archive",
+        "wechat.export.get_account_archive",
+        "wechat.export.cancel_account_archive",
+        "wechat.export.get_account_archive_download",
+        "wechat.mobile.export_job",
+        "wechat.admin.detect_wechat_installation",
+        "wechat.admin.get_current_wechat_account",
+        "wechat.admin.get_wechat_runtime_status",
+        "wechat.admin.delete_account_data",
+        "wechat.system.api_root",
+        "wechat.system.health_check",
+        "wechat.system.get_backend_log_file",
+        "wechat.system.open_backend_log_file",
+        "wechat.system.log_frontend_server_error",
+        "wechat.system.get_backend_port",
+        "wechat.system.set_backend_port_setting",
+        "wechat.system.set_backend_port_and_restart",
+        "wechat.system.get_mcp_lan_access",
+        "wechat.system.set_mcp_lan_access",
+        "wechat.system.get_img_helper_status",
+        "wechat.system.toggle_img_helper",
+        "wechat.system.pick_directory",
+        "wechat.chat.get_search_index_status",
+        "wechat.chat.build_search_index",
+        "wechat.chat.get_session_last_message_cache_status",
+        "wechat.chat.build_session_last_message_cache",
+        "wechat.media.download_chat_emoji",
+        "wechat.media.open_chat_media_folder",
+    }
+    UNSAFE_INTEGER_ID = "9007199254740993"
+    MEDIA_LINK_KINDS = (
+        "avatar", "chat_image", "chat_emoji", "chat_video_thumb", "chat_video",
+        "chat_voice", "moments_image", "moments_video", "favicon", "proxy_image",
+    )
+    MEDIA_TOOL_ARGUMENTS = {
+        "wechat.moments.get_media_url": {
+            "account", "post_id", "tid", "media_id", "create_time", "width", "height", "total_size",
+            "idx", "post_type", "media_type", "md5", "token", "url", "key",
+        },
+        "wechat.moments.get_remote_video_url": {"account", "url", "token", "key"},
+        "wechat.media.get_chat_emoji_url": {"account", "username", "md5", "emoji_url", "aes_key"},
+        "wechat.media.get_chat_video_thumb_url": {"account", "username", "md5", "file_id", "deep_scan"},
+        "wechat.media.get_chat_video_url": {"account", "username", "md5", "file_id", "deep_scan"},
+        "wechat.media.get_chat_voice_url": {"account", "server_id", "msg_svr_id"},
+        "wechat.mobile.get_media_links": {
+            "account", "kind", "max_items", "username", "md5", "file_id", "server_id", "msg_svr_id",
+            "emoji_url", "aes_key", "post_id", "media_id", "token", "key", "url",
+        },
+        "wechat.mobile.get_message_media_bundle": {
+            "account", "username", "session_id", "server_id", "msg_svr_id", "md5", "file_id",
+            "emoji_url", "aes_key", "url", "link_url",
+        },
+    }
+
+    def setUp(self):
+        self._old_mcp_token = os.environ.get("WECHAT_TOOL_MCP_TOKEN")
+        os.environ["WECHAT_TOOL_MCP_TOKEN"] = self.TEST_TOKEN
+
+    def tearDown(self):
+        if self._old_mcp_token is None:
+            os.environ.pop("WECHAT_TOOL_MCP_TOKEN", None)
+        else:
+            os.environ["WECHAT_TOOL_MCP_TOKEN"] = self._old_mcp_token
+
+    def _client(self, auth: bool = True) -> TestClient:
+        from wechat_decrypt_tool.routers.mcp import router
+
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+        if auth:
+            client.headers.update({"Authorization": f"Bearer {self.TEST_TOKEN}"})
+        return client
+
+    def _rpc(self, method, params=None, request_id=1):
+        payload = {"jsonrpc": "2.0", "id": request_id, "method": method}
+        if params is not None:
+            payload["params"] = params
+        return payload
+
+    def test_initialize_and_tools_list(self):
+        client = self._client()
+
+        init_resp = client.post("/mcp", json=self._rpc("initialize"))
+        self.assertEqual(init_resp.status_code, 200)
+        init_payload = init_resp.json()["result"]
+        self.assertEqual(init_payload["protocolVersion"], "2025-06-18")
+        self.assertEqual(init_payload["serverInfo"]["name"], "wechat-data-analysis-mcp")
+
+        tools_resp = client.post("/mcp", json=self._rpc("tools/list"))
+        self.assertEqual(tools_resp.status_code, 200)
+        tools = tools_resp.json()["result"]["tools"]
+        names = {tool["name"] for tool in tools}
+        self.assertIn("wechat.core.get_status", names)
+        self.assertIn("wechat.chat.search_messages", names)
+        self.assertIn("wechat.chat.list_search_senders", names)
+        self.assertIn("wechat.chat.resolve_chat_history", names)
+        self.assertIn("wechat.chat.resolve_app_message", names)
+        self.assertIn("wechat.moments.get_remote_video_url", names)
+        self.assertNotIn("search_memory", names)
+        self.assertNotIn("transcribe_voice_message", names)
+        self.assertNotIn("transcribe_audio_file", names)
+        self.assertFalse(self.REMOVED_MCP_TOOLS & names)
+
+    def test_mcp_requires_token(self):
+        client = self._client(auth=False)
+
+        resp = client.post("/mcp", json=self._rpc("ping"))
+
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.headers.get("www-authenticate"), "Bearer")
+
+    def test_skill_endpoints_require_token(self):
+        client = self._client(auth=False)
+
+        for path in ("/mcp/skill/bundle", "/mcp/skill"):
+            with self.subTest(path=path):
+                resp = client.get(path)
+                self.assertEqual(resp.status_code, 401)
+                self.assertEqual(resp.headers.get("www-authenticate"), "Bearer")
+
+    def test_mcp_rejects_invalid_token(self):
+        client = self._client(auth=False)
+
+        resp = client.post("/mcp", json=self._rpc("ping"), headers={"Authorization": "Bearer wrong-token"})
+
+        self.assertEqual(resp.status_code, 401)
+
+    def test_mcp_accepts_x_mcp_token_and_query_token(self):
+        client = self._client(auth=False)
+
+        header_resp = client.post("/mcp", json=self._rpc("ping"), headers={"X-MCP-Token": self.TEST_TOKEN})
+        query_resp = client.post(f"/mcp?token={self.TEST_TOKEN}", json=self._rpc("ping"))
+
+        self.assertEqual(header_resp.status_code, 200)
+        self.assertEqual(header_resp.json()["result"], {})
+        self.assertEqual(query_resp.status_code, 200)
+        self.assertEqual(query_resp.json()["result"], {})
+
+    def test_get_mcp_returns_method_not_allowed(self):
+        client = self._client()
+
+        resp = client.get("/mcp")
+
+        self.assertEqual(resp.status_code, 405)
+        self.assertEqual(resp.headers.get("allow"), "POST")
+
+    def test_skill_bundle_can_be_loaded_over_http(self):
+        client = self._client()
+
+        resp = client.get("/mcp/skill/bundle")
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["name"], "wechat-mcp-copilot")
+        self.assertIn("bundleText", payload)
+        self.assertIn("WeChat MCP Copilot", payload["bundleText"])
+        self.assertTrue(any(ref["path"] == "references/mobile.md" for ref in payload["references"]))
+        self.assertFalse(any(ref["path"] == "references/system.md" for ref in payload["references"]))
+        self.assertFalse(any(ref["path"] == "references/setup-system.md" for ref in payload["references"]))
+        self.assertFalse(any(ref["path"] == "references/export.md" for ref in payload["references"]))
+        for tool_name in self.REMOVED_MCP_TOOLS:
+            self.assertNotIn(tool_name, payload["bundleText"])
+
+    def test_skill_bundle_can_be_loaded_from_pyinstaller_meipass_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            meipass_root = Path(tmp)
+            skill_root = meipass_root / "skills" / "wechat-mcp-copilot"
+            references_dir = skill_root / "references"
+            references_dir.mkdir(parents=True)
+            (skill_root / "SKILL.md").write_text("# Packaged Skill\n\nentry", encoding="utf-8")
+            (references_dir / "mobile.md").write_text("mobile facade", encoding="utf-8")
+
+            from wechat_decrypt_tool.routers import mcp
+
+            with patch.object(sys, "_MEIPASS", str(meipass_root), create=True), patch.dict(
+                os.environ, {"WECHAT_TOOL_SKILL_ROOT": ""}, clear=False
+            ):
+                payload = mcp._read_skill_bundle()
+
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["root"], str(skill_root))
+        self.assertIn("Packaged Skill", payload["bundleText"])
+        self.assertTrue(any(ref["path"] == "references/mobile.md" for ref in payload["references"]))
+
+    def test_skill_text_can_be_loaded_over_http(self):
+        client = self._client()
+
+        resp = client.get("/mcp/skill")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("WeChat MCP Copilot", resp.text)
+
+    def test_ping_returns_empty_result(self):
+        client = self._client()
+
+        resp = client.post("/mcp", json=self._rpc("ping"))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["result"], {})
+
+    def test_tools_list_supports_cursor_pagination(self):
+        client = self._client()
+
+        first_resp = client.post("/mcp", json=self._rpc("tools/list", {"limit": 3}))
+        self.assertEqual(first_resp.status_code, 200)
+        first = first_resp.json()["result"]
+        self.assertEqual(first["count"], 3)
+        self.assertEqual(len(first["tools"]), 3)
+        self.assertIn("nextCursor", first)
+        self.assertGreater(first["total"], 3)
+
+        second_resp = client.post(
+            "/mcp",
+            json=self._rpc("tools/list", {"limit": 3, "cursor": first["nextCursor"]}),
+        )
+        second = second_resp.json()["result"]
+        self.assertEqual(second["count"], 3)
+        self.assertNotEqual(first["tools"][0]["name"], second["tools"][0]["name"])
+
+    def test_core_list_tools_supports_package_filter_and_pagination(self):
+        client = self._client()
+
+        resp = client.post(
+            "/mcp",
+            json=self._rpc(
+                "tools/call",
+                {"name": "wechat.core.list_tools", "arguments": {"package": "wechat.media", "limit": 2}},
+            ),
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        structured = resp.json()["result"]["structuredContent"]
+        self.assertEqual(structured["status"], "success")
+        self.assertEqual(structured["count"], 2)
+        self.assertIn("nextCursor", structured)
+        self.assertTrue(all(t["annotations"]["package"] == "wechat.media" for t in structured["tools"]))
+
+    def test_tools_call_status_uses_structured_content(self):
+        client = self._client()
+
+        with patch("wechat_decrypt_tool.mcp.tools._list_decrypted_accounts", return_value=["wxid_test"]):
+            resp = client.post(
+                "/mcp",
+                json=self._rpc(
+                    "tools/call",
+                    {"name": "wechat.core.get_status", "arguments": {}},
+                ),
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        result = resp.json()["result"]
+        self.assertFalse(result["isError"])
+        self.assertEqual(result["structuredContent"]["status"], "success")
+        self.assertTrue(result["structuredContent"]["dbReady"])
+        self.assertEqual(result["structuredContent"]["defaultAccount"], "wxid_test")
+        self.assertEqual(result["content"][0]["type"], "text")
+
+    def test_mcp_chat_read_tools_default_to_auto_source(self):
+        client = self._client()
+        calls = []
+
+        class FakeChatRouter:
+            def list_chat_sessions(self, _request, **kwargs):
+                calls.append(("sessions", kwargs))
+                return {"status": "success", "source": kwargs.get("source"), "sessions": []}
+
+            def list_chat_messages(self, _request, **kwargs):
+                calls.append(("messages", kwargs))
+                return {"status": "success", "source": kwargs.get("source"), "messages": []}
+
+        with patch("wechat_decrypt_tool.mcp.tools._chat_router", return_value=FakeChatRouter()):
+            sessions_resp = client.post(
+                "/mcp",
+                json=self._rpc("tools/call", {"name": "wechat.chat.list_sessions", "arguments": {}}),
+            )
+            messages_resp = client.post(
+                "/mcp",
+                json=self._rpc(
+                    "tools/call",
+                    {"name": "wechat.chat.get_messages", "arguments": {"username": "wxid_friend"}},
+                ),
+            )
+
+        self.assertEqual(sessions_resp.status_code, 200)
+        self.assertEqual(messages_resp.status_code, 200)
+        self.assertEqual(sessions_resp.json()["result"]["structuredContent"]["source"], "auto")
+        self.assertEqual(messages_resp.json()["result"]["structuredContent"]["source"], "auto")
+        self.assertIn(("sessions", {"account": None, "limit": 50, "include_hidden": False, "include_official": False, "preview": "latest", "source": "auto"}), calls)
+        self.assertTrue(any(kind == "messages" and kwargs.get("source") == "auto" for kind, kwargs in calls))
+
+    def test_mobile_recent_context_defaults_to_auto_source(self):
+        client = self._client()
+        calls = []
+
+        class FakeChatRouter:
+            def list_chat_sessions(self, _request, **kwargs):
+                calls.append(("sessions", kwargs))
+                return {
+                    "status": "success",
+                    "source": kwargs.get("source"),
+                    "sessions": [{"username": "wxid_friend", "displayName": "Friend"}],
+                }
+
+            def list_chat_messages(self, _request, **kwargs):
+                calls.append(("messages", kwargs))
+                return {"status": "success", "source": kwargs.get("source"), "messages": []}
+
+        with patch("wechat_decrypt_tool.mcp.tools._chat_router", return_value=FakeChatRouter()):
+            resp = client.post(
+                "/mcp",
+                json=self._rpc(
+                    "tools/call",
+                    {
+                        "name": "wechat.mobile.get_chat_context",
+                        "arguments": {"username": "wxid_friend", "mode": "recent"},
+                    },
+                ),
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        structured = resp.json()["result"]["structuredContent"]
+        self.assertEqual(structured["messages"]["source"], "auto")
+        self.assertTrue(any(kind == "messages" and kwargs.get("source") == "auto" for kind, kwargs in calls))
+        self.assertTrue(any(kind == "sessions" and kwargs.get("source") == "auto" for kind, kwargs in calls))
+
+    def test_mcp_chat_context_tools_default_to_auto_source(self):
+        client = self._client()
+        calls = []
+
+        class FakeChatRouter:
+            async def get_chat_messages_around(self, _request, **kwargs):
+                calls.append(("around", kwargs))
+                return {"status": "success", "source": kwargs.get("source"), "messages": []}
+
+            def get_chat_message_anchor(self, **kwargs):
+                calls.append(("anchor", kwargs))
+                return {"status": "success", "source": kwargs.get("source"), "anchorId": "realtime_acc:msg_x:1"}
+
+            def get_chat_message_daily_counts(self, **kwargs):
+                calls.append(("daily", kwargs))
+                return {"status": "success", "source": kwargs.get("source"), "counts": {}}
+
+        with patch("wechat_decrypt_tool.mcp.tools._chat_router", return_value=FakeChatRouter()):
+            around_resp = client.post(
+                "/mcp",
+                json=self._rpc(
+                    "tools/call",
+                    {"name": "wechat.chat.get_message_around", "arguments": {"username": "wxid_friend", "anchor_id": "message:Msg_x:1"}},
+                ),
+            )
+            anchor_resp = client.post(
+                "/mcp",
+                json=self._rpc(
+                    "tools/call",
+                    {"name": "wechat.chat.get_message_anchor", "arguments": {"username": "wxid_friend", "kind": "first"}},
+                ),
+            )
+            daily_resp = client.post(
+                "/mcp",
+                json=self._rpc(
+                    "tools/call",
+                    {"name": "wechat.chat.get_daily_message_counts", "arguments": {"username": "wxid_friend", "year": 2026, "month": 7}},
+                ),
+            )
+
+        self.assertEqual(around_resp.status_code, 200)
+        self.assertEqual(anchor_resp.status_code, 200)
+        self.assertEqual(daily_resp.status_code, 200)
+        self.assertTrue(any(kind == "around" and kwargs.get("source") == "auto" for kind, kwargs in calls))
+        self.assertTrue(any(kind == "anchor" and kwargs.get("source") == "auto" for kind, kwargs in calls))
+        self.assertTrue(any(kind == "daily" and kwargs.get("source") == "auto" for kind, kwargs in calls))
+
+    def test_mobile_around_and_day_context_default_to_auto_source(self):
+        client = self._client()
+        calls = []
+
+        class FakeChatRouter:
+            def list_chat_sessions(self, _request, **kwargs):
+                calls.append(("sessions", kwargs))
+                return {
+                    "status": "success",
+                    "source": kwargs.get("source"),
+                    "sessions": [{"username": "wxid_friend", "displayName": "Friend"}],
+                }
+
+            async def get_chat_messages_around(self, _request, **kwargs):
+                calls.append(("around", kwargs))
+                return {"status": "success", "source": kwargs.get("source"), "messages": []}
+
+            def get_chat_message_anchor(self, **kwargs):
+                calls.append(("anchor", kwargs))
+                return {"status": "success", "source": kwargs.get("source"), "anchorId": "realtime_acc:msg_x:1"}
+
+        with patch("wechat_decrypt_tool.mcp.tools._chat_router", return_value=FakeChatRouter()):
+            around_resp = client.post(
+                "/mcp",
+                json=self._rpc(
+                    "tools/call",
+                    {
+                        "name": "wechat.mobile.get_chat_context",
+                        "arguments": {"username": "wxid_friend", "mode": "around", "anchor_id": "message:Msg_x:1"},
+                    },
+                ),
+            )
+            day_resp = client.post(
+                "/mcp",
+                json=self._rpc(
+                    "tools/call",
+                    {
+                        "name": "wechat.mobile.get_chat_context",
+                        "arguments": {"username": "wxid_friend", "mode": "day", "date": "2026-07-04"},
+                    },
+                ),
+            )
+
+        self.assertEqual(around_resp.status_code, 200)
+        self.assertEqual(day_resp.status_code, 200)
+        around_calls = [kwargs for kind, kwargs in calls if kind == "around"]
+        anchor_calls = [kwargs for kind, kwargs in calls if kind == "anchor"]
+        self.assertGreaterEqual(len(around_calls), 2)
+        self.assertTrue(all(kwargs.get("source") == "auto" for kwargs in around_calls))
+        self.assertTrue(anchor_calls and all(kwargs.get("source") == "auto" for kwargs in anchor_calls))
+
+    def test_mcp_chat_search_defaults_to_realtime_index(self):
+        client = self._client()
+        calls = []
+
+        class FakeChatRouter:
+            async def search_chat_messages(self, _request, **kwargs):
+                calls.append(kwargs)
+                return {"status": "success", "hits": []}
+
+        with patch("wechat_decrypt_tool.mcp.tools._chat_router", return_value=FakeChatRouter()):
+            resp = client.post(
+                "/mcp",
+                json=self._rpc(
+                    "tools/call",
+                    {"name": "wechat.chat.search_messages", "arguments": {"query": "hello"}},
+                ),
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        structured = resp.json()["result"]["structuredContent"]
+        self.assertEqual(structured["source"], "realtime_index")
+        self.assertNotIn("freshness", structured)
+        self.assertFalse(calls[0]["allow_native_enrichment"])
+
+    def test_mcp_stringifies_integers_outside_javascript_safe_range(self):
+        client = self._client()
+
+        class FakeChatRouter:
+            async def search_chat_messages(self, _request, **_kwargs):
+                return {
+                    "status": "success",
+                    "index": {"indexMtimeNs": 9007199254740993},
+                    "hits": [{"serverId": 9007199254740993}],
+                    "limit": 20,
+                }
+
+        with patch("wechat_decrypt_tool.mcp.tools._chat_router", return_value=FakeChatRouter()):
+            resp = client.post(
+                "/mcp",
+                json=self._rpc(
+                    "tools/call",
+                    {"name": "wechat.chat.search_messages", "arguments": {"query": "xlsx"}},
+                ),
+            )
+
+        structured = resp.json()["result"]["structuredContent"]
+        self.assertEqual(structured["index"]["indexMtimeNs"], "9007199254740993")
+        self.assertEqual(structured["hits"][0]["serverId"], "9007199254740993")
+        self.assertEqual(structured["limit"], 20)
+        self.assertIn('"serverId": "9007199254740993"', resp.json()["result"]["content"][0]["text"])
+        tools = {tool["name"]: tool for tool in client.post("/mcp", json=self._rpc("tools/list")).json()["result"]["tools"]}
+        self.assertEqual(tools["wechat.chat.resolve_app_message"]["inputSchema"]["properties"]["server_id"]["type"], "string")
+
+    def test_mcp_chat_search_decrypted_declares_snapshot_freshness(self):
+        client = self._client()
+
+        class FakeChatRouter:
+            async def search_chat_messages(self, _request, **_kwargs):
+                return {"status": "success", "hits": []}
+
+        with patch("wechat_decrypt_tool.mcp.tools._chat_router", return_value=FakeChatRouter()):
+            resp = client.post(
+                "/mcp",
+                json=self._rpc(
+                    "tools/call",
+                    {"name": "wechat.chat.search_messages", "arguments": {"query": "hello", "source": "decrypted"}},
+                ),
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        structured = resp.json()["result"]["structuredContent"]
+        self.assertEqual(structured["source"], "decrypted_index")
+        self.assertEqual(structured["freshness"]["kind"], "snapshot")
+        self.assertFalse(structured["freshness"]["latestRealtimeIncluded"])
+
+    def test_chat_source_schema_is_public(self):
+        client = self._client()
+
+        resp = client.post("/mcp", json=self._rpc("tools/list"))
+
+        self.assertEqual(resp.status_code, 200)
+        tools = {tool["name"]: tool for tool in resp.json()["result"]["tools"]}
+        for tool_name in [
+            "wechat.chat.list_sessions",
+            "wechat.chat.get_messages",
+            "wechat.chat.search_messages",
+            "wechat.chat.get_message_around",
+            "wechat.chat.get_message_anchor",
+            "wechat.chat.get_daily_message_counts",
+            "wechat.mobile.search_chat",
+            "wechat.mobile.get_chat_context",
+            "wechat.mobile.get_session_bundle",
+            "wechat.mobile.get_analytics",
+        ]:
+            with self.subTest(tool_name=tool_name):
+                source_schema = tools[tool_name]["inputSchema"]["properties"].get("source")
+                self.assertIsNotNone(source_schema)
+                self.assertEqual(source_schema["default"], "auto")
+                self.assertEqual(source_schema["enum"], ["auto", "realtime", "decrypted"])
+
+    def test_direct_tool_method_is_supported(self):
+        client = self._client()
+
+        with patch("wechat_decrypt_tool.mcp.tools._list_decrypted_accounts", return_value=[]):
+            resp = client.post("/mcp", json=self._rpc("wechat.core.list_accounts"))
+
+        self.assertEqual(resp.status_code, 200)
+        result = resp.json()["result"]
+        self.assertTrue(result["isError"])
+        structured = result["structuredContent"]
+        self.assertEqual(structured["status"], "error")
+        self.assertEqual(structured["accounts"], [])
+
+    def test_notification_returns_accepted_empty_body(self):
+        client = self._client()
+
+        resp = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        )
+
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(resp.text, "")
+
+    def test_json_rpc_response_input_returns_accepted_empty_body(self):
+        client = self._client()
+
+        resp = client.post("/mcp", json={"jsonrpc": "2.0", "id": 99, "result": {"ok": True}})
+
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(resp.text, "")
+
+    def test_notification_batch_returns_accepted_empty_body(self):
+        client = self._client()
+
+        resp = client.post(
+            "/mcp",
+            json=[
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            ],
+        )
+
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(resp.text, "")
+
+    def test_empty_batch_returns_invalid_request(self):
+        client = self._client()
+
+        resp = client.post("/mcp", json=[])
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["error"]["code"], -32600)
+
+    def test_non_string_method_returns_invalid_request(self):
+        client = self._client()
+
+        resp = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": 1})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["error"]["code"], -32600)
+
+    def test_batch_mixed_requests_and_notifications(self):
+        client = self._client()
+
+        with patch("wechat_decrypt_tool.mcp.tools._list_decrypted_accounts", return_value=["wxid_test"]):
+            resp = client.post(
+                "/mcp",
+                json=[
+                    self._rpc("ping", request_id=1),
+                    {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                    self._rpc("wechat.core.get_status", request_id=2),
+                ],
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertEqual(len(payload), 2)
+        self.assertEqual(payload[0]["result"], {})
+        self.assertEqual(payload[1]["result"]["structuredContent"]["defaultAccount"], "wxid_test")
+
+    def test_unknown_tool_returns_json_rpc_error(self):
+        client = self._client()
+
+        resp = client.post(
+            "/mcp",
+            json=self._rpc(
+                "tools/call",
+                {"name": "wechat.nope", "arguments": {}},
+            ),
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertEqual(payload["error"]["code"], -32601)
+
+    def test_removed_mcp_tools_are_not_listed_or_callable(self):
+        client = self._client()
+
+        tools_resp = client.post("/mcp", json=self._rpc("tools/list"))
+        self.assertEqual(tools_resp.status_code, 200)
+        names = {tool["name"] for tool in tools_resp.json()["result"]["tools"]}
+        self.assertFalse(self.REMOVED_MCP_TOOLS & names)
+
+        for tool_name in sorted(self.REMOVED_MCP_TOOLS):
+            with self.subTest(tool_name=tool_name):
+                direct_resp = client.post("/mcp", json=self._rpc(tool_name, {}))
+                call_resp = client.post(
+                    "/mcp",
+                    json=self._rpc("tools/call", {"name": tool_name, "arguments": {}}),
+                )
+                self.assertEqual(direct_resp.status_code, 200)
+                self.assertEqual(call_resp.status_code, 200)
+                self.assertEqual(direct_resp.json()["error"]["code"], -32601)
+                self.assertEqual(call_resp.json()["error"]["code"], -32601)
+
+    def test_missing_tool_name_returns_invalid_params(self):
+        client = self._client()
+
+        resp = client.post("/mcp", json=self._rpc("tools/call", {"arguments": {}}))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["error"]["code"], -32602)
+
+    def test_non_object_arguments_returns_invalid_params(self):
+        client = self._client()
+
+        resp = client.post(
+            "/mcp",
+            json=self._rpc("tools/call", {"name": "wechat.core.get_status", "arguments": []}),
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["error"]["code"], -32602)
+
+    def test_media_url_helpers_pass_supported_parameters(self):
+        client = self._client()
+
+        image_resp = client.post(
+            "/mcp",
+            json=self._rpc(
+                "wechat.media.get_chat_image_url",
+                {
+                    "md5": "abc",
+                    "file_id": "fid",
+                    "msg_svr_id": 123,
+                    "username": "wxid_a",
+                    "account": "wxid_acc",
+                    "deep_scan": True,
+                    "prefer_live": True,
+                    "fetch_remote": True,
+                    "src_create_time": 1735689600,
+                    "file_size": 2048,
+                    "record_index": 0,
+                    "record_index_path": "0/1",
+                    "record_attach": "folder/image & original.dat",
+                },
+            ),
+        )
+        image = image_resp.json()["result"]["structuredContent"]
+        self.assertIn("/api/chat/media/image?", image["url"])
+        self.assertEqual(image["params"]["server_id"], 123)
+        self.assertEqual(image["params"]["file_id"], "fid")
+        self.assertTrue(image["params"]["deep_scan"])
+        self.assertTrue(image["params"]["prefer_live"])
+        query = parse_qs(urlsplit(image["url"]).query)
+        self.assertEqual(query["fetch_remote"], ["True"])
+        self.assertEqual(query["src_create_time"], ["1735689600"])
+        self.assertEqual(query["file_size"], ["2048"])
+        self.assertEqual(query["record_index"], ["0"])
+        self.assertEqual(query["record_index_path"], ["0/1"])
+        self.assertEqual(query["record_attach"], ["folder/image & original.dat"])
+
+        moments_resp = client.post(
+            "/mcp",
+            json=self._rpc(
+                "wechat.moments.get_media_url",
+                {"tid": "post-a", "media_id": "media-a", "md5": "deadbeef", "use_cache": 1},
+            ),
+        )
+        moments = moments_resp.json()["result"]["structuredContent"]
+        self.assertIn("/api/sns/media?", moments["url"])
+        self.assertEqual(moments["params"]["post_id"], "post-a")
+        self.assertEqual(moments["params"]["media_id"], "media-a")
+        self.assertNotIn("use_cache", moments["params"])
+        self.assertNotIn("use_cache", moments["url"])
+
+    def test_image_tool_exposes_large_image_options_and_defaults(self):
+        with self._client() as client:
+            listed = client.post("/mcp", json=self._rpc("tools/list")).json()["result"]["tools"]
+            tool = next(item for item in listed if item["name"] == "wechat.media.get_chat_image_url")
+            properties = tool["inputSchema"]["properties"]
+            self.assertTrue(properties["prefer_live"]["default"])
+            self.assertFalse(properties["fetch_remote"]["default"])
+            self.assertIn("server_id", properties)
+            self.assertIn("record_index_path", properties)
+            for options, expected in [({}, "True"), ({"prefer_live": False, "fetch_remote": False}, "False")]:
+                with self.subTest(options=options):
+                    result = client.post("/mcp", json=self._rpc("tools/call", {
+                        "name": "wechat.media.get_chat_image_url",
+                        "arguments": {"md5": "abc", **options},
+                    })).json()["result"]["structuredContent"]
+                    query = parse_qs(urlsplit(result["url"]).query)
+                    self.assertEqual(query["prefer_live"], [expected])
+                    if options:
+                        self.assertEqual(query["fetch_remote"], ["False"])
+                    else:
+                        self.assertNotIn("fetch_remote", query)
+
+    def test_media_tools_advertise_arguments_their_handlers_read(self):
+        client = self._client()
+        tools = {tool["name"]: tool for tool in client.post("/mcp", json=self._rpc("tools/list")).json()["result"]["tools"]}
+
+        def call(name, arguments):
+            result = client.post("/mcp", json=self._rpc("tools/call", {"name": name, "arguments": arguments})).json()["result"]
+            self.assertFalse(result["isError"])
+            return result["structuredContent"]
+
+        for name, expected in self.MEDIA_TOOL_ARGUMENTS.items():
+            schema = tools[name]["inputSchema"]
+            with self.subTest(tool=name):
+                self.assertTrue(schema["additionalProperties"])
+                self.assertEqual(set(schema["properties"]), expected)
+            contexts = [{}, {"md5": "0" * 32}]
+            if name == "wechat.mobile.get_media_links":
+                contexts.append({"kind": "moments_image"})
+            for key, prop in schema["properties"].items():
+                # server_id 会按整数解析，字符串参数也用十进制数字探测。
+                value = {"boolean": True, "integer": 1}.get(prop["type"], self.UNSAFE_INTEGER_ID)
+                with self.subTest(tool=name, argument=key):
+                    self.assertTrue(
+                        any(call(name, {**context, key: value}) != call(name, context) for context in contexts),
+                        f"{name} advertises {key}, but it changes nothing in {contexts}",
+                    )
+
+        kind_description = tools["wechat.mobile.get_media_links"]["inputSchema"]["properties"]["kind"]["description"]
+        for kind in self.MEDIA_LINK_KINDS:
+            with self.subTest(kind=kind):
+                self.assertIn(kind, kind_description)
+                resources = call("wechat.mobile.get_media_links", {"kind": kind, "username": "wxid_a", "url": "https://example.com/a"})["resources"]
+                self.assertEqual([item["kind"] for item in resources], [kind])
+
+    def test_media_tools_take_server_ids_as_exact_strings(self):
+        client = self._client()
+        tools = {tool["name"]: tool for tool in client.post("/mcp", json=self._rpc("tools/list")).json()["result"]["tools"]}
+        server_id = self.UNSAFE_INTEGER_ID
+
+        for name in ("wechat.media.get_chat_voice_url", "wechat.mobile.get_media_links", "wechat.mobile.get_message_media_bundle"):
+            properties = tools[name]["inputSchema"]["properties"]
+            for key in ("server_id", "msg_svr_id"):
+                with self.subTest(tool=name, argument=key):
+                    self.assertEqual(properties.get(key, {}).get("type"), "string")
+                    structured = client.post("/mcp", json=self._rpc(name, {key: server_id})).json()["result"]["structuredContent"]
+                    if name == "wechat.media.get_chat_voice_url":
+                        voice = structured
+                    elif name == "wechat.mobile.get_media_links":
+                        voice = next(item for item in structured["resources"] if item["kind"] == "chat_voice")
+                    else:
+                        self.assertEqual(structured["serverId"], server_id)
+                        voice = structured["urls"]["voice"]
+                    self.assertEqual(parse_qs(urlsplit(voice["url"]).query)["server_id"], [server_id])
+
+    def test_completed_mcp_packages_and_mobile_facade_are_listed(self):
+        client = self._client()
+
+        resp = client.post("/mcp", json=self._rpc("tools/list"))
+
+        self.assertEqual(resp.status_code, 200)
+        tools = resp.json()["result"]["tools"]
+        names = {tool["name"] for tool in tools}
+        expected = {
+            "wechat.media.get_decrypted_resource_url",
+            "wechat.media.get_proxy_image_url",
+            "wechat.media.get_favicon_url",
+            "wechat.mobile.get_overview",
+            "wechat.mobile.resolve_target",
+            "wechat.mobile.search_chat",
+            "wechat.mobile.get_chat_context",
+            "wechat.mobile.search_moments",
+            "wechat.mobile.get_media_links",
+        }
+        self.assertTrue(expected.issubset(names))
+        self.assertFalse(self.REMOVED_MCP_TOOLS & names)
+        self.assertNotIn("search_memory", names)
+        self.assertNotIn("transcribe_voice_message", names)
+        self.assertNotIn("transcribe_audio_file", names)
+
+        packages = {tool["annotations"]["package"] for tool in tools}
+        self.assertTrue({"wechat.core", "wechat.mobile", "wechat.media"}.issubset(packages))
+        self.assertFalse({"wechat.setup", "wechat.export", "wechat.editing", "wechat.system", "wechat.admin"} & packages)
+
+    def test_new_url_helpers_return_urls_and_params(self):
+        client = self._client()
+
+        checks = [
+            (
+                "wechat.media.get_decrypted_resource_url",
+                {"account": "wxid_a", "md5": "a" * 32},
+                "url",
+                "/api/media/resource/",
+            ),
+        ]
+
+        for tool_name, args, url_key, path_part in checks:
+            with self.subTest(tool_name=tool_name):
+                resp = client.post("/mcp", json=self._rpc(tool_name, args))
+                self.assertEqual(resp.status_code, 200)
+                structured = resp.json()["result"]["structuredContent"]
+                self.assertEqual(structured["status"], "success")
+                self.assertIn(path_part, structured[url_key])
+
+    def test_exposed_mcp_tools_are_read_only(self):
+        client = self._client()
+
+        resp = client.post("/mcp", json=self._rpc("tools/list"))
+
+        self.assertEqual(resp.status_code, 200)
+        tools = resp.json()["result"]["tools"]
+        self.assertTrue(tools)
+        for tool in tools:
+            with self.subTest(tool_name=tool["name"]):
+                annotations = tool.get("annotations") or {}
+                self.assertTrue(annotations.get("readOnlyHint"))
+                self.assertFalse(annotations.get("destructiveHint"))
+
+    def test_analytics_schema_does_not_expose_refresh(self):
+        client = self._client()
+
+        resp = client.post("/mcp", json=self._rpc("tools/list"))
+
+        self.assertEqual(resp.status_code, 200)
+        tools = {tool["name"]: tool for tool in resp.json()["result"]["tools"]}
+        for tool_name in [
+            "wechat.analytics.get_wrapped_meta",
+            "wechat.analytics.get_wrapped_card",
+            "wechat.analytics.get_wrapped_annual",
+        ]:
+            with self.subTest(tool_name=tool_name):
+                properties = tools[tool_name]["inputSchema"].get("properties") or {}
+                self.assertNotIn("refresh", properties)
+
+    def test_analytics_tools_are_cache_only(self):
+        client = self._client()
+
+        class FakeWrappedService:
+            _CACHE_VERSION = 26
+            _IMPLEMENTED_UPTO_ID = 7
+            _WRAPPED_CARD_MANIFEST = ({"id": 0, "title": "Overview"},)
+
+            @staticmethod
+            def _default_year():
+                return 2025
+
+            def build_wrapped_annual_meta(self, **_kwargs):
+                raise AssertionError("MCP analytics must not build wrapped meta.")
+
+            def build_wrapped_annual_card(self, **_kwargs):
+                raise AssertionError("MCP analytics must not build wrapped card.")
+
+            def build_wrapped_annual_response(self, **_kwargs):
+                raise AssertionError("MCP analytics must not build wrapped annual data.")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            account_dir = Path(tmp) / "wxid_a"
+            account_dir.mkdir()
+            with patch("wechat_decrypt_tool.mcp.tools._resolve_account_dir", return_value=account_dir), patch(
+                "wechat_decrypt_tool.mcp.tools._wrapped_service", return_value=FakeWrappedService()
+            ):
+                card_resp = client.post(
+                    "/mcp",
+                    json=self._rpc("wechat.analytics.get_wrapped_card", {"account": "wxid_a", "year": 2025, "card_id": 0}),
+                )
+                annual_resp = client.post(
+                    "/mcp",
+                    json=self._rpc("wechat.analytics.get_wrapped_annual", {"account": "wxid_a", "year": 2025}),
+                )
+
+            self.assertFalse((account_dir / "_wrapped" / "cache").exists())
+
+        for resp in [card_resp, annual_resp]:
+            self.assertEqual(resp.status_code, 200)
+            result = resp.json()["result"]
+            self.assertTrue(result["isError"])
+            structured = result["structuredContent"]
+            self.assertEqual(structured["status"], "error")
+            self.assertTrue(structured["cacheOnly"])
+            self.assertEqual(structured["message"], "Wrapped cache not found. Open the app to generate it first.")
+
+    def test_mobile_overview_uses_compact_facade(self):
+        client = self._client()
+
+        with patch("wechat_decrypt_tool.mcp.tools._list_decrypted_accounts", return_value=["wxid_a"]), patch(
+            "wechat_decrypt_tool.mcp.tools._get_account_info",
+            return_value={"status": "success", "account": "wxid_a", "databaseCount": 3},
+        ), patch(
+            "wechat_decrypt_tool.mcp.tools._list_sessions",
+            return_value={"status": "success", "sessions": [{"username": "friend", "displayName": "Friend"}]},
+        ):
+            resp = client.post(
+                "/mcp",
+                json=self._rpc("wechat.mobile.get_overview", {"account": "wxid_a", "session_limit": 5}),
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        structured = resp.json()["result"]["structuredContent"]
+        self.assertTrue(structured["ok"])
+        self.assertTrue(structured["ready"])
+        self.assertEqual(structured["defaultAccount"], "wxid_a")
+        self.assertIn("wechat.mobile.search_chat", structured["suggestedTools"])
+        self.assertNotIn("wechat.mobile.export_job", structured["suggestedTools"])
+        self.assertNotIn("realtime", structured["health"])
+        self.assertNotIn("indexes", structured["health"])
+
+    def test_mobile_overview_does_not_expose_realtime_status(self):
+        client = self._client()
+
+        with patch("wechat_decrypt_tool.mcp.tools._list_decrypted_accounts", return_value=["wxid_a"]), patch(
+            "wechat_decrypt_tool.mcp.tools._get_account_info",
+            return_value={"status": "success", "account": "wxid_a", "databaseCount": 3},
+        ), patch(
+            "wechat_decrypt_tool.mcp.tools._list_sessions",
+            return_value={"status": "success", "sessions": [{"username": "friend", "displayName": "Friend"}]},
+        ):
+            resp = client.post(
+                "/mcp",
+                json=self._rpc("wechat.mobile.get_overview", {"account": "wxid_a", "session_limit": 5}),
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertNotIn("error", payload)
+        structured = payload["result"]["structuredContent"]
+        self.assertNotIn("realtime", structured["health"])
+        self.assertNotIn("indexes", structured["health"])
+
+    def test_mobile_resolve_target_normalizes_candidates(self):
+        client = self._client()
+
+        with patch(
+            "wechat_decrypt_tool.mcp.tools._resolve_contact",
+            return_value={"status": "success", "candidates": [{"username": "wxid_friend", "remark": "Alice", "confidence": 92}]},
+        ), patch(
+            "wechat_decrypt_tool.mcp.tools._resolve_session",
+            return_value={"status": "success", "candidates": [{"username": "chatroom", "displayName": "Alice Group", "confidence": 75}]},
+        ), patch(
+            "wechat_decrypt_tool.mcp.tools._sns_users", return_value={"status": "success", "users": []}
+        ), patch(
+            "wechat_decrypt_tool.mcp.tools._biz_accounts", return_value={"status": "success", "accounts": []}
+        ):
+            resp = client.post("/mcp", json=self._rpc("wechat.mobile.resolve_target", {"query": "Alice", "limit": 5}))
+
+        self.assertEqual(resp.status_code, 200)
+        structured = resp.json()["result"]["structuredContent"]
+        self.assertEqual(structured["status"], "success")
+        self.assertEqual(structured["best"]["username"], "wxid_friend")
+        self.assertEqual(structured["best"]["kind"], "contact")
+
+    def test_resolve_contact_scores_query_case_insensitively(self):
+        client = self._client()
+
+        class FakeContactsRouter:
+            def list_chat_contacts(self, _request, **_kwargs):
+                return {
+                    "status": "success",
+                    "contacts": [
+                        {"username": "wxid_aaron", "displayName": "Aaron", "remark": "", "nickname": "Aaron", "alias": "", "region": "Alice Springs"},
+                        {"username": "wxid_friend", "displayName": "Alice", "remark": "Alice", "nickname": "ali", "alias": ""},
+                    ],
+                }
+
+        with patch("wechat_decrypt_tool.mcp.tools._contacts_router", return_value=FakeContactsRouter()):
+            for query in ("alice", "Alice", "ALICE"):
+                with self.subTest(query=query):
+                    resp = client.post("/mcp", json=self._rpc("wechat.contacts.resolve_contact", {"query": query}))
+                    self.assertEqual(resp.status_code, 200)
+                    candidates = resp.json()["result"]["structuredContent"]["candidates"]
+                    self.assertEqual(
+                        [(c["username"], c["confidence"]) for c in candidates],
+                        [("wxid_friend", 60), ("wxid_aaron", 20)],
+                    )
+
+    def test_mobile_resolve_target_scores_unscored_candidates_by_match(self):
+        client = self._client()
+        sns_users = []
+
+        class FakeContactsRouter:
+            def list_chat_contacts(self, _request, **_kwargs):
+                return {
+                    "status": "success",
+                    "contacts": [{"username": "wxid_friend", "displayName": "Alice", "remark": "Alice", "nickname": "ali", "alias": ""}],
+                }
+
+        class FakeChatRouter:
+            def list_chat_sessions(self, _request, **_kwargs):
+                return {"status": "success", "sessions": []}
+
+        class FakeSnsRouter:
+            def list_sns_users(self, **_kwargs):
+                return {"items": list(sns_users), "count": len(sns_users), "limit": 5}
+
+        class FakeBizRouter:
+            def get_biz_account_list(self, **_kwargs):
+                return {"status": "success", "total": 0, "data": []}
+
+        def resolve(arguments):
+            resp = client.post("/mcp", json=self._rpc("wechat.mobile.resolve_target", {"limit": 5, **arguments}))
+            self.assertEqual(resp.status_code, 200)
+            return resp.json()["result"]["structuredContent"]
+
+        with patch("wechat_decrypt_tool.mcp.tools._contacts_router", return_value=FakeContactsRouter()), patch(
+            "wechat_decrypt_tool.mcp.tools._chat_router", return_value=FakeChatRouter()
+        ), patch("wechat_decrypt_tool.mcp.tools._sns_router", return_value=FakeSnsRouter()), patch(
+            "wechat_decrypt_tool.mcp.tools._biz_router", return_value=FakeBizRouter()
+        ):
+            sns_users[:] = [
+                {"username": "wxid_poster", "displayName": "Malice Daily", "postCount": 900},
+                {"username": "wxid_reader", "displayName": "Palace Alice Tea", "postCount": 300},
+            ]
+            for query in ("alice", "Alice"):
+                with self.subTest(query=query):
+                    structured = resolve({"query": query})
+                    self.assertEqual(structured["warnings"], [])
+                    self.assertEqual(
+                        [(c["kind"], c["username"], c["confidence"]) for c in structured["candidates"]],
+                        [("contact", "wxid_friend", 60), ("moments_user", "wxid_poster", 60), ("moments_user", "wxid_reader", 60)],
+                    )
+                    self.assertTrue(structured["ambiguous"])
+
+            sns_users[:] = [{"username": "wxid_friend", "displayName": "Alice", "postCount": 3}]
+            for query in ("alice", "wxid_friend"):
+                with self.subTest(same_person=query):
+                    structured = resolve({"query": query})
+                    self.assertEqual([c["kind"] for c in structured["candidates"]], ["contact", "moments_user"])
+                    self.assertEqual(structured["best"]["kind"], "contact")
+                    self.assertFalse(structured["ambiguous"])
+
+            sns_users[:] = [
+                {"username": "wxid_friend_fan", "displayName": "Fan", "postCount": 900},
+                {"username": "wxid_friend", "displayName": "Alice", "postCount": 3},
+            ]
+            structured = resolve({"query": "wxid_friend", "target_type": "moments_user"})
+            self.assertEqual(
+                [(c["username"], c["confidence"]) for c in structured["candidates"]],
+                [("wxid_friend", 100), ("wxid_friend_fan", 80)],
+            )
+            self.assertFalse(structured["ambiguous"])
+
+    def test_mobile_media_links_does_not_fetch_binary_content(self):
+        client = self._client()
+
+        resp = client.post(
+            "/mcp",
+            json=self._rpc(
+                "wechat.mobile.get_media_links",
+                {"kind": "favicon", "url": "https://example.com/article", "max_items": 5},
+            ),
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        structured = resp.json()["result"]["structuredContent"]
+        self.assertEqual(structured["status"], "success")
+        self.assertEqual(structured["resources"][0]["kind"], "favicon")
+        self.assertIn("/api/chat/media/favicon?", structured["resources"][0]["url"])
+
+    def test_invalid_json_returns_parse_error(self):
+        client = self._client()
+
+        resp = client.post("/mcp", content="{not-json", headers={"Content-Type": "application/json"})
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["code"], -32700)
+
+
+if __name__ == "__main__":
+    unittest.main()
